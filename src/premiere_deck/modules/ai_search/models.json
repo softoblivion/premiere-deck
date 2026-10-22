@@ -1,0 +1,31 @@
+{
+  "id": "clip-vit-b32",
+  "title": "CLIP ViT-B/32",
+  "repo": "Xenova/clip-vit-base-patch32",
+  "revision": "d15189d7028b43f1d3e65039190477f6af591c2a",
+  "url": "https://huggingface.co/{repo}/resolve/{revision}/{source}",
+  "dim": 512,
+  "files": [
+    {
+      "name": "vision_model_fp16.onnx",
+      "source": "onnx/vision_model_fp16.onnx",
+      "role": "vision",
+      "size": 176080659,
+      "sha256": "35c4e0fb0aeee527dcde1693520b214a34424a786babd530f35366bad5844efd"
+    },
+    {
+      "name": "text_model.onnx",
+      "source": "onnx/text_model.onnx",
+      "role": "text",
+      "size": 254058553,
+      "sha256": "3f6571f5bad13a97c469c1622e1cfc4d9aef78b79fdbfcff804ca357bfada8cc"
+    },
+    {
+      "name": "tokenizer.json",
+      "source": "tokenizer.json",
+      "role": "tokenizer",
+      "size": 2224119,
+      "sha256": "f7f3b7af117d467b58374797691a6438d3e6b9e9cef800dfd5dced7f697a90cd"
+    }
+  ]
+}
