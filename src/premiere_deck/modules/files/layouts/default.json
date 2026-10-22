@@ -1,0 +1,21 @@
+{
+  "id": "default",
+  "name": "Default",
+  "project_dir": "Project",
+  "folders": ["Footage", "Audio/Music", "Audio/SFX", "Audio/Voice", "Graphics", "Overlays", "Motion", "Exports", "Exports/Frames", "Project"],
+  "rules": [
+    {"match": {"kind": "video", "alpha": true}, "to": "Overlays"},
+    {"match": {"kind": "video", "name": "overlay|film|dust|grain|leak|burn|flare|vhs|texture|transition|glitch|smoke|particle"}, "to": "Overlays"},
+    {"match": {"kind": "video"}, "to": "Footage"},
+    {"match": {"kind": "audio", "name": "sfx|whoosh|hit|swoosh|click|pop|riser|impact|transition"}, "to": "Audio/SFX"},
+    {"match": {"kind": "audio", "name": "vo|voice|narration|rec|interview|dialog"}, "to": "Audio/Voice"},
+    {"match": {"kind": "audio", "max_duration": 20}, "to": "Audio/SFX"},
+    {"match": {"kind": "audio"}, "to": "Audio/Music"},
+    {"match": {"kind": "image"}, "to": "Graphics"},
+    {"match": {"ext": ["mogrt", "aep", "aegraphic"]}, "to": "Motion"},
+    {"match": {"ext": ["psd", "ai", "svg", "eps"]}, "to": "Graphics"},
+    {"match": {}, "to": "Footage"}
+  ],
+  "mirror_subfolders": true,
+  "exports_dir": "Exports"
+}

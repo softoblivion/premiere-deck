@@ -1,0 +1,216 @@
+/* Background scene (js/background.js builds the layers). Bottom -> top:
+   base gradient, colour fields (or the horizon band), contour and caustic lines, a floor pool,
+   rising specks (canvas), light sweep, vignette, grain. Every loop is a CSS animation of
+   `transform` (compositor only); the parallax wrappers move by a transform transition.
+   Colours come from the scene tokens (--bg-*, --scene-hue, --scene-accent, --scene-line) and
+   from the options of initBackground(); the kit's documentation, "Background". */
+
+#scene {
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  overflow: hidden;
+  pointer-events: none;
+  /* (1) The base: three token stops, nothing baked in, so an app retints it through --bg-* alone. */
+  background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 52%, var(--bg-bottom) 100%);
+}
+
+/* Parallax wrappers: oversized so their edges never show; js sets translate3d by pointer. */
+.sc-par {
+  position: absolute;
+  inset: -40px;
+  transition: transform 1.6s cubic-bezier(0.16, 0.84, 0.24, 1);
+  will-change: transform;
+}
+
+/* (2) Colour fields: large soft radial gradients, each on its own slow drift loop. The core is
+   kept dim (the alpha ramps from a * 0.9 at the centre) so a field reads as depth, not a spot. */
+.sc-field {
+  position: absolute;
+  left: var(--x);
+  top: var(--y);
+  width: var(--s);
+  height: var(--s);
+  margin: calc(var(--s) / -2) 0 0 calc(var(--s) / -2);
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+    color-mix(in srgb, var(--c) calc(var(--a) * 90%), transparent) 0%,
+    color-mix(in srgb, var(--c) calc(var(--a) * 52%), transparent) 30%,
+    color-mix(in srgb, var(--c) calc(var(--a) * 16%), transparent) 56%,
+    transparent 70%);
+  animation: var(--anim) var(--d) ease-in-out infinite alternate;
+  animation-delay: var(--delay);
+  will-change: transform;
+}
+
+@keyframes drift-a {
+  0% { transform: translate3d(0, 0, 0) scale(1); }
+  33% { transform: translate3d(6vw, 4vh, 0) scale(1.08); }
+  66% { transform: translate3d(-4vw, 7vh, 0) scale(0.95); }
+  100% { transform: translate3d(3vw, -4vh, 0) scale(1.03); }
+}
+
+@keyframes drift-b {
+  0% { transform: translate3d(0, 0, 0) scale(1.03); }
+  40% { transform: translate3d(-7vw, 4vh, 0) scale(0.93); }
+  75% { transform: translate3d(4vw, -6vh, 0) scale(1.09); }
+  100% { transform: translate3d(-3vw, 3vh, 0) scale(1); }
+}
+
+@keyframes drift-c {
+  0% { transform: translate3d(0, 0, 0) scale(0.96); }
+  50% { transform: translate3d(6vw, -6vh, 0) scale(1.1); }
+  100% { transform: translate3d(-6vw, 4vh, 0) scale(1); }
+}
+
+@keyframes drift-d {
+  0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
+  50% { transform: translate3d(-5vw, -4vh, 0) scale(1.07) rotate(6deg); }
+  100% { transform: translate3d(4vw, 3vh, 0) scale(0.97) rotate(-3deg); }
+}
+
+/* (2b) Horizon treatment: one wide luminous band low in the frame that breathes instead of
+   round fields; the accent sits at one end of it. */
+.sc-band {
+  position: absolute;
+  left: -40%;
+  width: 180%;
+  top: var(--y, 74%);
+  height: 46vh;
+  margin-top: -23vh;
+  border-radius: 50%;
+  background: radial-gradient(ellipse at 50% 50%,
+    color-mix(in srgb, var(--c) 46%, transparent) 0%,
+    color-mix(in srgb, var(--c) 24%, transparent) 36%,
+    color-mix(in srgb, var(--c) 7%, transparent) 62%,
+    transparent 72%);
+  transform-origin: 50% 50%;
+  animation: band-breathe 120s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.sc-band-accent {
+  position: absolute;
+  left: var(--x, 82%);
+  top: var(--y, 74%);
+  width: 46vmax;
+  height: 46vmax;
+  margin: -23vmax 0 0 -23vmax;
+  border-radius: 50%;
+  background: radial-gradient(circle at 50% 50%,
+    color-mix(in srgb, var(--c) 20%, transparent) 0%,
+    color-mix(in srgb, var(--c) 7%, transparent) 40%,
+    transparent 70%);
+  animation: drift-b 140s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+@keyframes band-breathe {
+  0% { transform: translate3d(0, 0, 0) scale(1, 1) rotate(-3deg); }
+  50% { transform: translate3d(3vw, -2vh, 0) scale(1.06, 1.14) rotate(-1.5deg); }
+  100% { transform: translate3d(-3vw, 1vh, 0) scale(0.98, 0.94) rotate(-4deg); }
+}
+
+/* (3) Contour and caustic lines: crisp, faint; what the lens rims visibly bend. */
+.sc-lines-in {
+  position: absolute;
+  inset: 0;
+  opacity: var(--lines-o, 1);
+  animation: lines-drift 96s ease-in-out infinite alternate;
+  will-change: transform;
+}
+
+.sc-lines-in svg {
+  width: 100%;
+  height: 100%;
+}
+
+@keyframes lines-drift {
+  0% { transform: translate3d(0, 0, 0) rotate(0deg) scale(1); }
+  50% { transform: translate3d(-2.5%, 1.5%, 0) rotate(1.6deg) scale(1.03); }
+  100% { transform: translate3d(2%, -2%, 0) rotate(-1.2deg) scale(1.015); }
+}
+
+/* (3b) Floor: a soft light pool along the bottom edge, so controls stand on a ground. */
+.sc-floor {
+  position: absolute;
+  left: -20%;
+  right: -20%;
+  bottom: -8%;
+  height: 46%;
+  background: radial-gradient(ellipse at 50% 100%,
+    color-mix(in srgb, var(--c) 26%, transparent) 0%,
+    color-mix(in srgb, var(--c) 10%, transparent) 42%,
+    transparent 72%);
+}
+
+/* (4) Rising specks: a half-resolution canvas, upscaled by the compositor (soft by design). */
+.sc-specks {
+  position: absolute;
+  inset: 40px;
+  width: calc(100% - 80px);
+  height: calc(100% - 80px);
+}
+
+/* (5) Light sweep: a soft diagonal band crosses the window once per cycle, then rests off-screen. */
+.sc-sweep {
+  position: absolute;
+  top: -30%;
+  bottom: -30%;
+  left: 0;
+  width: 46%;
+  background: linear-gradient(90deg,
+    transparent 0%,
+    color-mix(in srgb, var(--scene-line) 2%, transparent) 30%,
+    color-mix(in srgb, var(--scene-line) 6%, transparent) 50%,
+    color-mix(in srgb, var(--scene-line) 2%, transparent) 70%,
+    transparent 100%);
+  rotate: 16deg;
+  transform: translate3d(-160%, 0, 0);
+  animation: sweep 40s cubic-bezier(0.45, 0.05, 0.4, 0.95) 8s infinite;
+  will-change: transform;
+}
+
+@keyframes sweep {
+  0% { transform: translate3d(-160%, 0, 0); }
+  16% { transform: translate3d(330%, 0, 0); }
+  100% { transform: translate3d(330%, 0, 0); }
+}
+
+/* (6) Vignette and a static grain tile. */
+.sc-vignette {
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(120% 90% at 50% 42%, transparent 48%, rgba(0, 0, 0, 0.58) 100%),
+    linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, transparent 20%);
+}
+
+.sc-grain {
+  position: absolute;
+  inset: 0;
+  background-repeat: repeat;
+  opacity: 0.5;
+}
+
+/* Paused (unfocused, hidden, idle, reduced motion): every loop holds its frame. */
+#scene.is-paused * {
+  animation-play-state: paused !important;
+}
+
+/* The page's own decorative loops (inside the app root `#app`) hold with the scene. */
+html.is-still #app * {
+  animation-play-state: paused !important;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sc-field,
+  .sc-band,
+  .sc-band-accent,
+  .sc-lines-in,
+  .sc-sweep {
+    animation: none;
+  }
+  .sc-sweep { display: none; }
+  .sc-par { transition: none; }
+}

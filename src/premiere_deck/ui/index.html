@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en" data-theme="nova">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Premiere Deck</title>
+  <link rel="icon" href="assets/glyph.svg" type="image/svg+xml">
+  <!-- The cached theme before the first paint (js/main.js writes the key on every confirmed settings object). -->
+  <script>try{var t=localStorage.getItem('pd.theme');if(['dusk','nova','frost','bloom'].indexOf(t)>=0)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <!-- Liquid UI design kit: a vendored copy (vendor/liquid_ui/VENDORED.txt); never edited here. -->
+  <link rel="stylesheet" href="vendor/liquid_ui/css/tokens.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/themes.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/base.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/scene.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/glass.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/components.css">
+  <!-- Premiere Deck host window. -->
+  <link rel="stylesheet" href="css/app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <!-- Scene behind everything (kit js/background.js). -->
+  <div id="scene" aria-hidden="true"></div>
+
+  <!-- SVG filters of the lenses (kit js/glass.js appends one <filter> per surface). -->
+  <svg id="lg-defs" aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden"><defs></defs></svg>
+
+  <div id="app">
+    <header id="titlebar" class="titlebar">
+      <div class="tb-drag pywebview-drag-region"></div>
+      <div class="tb-brand pywebview-drag-region">
+        <span id="tb-glyph" class="tb-glyph pywebview-drag-region"></span>
+        <span class="tb-name pywebview-drag-region">Premiere Deck</span>
+      </div>
+      <button type="button" id="ver-pill" class="ver-pill" aria-haspopup="dialog"><span class="ver-dot" aria-hidden="true"></span><span class="ver-text"></span></button>
+      <div class="tb-space pywebview-drag-region"></div>
+      <div id="tb-cluster" class="tb-cluster">
+        <button type="button" id="win-min" class="tb-btn" aria-label="Minimize" title="Minimize"></button>
+        <button type="button" id="win-close" class="tb-btn tb-close" aria-label="Close" title="Close"></button>
+      </div>
+    </header>
+
+    <div class="shell">
+      <nav id="rail" class="rail glass-lite" aria-label="Pages"><span class="lg-rim" aria-hidden="true"></span><div id="rail-list" class="rail-list"></div></nav>
+      <main id="page" class="page" tabindex="-1"></main>
+    </div>
+  </div>
+
+  <!-- Overlays grow out of the control that opened them (kit js/overlay.js). -->
+  <div id="update-pop" class="popover" role="dialog" aria-label="Premiere Deck updates"><div class="ov-content"></div></div>
+  <div id="confirm-sheet" class="sheet confirm-sheet" role="alertdialog" aria-modal="true" aria-labelledby="confirm-title"><div class="ov-content"></div></div>
+
+  <div id="toasts" class="toasts" aria-live="polite"></div>
+</body>
+</html>
