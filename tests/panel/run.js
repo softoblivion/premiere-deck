@@ -365,6 +365,128 @@ test("list row bar is a thin bar under the subtitle", function () {
     assert.deepStrictEqual(kinds, ["deck-list-title", "deck-list-subtitle", "deck-list-bar"]);
 });
 
+function groupTree(items) {
+    var tree = sampleTree();
+    tree.sections = [{id: "actions", title: "Quick actions", collapsed: false, items: items}];
+    return tree;
+}
+function btn(id, extra) {
+    return Object.assign({kind: "button", id: id, label: id}, extra || {});
+}
+
+test("group renders its caption and lays consecutive buttons out in two columns", function () {
+    var v = display.renderTree(groupTree([
+        {kind: "group", title: "Timeline", columns: 2, items: [
+            btn("a.one"), btn("a.two"), btn("a.three"),
+            {kind: "select", id: "a.sel", label: "Preset", value: "x", options: [{value: "x", label: "X"}]},
+            btn("a.four"),
+            {kind: "text", text: "note", small: true},
+            btn("a.five"), btn("a.six")
+        ]}
+    ]), CONNECTED);
+    var groups = findV(v, function (n) { return /(^| )deck-group( |$)/.test(n.a["class"] || ""); });
+    assert.strictEqual(groups.length, 1);
+    var caption = findV(groups[0], function (n) { return n.a["class"] === "deck-group-title"; });
+    assert.strictEqual(caption.length, 1);
+    assert.strictEqual(caption[0].x, "Timeline");
+    var items = findV(groups[0], function (n) { return n.a["class"] === "deck-group-items"; })[0];
+    // Runs: [one two three] grid, select, [four] grid, text, [five six] grid; nothing but runs is wrapped.
+    assert.deepStrictEqual(items.c.map(function (n) { return /deck-grid/.test(n.a["class"] || "") ? "grid" : n.k; }),
+        ["grid", "n:a.sel", "grid", "p:5:text", "grid"]);
+    var grids = items.c.filter(function (n) { return /deck-grid/.test(n.a["class"] || ""); });
+    assert.deepStrictEqual(grids.map(function (g) { return g.c.length; }), [3, 1, 2]);
+    assert.ok(grids.every(function (g) {
+        return g.c.every(function (n) { return /deck-node-button/.test(n.a["class"]); });
+    }));
+    assert.deepStrictEqual(grids[0].c.map(function (n) { return n.c[0].a["data-action"]; }), ["a.one", "a.two", "a.three"]);
+});
+
+test("a group with one column, no title or a nested non-button node draws no grid", function () {
+    var v = display.renderTree(groupTree([
+        {kind: "group", title: null, items: [btn("b.one"), btn("b.two")]},
+        {kind: "group", title: "", columns: 1, items: [{kind: "text", text: "x"}]}
+    ]), CONNECTED);
+    assert.strictEqual(findV(v, function (n) { return /deck-grid/.test(n.a["class"] || ""); }).length, 0);
+    assert.strictEqual(findV(v, function (n) { return n.a["class"] === "deck-group-title"; }).length, 0);
+    assert.strictEqual(byAction(v, "b.one").length, 1);
+    assert.strictEqual(byAction(v, "b.two").length, 1);
+});
+
+test("group buttons keep busy, disabled, confirm and offline behaviour", function () {
+    var items = [{kind: "group", title: "G", columns: 2, items: [
+        btn("g.busy", {busy: true}), btn("g.off", {disabled: true}), btn("g.ask", {confirm: "Sure?"})
+    ]}];
+    var v = display.renderTree(groupTree(items), CONNECTED);
+    assert.ok(/is-busy/.test(byAction(v, "g.busy")[0].a["class"]));
+    assert.strictEqual(byAction(v, "g.off")[0].p.disabled, true);
+    assert.strictEqual(findV(v, function (n) { return n.a["class"] === "deck-confirm"; }).length, 0);
+    var asking = display.renderTree(groupTree(items), {connection: "connected", collapsed: {}, confirming: "g.ask"});
+    assert.strictEqual(findV(asking, function (n) { return n.a["class"] === "deck-confirm"; }).length, 1);
+    var cell = findV(asking, function (n) { return /is-confirming/.test(n.a["class"] || ""); });
+    assert.strictEqual(cell.length, 1, "the asking button's cell spans the full row");
+    var offline = display.renderTree(groupTree(items), {connection: "connecting", collapsed: {}});
+    assert.strictEqual(byAction(offline, "g.busy")[0].p.disabled, true);
+});
+
+test("group keys: titles identify groups, repeated titles stay distinct", function () {
+    var v = display.renderTree(groupTree([
+        {kind: "group", title: "Same", items: [btn("k.a")]},
+        {kind: "group", title: "Same", items: [btn("k.b")]},
+        {kind: "group", title: "Other", items: [btn("k.c")]}
+    ]), CONNECTED);
+    var body = findV(v, function (n) { return n.a["class"] === "deck-section-body"; })[0];
+    assert.deepStrictEqual(body.c.map(function (n) { return n.k; }), ["g:Same", "g:Same#2", "g:Other"]);
+});
+
+test("ids inside groups reconcile across re-renders", function () {
+    function build(layout) {
+        return groupTree(layout);
+    }
+    var inputNode = {kind: "input", id: "q.search", label: "Search", value: "", placeholder: "Type", submit_label: "Go"};
+    var first = display.renderTree(build([
+        {kind: "group", title: "Timeline", columns: 2, items: [btn("t.one"), btn("t.two")]},
+        {kind: "group", title: "Find", columns: 2, items: [inputNode, btn("q.go"), btn("q.more")]}
+    ]), CONNECTED);
+    var doc = fakeDocument();
+    var container = doc.createElement("div");
+    display.applyOps(container, display.diff(null, first));
+    var input = find(container, function (n) { return n.attributes["data-action"] === "q.search"; });
+    var go = find(container, function (n) { return n.attributes["data-action"] === "q.go"; });
+    var two = find(container, function (n) { return n.attributes["data-action"] === "t.two"; });
+    assert.ok(input && go && two);
+    input.value = "typed";
+
+    // A group is inserted before, a button joins the first group, one button of the second is removed.
+    var second = display.renderTree(build([
+        {kind: "group", title: "New", columns: 2, items: [btn("n.one")]},
+        {kind: "group", title: "Timeline", columns: 2, items: [btn("t.one"), btn("t.two"), btn("t.three")]},
+        {kind: "group", title: "Find", columns: 2, items: [inputNode, btn("q.go")]}
+    ]), CONNECTED);
+    display.applyOps(container, display.diff(first, second));
+    assert.strictEqual(find(container, function (n) { return n.attributes["data-action"] === "q.search"; }), input);
+    assert.strictEqual(input.value, "typed", "the user's text survives");
+    assert.strictEqual(find(container, function (n) { return n.attributes["data-action"] === "q.go"; }), go);
+    assert.strictEqual(find(container, function (n) { return n.attributes["data-action"] === "t.two"; }), two);
+    assert.strictEqual(find(container, function (n) { return n.attributes["data-action"] === "q.more"; }), null);
+    assert.ok(find(container, function (n) { return n.attributes["data-action"] === "t.three"; }));
+    var titles = [];
+    find(container, function (n) {
+        if (n.attributes["class"] === "deck-group-title") {
+            titles.push(n.textContent);
+        }
+        return false;
+    });
+    assert.deepStrictEqual(titles, ["New", "Timeline", "Find"]);
+
+    // The patched DOM equals a fresh render of the same tree.
+    function serialise(node) {
+        return {t: node.tagName, a: node.attributes, x: node.childNodes.length ? null : node._text, c: node.childNodes.map(serialise)};
+    }
+    var fresh = doc.createElement("div");
+    display.applyOps(fresh, display.diff(null, second));
+    assert.deepStrictEqual(serialise(container), serialise(fresh));
+});
+
 test("empty list, toast and connection notices", function () {
     var tree = sampleTree();
     tree.sections[0].items = [{kind: "list", id: "l", rows: [], empty: "No results"}];
@@ -381,13 +503,30 @@ test("empty list, toast and connection notices", function () {
     assert.strictEqual(findV(noExe, function (n) { return n.x === "Start PremiereDeck.exe to connect"; }).length, 1);
 });
 
-test("themeVars follows Premiere's brightness", function () {
-    var dark = display.themeVars({panelBackgroundColor: {color: {red: 29, green: 29, blue: 29}}});
-    assert.strictEqual(dark["--deck-bg"], "rgb(29, 29, 29)");
-    assert.strictEqual(dark["--deck-text"], "#d6d6d6");
-    var light = display.themeVars({panelBackgroundColor: {color: {red: 230, green: 230, blue: 230}}});
-    assert.strictEqual(light["--deck-text"], "#222222");
-    assert.strictEqual(display.themeVars(null), null);
+test("the panel is always dark: no theme code follows Premiere's skin", function () {
+    assert.strictEqual(display.themeVars, undefined);
+    var css = fs.readFileSync(path.join(PANEL, "css", "panel.css"), "utf8");
+    assert.ok(/--deck-bg-top:\s*#05030c/i.test(css) && /--deck-bg-mid:\s*#0f0922/i.test(css) && /--deck-bg-bottom:\s*#1c103e/i.test(css));
+    assert.ok(!/@import|url\(["']?https?:/.test(css), "no imported or remote styles");
+});
+
+test("header and sections render as pills and cards", function () {
+    var v = display.renderTree(sampleTree(), CONNECTED);
+    var header = findV(v, function (n) { return n.t === "header"; })[0];
+    assert.strictEqual(findV(header, function (n) { return /deck-glyph/.test(n.a["class"] || ""); }).length, 1);
+    var pill = findV(header, function (n) { return /deck-pill/.test(n.a["class"] || ""); })[0];
+    assert.ok(/tone-ok/.test(pill.a["class"]));
+    assert.strictEqual(findV(pill, function (n) { return n.a["class"] === "deck-dot"; }).length, 1);
+    var head = findV(v, function (n) { return n.a["data-section"] === "files"; })[0];
+    assert.deepStrictEqual(head.c.map(function (n) { return n.k; }), ["title", "status", "chevron"]);
+    assert.strictEqual(head.a["aria-expanded"], "true");
+    var collapsed = findV(v, function (n) { return n.a["data-section"] === "actions"; })[0];
+    assert.strictEqual(collapsed.a["aria-expanded"], "false");
+    assert.deepStrictEqual(collapsed.c.map(function (n) { return n.k; }), ["title", "chevron"]);
+});
+
+test("common.isDevBrowser is false under Node and inside CEP", function () {
+    assert.strictEqual(common.isDevBrowser(), false);
 });
 
 // --- display.js: diff and applyOps ----------------------------------------------------------------------------

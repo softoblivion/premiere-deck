@@ -110,7 +110,34 @@
         if (!cs || typeof root.SystemPath === "undefined") {
             return "";
         }
-        return cs.getSystemPath(root.SystemPath.EXTENSION);
+        try {
+            return cs.getSystemPath(root.SystemPath.EXTENSION);
+        } catch (e) {
+            return "";
+        }
+    }
+
+    // Development outside Premiere: the page is opened over http(s) (e.g. `python -m http.server` in the panel
+    // folder) and CEP's bridge object is missing. deck.json is then fetched next to the page instead of being read
+    // through window.cep.fs. Inside Premiere (file: page, __adobe_cep__ present) nothing of this runs.
+    function isDevBrowser() {
+        return typeof root.__adobe_cep__ === "undefined" && !!root.location &&
+            (root.location.protocol === "http:" || root.location.protocol === "https:") && typeof root.fetch === "function";
+    }
+
+    var devDeck = null;
+
+    // Fetches deck.json beside index.html; calls back with the parsed deck or null.
+    function fetchDevDeck(done) {
+        root.fetch("deck.json", {cache: "no-store"}).then(function (response) {
+            return response.ok ? response.text() : null;
+        }).then(function (text) {
+            devDeck = text === null ? null : parseDeckJson(text);
+            done(devDeck);
+        }, function () {
+            devDeck = null;
+            done(null);
+        });
     }
 
     function readText(path) {
@@ -133,6 +160,9 @@
     }
 
     function readDeck() {
+        if (isDevBrowser()) {
+            return devDeck;
+        }
         var text = readText(joinPath(extensionDir(), "deck.json"));
         return text === null ? null : parseDeckJson(text);
     }
@@ -191,6 +221,7 @@
         this.timer = null;
         this.logBuffer = [];
         this.stopped = false;
+        this.fetching = false;
     }
 
     DeckClient.prototype.setState = function (state, info) {
@@ -249,10 +280,24 @@
 
     DeckClient.prototype.attempt = function () {
         var self = this;
-        if (this.stopped || this.socket) {
+        if (this.stopped || this.socket || this.fetching) {
             return;
         }
-        var deck = readDeck();
+        if (isDevBrowser()) {
+            this.fetching = true;
+            fetchDevDeck(function (deck) {
+                self.fetching = false;
+                if (!self.stopped && !self.socket) {
+                    self.connect(deck);
+                }
+            });
+            return;
+        }
+        this.connect(readDeck());
+    };
+
+    DeckClient.prototype.connect = function (deck) {
+        var self = this;
         this.deck = deck;
         if (!deck) {
             this.scheduleRetry();
@@ -424,6 +469,7 @@
         joinPath: joinPath,
         helloMessage: helloMessage,
         csInterface: csInterface,
+        isDevBrowser: isDevBrowser,
         extensionDir: extensionDir,
         readText: readText,
         readDeck: readDeck,

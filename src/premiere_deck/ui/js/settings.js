@@ -1,16 +1,60 @@
-// Settings page (docs/HOST_UI.md 3.5): Premiere Pro executable, panel status and repair, ffmpeg,
-// data folder, behaviour, theme, update rows, About.
+// Settings sheet (docs/HOST_UI.md 3.5): opened from the gear in the title bar, grows out of it (kit Overlay).
+// Groups: Premiere, Panel, Tools, Data, Behaviour, Appearance, Updates, About. Every change is saved at
+// once through set_settings (or the panel / ffmpeg calls); a refusal restores the control and shows a toast.
 
-import { Switch } from '../../vendor/liquid_ui/js/controls.js';
-import { gel } from '../../vendor/liquid_ui/js/glass.js';
-import { applyTheme, mountThemeControl } from '../../vendor/liquid_ui/js/theme.js';
-import { toast } from '../../vendor/liquid_ui/js/toast.js';
-import { call } from '../api.js';
-import { store, notify, watch } from '../store.js';
-import { askConfirm } from '../confirm.js';
-import { h, failToast } from '../ui.js';
+import { Switch } from '../vendor/liquid_ui/js/controls.js';
+import { gel } from '../vendor/liquid_ui/js/glass.js';
+import { Overlay } from '../vendor/liquid_ui/js/overlay.js';
+import { applyTheme, mountThemeControl } from '../vendor/liquid_ui/js/theme.js';
+import { toast } from '../vendor/liquid_ui/js/toast.js';
+import { call } from './api.js';
+import { store, notify, watch } from './store.js';
+import { icon } from './icons.js';
+import { askConfirm } from './confirm.js';
+import { h, failToast } from './ui.js';
 
 const REPO_URL = 'https://github.com/softoblivion/premiere-deck';
+
+let overlay = null;
+let gear = null;
+let built = false;
+
+/** Open the sheet from the gear (no-op while open). */
+export function openSettings() {
+  if (!overlay) return;
+  refresh();
+  overlay.show(gear);
+}
+
+export function closeSettings() {
+  if (overlay) overlay.close();
+}
+
+/** Fresh values from the shell; the cards repaint through the store watchers. */
+function refresh() {
+  call('panel_status').then((r) => { if (r) { store.panel = r; notify('panel', r); } }).catch(() => {});
+  call('ffmpeg_status').then((r) => { if (r) { store.ffmpeg = r; notify('ffmpeg', r); } }).catch(() => {});
+  call('get_settings').then((r) => { if (r) { store.settings = r; notify('settings', r); } }).catch(() => {});
+}
+
+/**
+ * Wire the gear and build the sheet.
+ * @param {{update: object|null}} o  the kit update control (its `mountSettings` fills the Updates card)
+ */
+export function initSettings({ update }) {
+  if (built) return;
+  built = true;
+  const sheet = document.getElementById('settings-sheet');
+  gear = document.getElementById('btn-settings');
+  overlay = new Overlay(sheet, { modal: true, preset: 'sheet' });
+  build(sheet.querySelector('.ov-content'), update);
+  gear.addEventListener('click', () => {
+    if (overlay.open) overlay.close();
+    else openSettings();
+  });
+}
+
+// ---- small builders -------------------------------------------------------------------------------
 
 function button(label, { cls = '', onClick, disabled = false, title = null } = {}) {
   const b = h('button', `btn btn-s ${cls}`.trim(), { type: 'button', disabled, title }, h('span', '', { text: label }));
@@ -35,12 +79,16 @@ function button(label, { cls = '', onClick, disabled = false, title = null } = {
 
 function row(label, small, ctl, cls = '') {
   return h('div', `set-row ${cls}`.trim(), null,
-    h('div', 'set-label', null, h('span', '', { text: label }), small == null ? null : (small.nodeType ? small : h('small', '', { text: small }))),
+    h('div', 'set-label', null, h('span', '', { text: label }), small == null ? null : h('small', '', { text: small })),
     ctl ? h('div', 'set-ctl', null, ctl) : null);
 }
 
-function colRow(label, body, hint) {
-  return h('div', 'set-row set-row-col', null, h('div', 'set-label', null, h('span', '', { text: label })), body, hint ? h('div', 'set-hint', { text: hint }) : null);
+/** A stacked row: label (and optional controls) on top, a wide body below, an optional hint. */
+function colRow(label, body, { ctl = null, hint = null } = {}) {
+  return h('div', 'set-row set-row-col', null,
+    h('div', 'set-top', null, h('div', 'set-label', null, h('span', '', { text: label })), ctl ? h('div', 'set-ctl', null, ctl) : null),
+    body,
+    hint ? h('div', 'set-hint', { text: hint }) : null);
 }
 
 function group(title, card) {
@@ -50,25 +98,39 @@ function group(title, card) {
 /** Replace the rows of a card; null entries are skipped. */
 const fill = (card, ...kids) => card.replaceChildren(...kids.filter(Boolean));
 
-const mono = (text, title) => h('span', 'path-text mono', { text: text || '—', title: title || text || null });
+const mono = (text, title) => h('span', 'mono', { text: text || '—', title: title || text || null });
+const path = (text) => h('span', 'path-text', { text: text || '—', title: text || null });
 
-export function mountSettings(host, { update }) {
-  const offs = [];
+// ---- the sheet ------------------------------------------------------------------------------------
+
+function build(content, update) {
   const controls = [];
   const inflight = new Map();
 
   const cardPremiere = h('div', 'set-card');
   const cardPanel = h('div', 'set-card');
-  const cardFfmpeg = h('div', 'set-card');
-  const cardApp = h('div', 'set-card');
+  const cardTools = h('div', 'set-card');
+  const cardData = h('div', 'set-card');
+  const cardBehaviour = h('div', 'set-card');
   const cardTheme = h('div', 'set-card');
   const cardUpdates = h('div', 'set-card');
   const cardAbout = h('div', 'set-card');
 
-  const left = h('div', 'set-col', null, group('Premiere Pro', cardPremiere), group('Panel', cardPanel), group('ffmpeg', cardFfmpeg));
-  const right = h('div', 'set-col', null, group('Application', cardApp), group('Appearance', cardTheme), group('Updates', cardUpdates), group('About', cardAbout));
-  const root = h('div', 'settings', null, left, right);
-  host.append(root);
+  const closeBtn = h('button', 'icon-btn sheet-x', { type: 'button', 'aria-label': 'Close settings', html: icon('x') });
+  gel(closeBtn);
+  closeBtn.addEventListener('click', () => overlay.close());
+
+  content.replaceChildren(
+    h('header', 'sheet-head', null, h('h2', '', { id: 'settings-title', text: 'Settings' }), closeBtn),
+    h('div', 'sheet-scroll', null,
+      group('Premiere', cardPremiere),
+      group('Panel', cardPanel),
+      group('Tools', cardTools),
+      group('Data', cardData),
+      group('Behaviour', cardBehaviour),
+      group('Appearance', cardTheme),
+      group('Updates', cardUpdates),
+      group('About', cardAbout)));
 
   async function save(key, patch, revert) {
     inflight.set(key, (inflight.get(key) || 0) + 1);
@@ -99,7 +161,7 @@ export function mountSettings(host, { update }) {
     } catch { /* keep the previous state */ }
   }
 
-  // ---- Premiere Pro ---------------------------------------------------------------------------
+  // ---- Premiere -----------------------------------------------------------------------------------
 
   function paintPremiere() {
     const p = store.premiere || {};
@@ -107,33 +169,33 @@ export function mountSettings(host, { update }) {
     const auto = s.premiere_exe === 'auto' || !s.premiere_exe;
     const inst = (p.installs || []).find((i) => i.exe === p.exe);
     const version = (inst && inst.version) || p.premiere_version || null;
-    fill(cardPremiere, 
-      colRow('Executable', mono(p.exe || 'Not found', p.exe || ''), auto ? 'Detected automatically' : 'Chosen manually'),
-      row('Version', null, mono(version || '—')),
-      row('Location', null, h('div', 'set-btns', null,
-        button('Choose file', {
-          onClick: async () => {
-            try {
-              const r = await call('pick_premiere_exe');
-              if (r) {
-                store.settings = r;
-                notify('settings', r);
-                await refreshPremiere();
-              }
-            } catch (err) {
-              failToast(err);
+    const btns = h('div', 'set-btns', null,
+      button('Choose file', {
+        onClick: async () => {
+          try {
+            const r = await call('pick_premiere_exe');
+            if (r) {
+              store.settings = r;
+              notify('settings', r);
+              await refreshPremiere();
             }
-          },
-        }),
-        button('Use detected', {
-          disabled: auto,
-          onClick: async () => {
-            if (await save('premiere_exe', { premiere_exe: 'auto' })) await refreshPremiere();
-          },
-        }))));
+          } catch (err) {
+            failToast(err);
+          }
+        },
+      }),
+      button('Use detected', {
+        disabled: auto,
+        onClick: async () => {
+          if (await save('premiere_exe', { premiere_exe: 'auto' })) await refreshPremiere();
+        },
+      }));
+    fill(cardPremiere,
+      colRow('Executable', path(p.exe || 'Not found'), { ctl: btns, hint: auto ? 'Detected automatically' : 'Chosen manually' }),
+      row('Version', null, mono(version || '—')));
   }
 
-  // ---- Panel ----------------------------------------------------------------------------------
+  // ---- Panel --------------------------------------------------------------------------------------
 
   function paintPanel() {
     const ps = store.panel;
@@ -152,23 +214,24 @@ export function mountSettings(host, { update }) {
     const debugState = enabled.length ? `On · ${enabled.join(', ')}` : 'Off';
     const debugNote = enabled.length && !written.length ? 'Set outside Premiere Deck' : written.length ? `Written by Premiere Deck: ${written.join(', ')}` : null;
 
-    fill(cardPanel, 
+    const debugCtl = written.length ? button('Turn off', {
+      onClick: async () => {
+        try {
+          const r = await call('panel_debug_mode', false);
+          store.panel = { ...store.panel, debug_mode: r };
+          notify('panel', store.panel);
+          toast('success', 'Debug mode is off.');
+        } catch (err) {
+          failToast(err);
+        }
+      },
+    }) : null;
+
+    fill(cardPanel,
       row('Installed version', null, installedCtl),
       row('Bundled version', null, mono(ps.bundled_version ? `v${ps.bundled_version}` : '—')),
-      colRow('Target folder', mono(ps.target, ps.target), ps.junction ? 'Linked to a source folder (development). Premiere Deck does not overwrite it.' : null),
-      colRow('Extension debug mode', h('div', 'set-btns set-btns-start', null, h('span', 'mono', { text: debugState }),
-        written.length ? button('Turn off', {
-          onClick: async () => {
-            try {
-              const r = await call('panel_debug_mode', false);
-              store.panel = { ...store.panel, debug_mode: r };
-              notify('panel', store.panel);
-              toast('success', 'Debug mode is off.');
-            } catch (err) {
-              failToast(err);
-            }
-          },
-        }) : null), debugNote),
+      colRow('Target folder', path(ps.target), { hint: ps.junction ? 'Linked to a source folder (development). Premiere Deck does not overwrite it.' : null }),
+      row('Extension debug mode', debugNote, h('div', 'set-btns', null, mono(debugState), debugCtl)),
       h('div', 'set-row set-actions', null,
         button('Reinstall', {
           onClick: async () => {
@@ -214,18 +277,18 @@ export function mountSettings(host, { update }) {
       lastMsg ? h('div', 'set-row', null, h('div', 'set-hint', { text: lastMsg })) : null);
   }
 
-  // ---- ffmpeg ---------------------------------------------------------------------------------
+  // ---- Tools (ffmpeg) -----------------------------------------------------------------------------
 
-  function paintFfmpeg() {
+  function paintTools() {
     const f = store.ffmpeg;
     if (!f) {
-      fill(cardFfmpeg, row('Status', 'Reading the ffmpeg status', null));
+      fill(cardTools, row('ffmpeg', 'Reading the ffmpeg status', null));
       return;
     }
     const ready = f.state === 'ready';
     const src = f.source === 'bin' ? 'Bundled with the app' : f.source === 'path' ? 'Found on the system path' : '—';
-    fill(cardFfmpeg, 
-      row('Status', ready ? null : 'Needed for thumbnails and the AI search index', h('div', 'set-btns', null,
+    fill(cardTools,
+      row('ffmpeg', ready ? null : 'Needed for thumbnails and the AI search index', h('div', 'set-btns', null,
         h('span', `badge ${ready ? 't-ok' : 't-warn'}`, { text: ready ? 'Ready' : 'Missing' }),
         ready ? null : button('Download', {
           onClick: async () => {
@@ -241,31 +304,33 @@ export function mountSettings(host, { update }) {
           },
         }))),
       ready ? row('Source', src, mono(f.version ? `v${f.version}` : '—')) : null,
-      ready ? colRow('Path', mono(f.path, f.path)) : null);
+      ready ? colRow('Path', path(f.path)) : null);
   }
 
-  // ---- Application, theme, updates, about -----------------------------------------------------
+  // ---- Data, behaviour, appearance, updates, about ------------------------------------------------
+
+  function paintData() {
+    fill(cardData,
+      colRow('Data folder', path(store.dataDir), {
+        ctl: button('Open', {
+          onClick: async () => {
+            try {
+              await call('open_data_folder');
+            } catch (err) {
+              failToast(err);
+            }
+          },
+        }),
+      }));
+  }
 
   const keepSw = new Switch({
     label: 'Keep running with Premiere',
     checked: !!(store.settings && store.settings.keep_running_with_premiere),
-    onChange: (v) => save('keep', { keep_running_with_premiere: v }, () => keepSw.set(!!store.settings.keep_running_with_premiere)),
+    onChange: (v) => save('keep', { keep_running_with_premiere: v }, () => keepSw.set(!!(store.settings && store.settings.keep_running_with_premiere))),
   });
   controls.push(keepSw);
-
-  function paintApp() {
-    fill(cardApp, 
-      colRow('Data folder', h('div', 'path-line', null, mono(store.dataDir, store.dataDir), button('Open', {
-        onClick: async () => {
-          try {
-            await call('open_data_folder');
-          } catch (err) {
-            failToast(err);
-          }
-        },
-      }))),
-      row('Keep running with Premiere', 'Closing the window hides it to the tray while Premiere Pro is running', keepSw.el));
-  }
+  cardBehaviour.append(row('Keep running with Premiere', 'Closing the window hides it to the tray while Premiere Pro is running', keepSw.el));
 
   const theme = mountThemeControl(cardTheme, {
     value: (store.settings && store.settings.theme) || 'nova',
@@ -292,12 +357,13 @@ export function mountSettings(host, { update }) {
       }
     },
   });
+  const aboutVersion = mono(store.version ? `v${store.version}` : '—');
   cardAbout.append(
-    row('Premiere Deck', null, mono(store.version ? `v${store.version}` : '—')),
+    row('Premiere Deck', null, aboutVersion),
     row('Licence', null, mono('GPL-3.0')),
     row('Source code', null, link));
 
-  // ---- wiring ---------------------------------------------------------------------------------
+  // ---- wiring -------------------------------------------------------------------------------------
 
   const syncSettings = (s) => {
     if (!s) return;
@@ -305,26 +371,13 @@ export function mountSettings(host, { update }) {
     if (!busy('theme')) theme.set(s.theme);
     paintPremiere();
   };
-  offs.push(watch('settings', syncSettings));
-  offs.push(watch('premiere', paintPremiere));
-  offs.push(watch('panel', paintPanel));
-  offs.push(watch('ffmpeg', paintFfmpeg));
+  watch('settings', syncSettings);
+  watch('premiere', paintPremiere);
+  watch('panel', paintPanel);
+  watch('ffmpeg', paintTools);
 
   paintPremiere();
   paintPanel();
-  paintFfmpeg();
-  paintApp();
-
-  // Fresh values from the shell.
-  call('panel_status').then((r) => { if (r) { store.panel = r; notify('panel', r); } }).catch(() => {});
-  call('ffmpeg_status').then((r) => { if (r) { store.ffmpeg = r; notify('ffmpeg', r); } }).catch(() => {});
-  call('get_settings').then((r) => { if (r) { store.settings = r; notify('settings', r); } }).catch(() => {});
-
-  return {
-    destroy() {
-      offs.forEach((o) => o && o());
-      controls.forEach((c) => c.destroy && c.destroy());
-      root.remove();
-    },
-  };
+  paintTools();
+  paintData();
 }

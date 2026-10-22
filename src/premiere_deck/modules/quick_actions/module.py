@@ -255,31 +255,16 @@ class QuickActionsModule(Module):
             members = [action for action in visible if action.group == group]
             if not members:
                 continue
-            if nodes:
-                nodes.append(self.divider())
-            nodes.append(self.text(group, small=True))
-            pending: list = []
+            items: list = []
             for action in members:
-                controls = action.controls(self)
-                if controls:
-                    self._flush(nodes, pending)
-                    nodes.extend(self._control_node(action, control) for control in controls)
-                    nodes.append(self._button(action))
-                else:
-                    pending.append(self._button(action))
-                    if len(pending) == 2:
-                        self._flush(nodes, pending)
-            self._flush(nodes, pending)
+                # An action's own controls come right before its button; the display lays buttons out in two
+                # columns and gives every other node the full width.
+                items.extend(self._control_node(action, control) for control in action.controls(self))
+                items.append(self._button(action))
+            nodes.append(self.group(group, items, columns=2))
         if self.last:
             nodes.append(self.text(self.last[1], tone=self.last[0], small=True))
         return nodes
-
-    def _flush(self, nodes: list, pending: list) -> None:
-        if len(pending) == 1:
-            nodes.append(pending[0])
-        elif pending:
-            nodes.append(self.row(list(pending)))
-        pending.clear()
 
     def _button(self, action: Action) -> dict:
         state = action.button(self)

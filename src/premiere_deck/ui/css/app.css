@@ -1,4 +1,4 @@
-/* Premiere Deck host window: rail, pages (Deck, module, Settings), module page blocks, confirm sheet.
+/* Premiere Deck host window: rail, pages (Deck, module), module page blocks, settings sheet, confirm sheet.
    Fixed window 1040 x 680. The material, buttons, controls, overlays, toasts, title bar, theme row and
    scene come from the Liquid UI kit (vendor/liquid_ui/css); every colour here is a kit token, so the
    four themes retint it. Transitions use the kit durations --d-1..--d-4. */
@@ -98,7 +98,6 @@
 
 .rail-item:hover { background: var(--fill-2); color: var(--ink-1); }
 .rail-item.is-current { background: var(--fill-3); color: var(--ink-1); box-shadow: inset 0 0 0 1px var(--accent-ink); }
-.rail-item.is-bottom { margin-top: auto; }
 .rail-item.is-missing { opacity: 0.5; }
 .ri-icon { flex: none; display: grid; place-items: center; }
 .ri-icon .ic { width: 18px; height: 18px; }
@@ -517,18 +516,28 @@ input[type="number"].field::-webkit-inner-spin-button { appearance: none; margin
 .act-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 
 /* ---------------------------------------------------------------------------------------------
-   Settings page */
+   Settings sheet (js/settings.js): the kit provides the frame and rows; only what it lacks is here. */
 
-.settings { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 0 14px; align-items: start; }
-.set-col { min-width: 0; }
-.set-col > .set-group:first-child h3 { margin-top: 2px; }
-.settings .set-group h3 { margin-top: 16px; }
-.path-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: var(--t-mono-s); color: var(--ink-2); --ff-feat: var(--ff-mono); }
-.path-line { display: flex; align-items: center; gap: 10px; }
-.path-line .path-text { flex: 1; }
+.settings-sheet { width: min(600px, calc(100vw - 28px)); }
+.set-top { display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+.set-top .set-label { flex: 1; }
+.path-text {
+  display: block;
+  min-width: 0;
+  padding: 8px 12px;
+  border-radius: 12px;
+  background: var(--well);
+  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font: var(--t-mono-s);
+  color: var(--ink-2);
+  user-select: text;
+  --ff-feat: var(--ff-mono);
+}
 .set-btns { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 .set-actions { flex-wrap: wrap; gap: 8px; }
-.set-btns-start { justify-content: flex-start; }
 .set-label small { overflow-wrap: anywhere; }
 
 .badge {

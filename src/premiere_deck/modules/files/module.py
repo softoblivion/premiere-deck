@@ -1305,6 +1305,15 @@ class FilesModule(Module):
 
     # host window controls ("files.host:<name>") --------------------------------------------------------------
 
+    def on_setting_changed(self, key: str, scope: str, value: Any) -> None:
+        """The host window's Settings card stored a value (docs/MODULES.md 5): `watch` starts or stops the watcher,
+        the other keys are read live."""
+        if scope == "project" and key == "watch" and isinstance(value, bool):
+            with self._lock:
+                state = self._state
+            if state is not None:
+                self._act_watch(state, value, None)
+
     def _host_project_setting(self, state: _State, value, row) -> ActionResult:
         changes = _pairs(value)
         applied = []
@@ -1609,11 +1618,7 @@ class FilesModule(Module):
                                "submit": self.button("pack", "Pack now", busy=self._busy("pack"),
                                                      disabled=self._busy("plan", "collect"),
                                                      confirm=self._pack_question(state))})
-                blocks.append({"type": "form", "id": "project_settings", "title": "Project settings",
-                               "action": self._id("host:project_setting"), "fields": [
-                                   {"key": f.key, "label": f.label, "kind": f.kind, "value": self._proj(f.key),
-                                    "hint": f.hint, "scope": "project"}
-                                   for f in self.settings_schema() if f.scope == "project" and f.key != "pack_zip"]})
+                # The project settings are drawn once by the host window's Settings card (docs/MODULES.md 5).
             blocks.extend(self._layout_blocks(state.layout, state=state))
             return {"title": self.title, "status": status, "blocks": blocks}
 

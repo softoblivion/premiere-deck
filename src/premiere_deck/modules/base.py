@@ -171,6 +171,9 @@ class Module:
     def settings_schema(self) -> list[SettingField]:
         return []
 
+    def on_setting_changed(self, key: str, scope: str, value: Any) -> None:
+        """After the host window stored a `settings_schema()` value (docs/MODULES.md 5): side effects only."""
+
     def section_status(self) -> Optional[dict]:
         return None
 
@@ -204,6 +207,7 @@ class Module:
     progress = staticmethod(P.node_progress)
     row = staticmethod(P.node_row)
     divider = staticmethod(P.node_divider)
+    group = staticmethod(P.node_group)
     list_row = staticmethod(P.list_row)
     status = staticmethod(P.status)
 

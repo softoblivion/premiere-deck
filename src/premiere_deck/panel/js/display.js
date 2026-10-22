@@ -73,18 +73,19 @@
             h("span", "label", {"class": "deck-btn-label"}, null, String(node.label || ""))
         ]);
         var children = [button];
-        if (node.confirm && ctx.local.confirming === confirmKey && !disabled && !node.busy) {
-            var yesAttrs = {"class": "deck-btn tone-accent deck-confirm-yes", "data-confirm-yes": confirmKey, "data-action": node.id};
+        var confirming = !!node.confirm && ctx.local.confirming === confirmKey && !disabled && !node.busy;
+        if (confirming) {
+            var yesAttrs = {"class": "deck-btn tone-accent is-small deck-confirm-yes", "data-confirm-yes": confirmKey, "data-action": node.id};
             if (rowId) {
                 yesAttrs["data-row"] = rowId;
             }
             children.push(h("div", "confirm", {"class": "deck-confirm"}, null, [
                 h("span", "q", {"class": "deck-confirm-text"}, null, String(node.confirm)),
                 h("button", "yes", yesAttrs, {}, "Yes"),
-                h("button", "no", {"class": "deck-btn deck-confirm-no", "data-confirm-no": confirmKey}, {}, "No")
+                h("button", "no", {"class": "deck-btn is-small deck-confirm-no", "data-confirm-no": confirmKey}, {}, "No")
             ]));
         }
-        return h("div", key, {"class": "deck-node deck-node-button"}, null, children);
+        return h("div", key, {"class": cls("deck-node deck-node-button", confirming && "is-confirming")}, null, children);
     }
 
     function toggleNode(node, ctx, key) {
@@ -120,7 +121,7 @@
                 {value: node.value === undefined || node.value === null ? "" : String(node.value), disabled: disabled})
         ];
         if (node.submit_label) {
-            row.push(h("button", "submit", {"class": "deck-btn tone-neutral", "data-submit": node.id}, {disabled: disabled},
+            row.push(h("button", "submit", {"class": "deck-btn tone-accent is-small", "data-submit": node.id}, {disabled: disabled},
                 String(node.submit_label)));
         }
         return h("div", key, hintAttrs(node, {"class": cls("deck-node deck-field", disabled && "is-disabled")}), null, [
@@ -166,7 +167,9 @@
             for (var j = 0; j < buttons.length; j++) {
                 actions.push(buttonNode(buttons[j], ctx, row.id, "a:" + buttons[j].id));
             }
-            children.push(h("div", "r:" + row.id, {"class": cls("deck-list-row", tone(row.tone))}, null, [
+            // A row whose button asks for confirmation wraps, so the question gets the full row width.
+            var asking = !!ctx.local.confirming && String(ctx.local.confirming).split("|")[1] === String(row.id);
+            children.push(h("div", "r:" + row.id, {"class": cls("deck-list-row", tone(row.tone), asking && "is-confirming")}, null, [
                 row.thumb ? h("img", "thumb", {"class": "deck-list-thumb", src: String(row.thumb), alt: ""}, null, "") : null,
                 h("div", "text", {"class": "deck-list-text"}, null, [
                     h("div", "title", {"class": "deck-list-title"}, null, String(row.title || "")),
@@ -179,15 +182,52 @@
         return h("div", key, {"class": "deck-node deck-list", "data-list": node.id}, null, children);
     }
 
+    // A `group` (PROTOCOL 6.1): a caption and its items. With columns 2, every run of consecutive buttons becomes a
+    // two-column grid; any other node takes the full width and ends the run. Items keep their id keys inside the
+    // group, so a focused input or a scrolled list survives a re-render that changes the neighbours.
+    function groupNode(node, ctx, key) {
+        var columns = Number(node.columns) === 2 ? 2 : 1;
+        var items = renderNodes(node.items, ctx);
+        var body = [];
+        var run = [];
+        var flush = function () {
+            if (run.length) {
+                body.push(h("div", "grid:" + run[0].k, {"class": "deck-grid"}, null, run));
+                run = [];
+            }
+        };
+        for (var i = 0; i < items.length; i++) {
+            if (columns === 2 && items[i].a["class"].indexOf("deck-node-button") >= 0) {
+                run.push(items[i]);
+            } else {
+                flush();
+                body.push(items[i]);
+            }
+        }
+        flush();
+        var title = node.title === undefined || node.title === null ? "" : String(node.title);
+        return h("div", key, {"class": cls("deck-node deck-group", columns === 2 && "has-columns")}, null, [
+            title ? h("div", "caption", {"class": "deck-group-title"}, null, title) : null,
+            h("div", "items", {"class": "deck-group-items"}, null, body)
+        ]);
+    }
+
     function renderNodes(nodes, ctx) {
         var out = [];
+        var groupSeen = {};
         for (var i = 0; i < (nodes || []).length; i++) {
             var node = nodes[i];
             if (!node || typeof node !== "object") {
                 continue;
             }
-            // Interactive nodes are keyed by id (they keep focus and scroll); the rest by position and kind.
+            // Interactive nodes are keyed by id (they keep focus and scroll); a group by its title; the rest by
+            // position and kind.
             var key = node.id ? "n:" + node.id : "p:" + i + ":" + node.kind;
+            if (node.kind === "group") {
+                var groupId = "g:" + (node.title === undefined || node.title === null ? "" : String(node.title));
+                groupSeen[groupId] = (groupSeen[groupId] || 0) + 1;
+                key = groupSeen[groupId] > 1 ? groupId + "#" + groupSeen[groupId] : groupId;
+            }
             var vnode = null;
             switch (node.kind) {
             case "button":
@@ -214,6 +254,9 @@
             case "row":
                 vnode = h("div", key, {"class": "deck-node deck-row"}, null, renderNodes(node.items, ctx));
                 break;
+            case "group":
+                vnode = groupNode(node, ctx, key);
+                break;
             case "divider":
                 vnode = h("hr", key, {"class": "deck-divider"}, null, "");
                 break;
@@ -225,6 +268,14 @@
             }
         }
         return out;
+    }
+
+    // A status pill: a dot and a line of text in the tone's colour.
+    function pill(key, extra, status) {
+        return h("span", key, {"class": cls("deck-pill", extra, tone(status.tone))}, null, [
+            h("span", "dot", {"class": "deck-dot"}, null, ""),
+            h("span", "text", {"class": "deck-pill-text"}, null, String(status.text || ""))
+        ]);
     }
 
     function isCollapsed(section, local) {
@@ -269,8 +320,9 @@
         var children = [];
 
         children.push(h("header", "header", {"class": "deck-header"}, null, [
+            h("span", "glyph", {"class": "deck-glyph"}, null, ""),
             h("div", "title", {"class": "deck-title"}, null, String((tree && tree.title) || "Premiere Deck")),
-            h("div", "status", {"class": cls("deck-status", tone(status.tone))}, null, String(status.text || ""))
+            pill("status", "deck-status", status)
         ]));
 
         if (local.connection === "restart_pending") {
@@ -297,11 +349,11 @@
             var section = list[i];
             var collapsed = isCollapsed(section, local);
             sections.push(h("section", "s:" + section.id, {"class": cls("deck-section", collapsed && "is-collapsed")}, null, [
-                h("div", "head", {"class": "deck-section-head", "data-section": section.id}, null, [
-                    h("span", "caret", {"class": "deck-caret"}, null, collapsed ? "▸" : "▾"),
+                h("div", "head", {"class": "deck-section-head", "data-section": section.id, role: "button", tabindex: "0",
+                    "aria-expanded": collapsed ? "false" : "true"}, null, [
                     h("span", "title", {"class": "deck-section-title"}, null, String(section.title || "")),
-                    section.status ? h("span", "status", {"class": cls("deck-section-status", tone(section.status.tone))}, null,
-                        String(section.status.text || "")) : null
+                    section.status ? pill("status", "deck-section-status", section.status) : null,
+                    h("span", "chevron", {"class": "deck-chevron"}, null, "")
                 ]),
                 collapsed ? null : h("div", "body", {"class": "deck-section-body"}, null, renderNodes(section.items, ctx))
             ]));
@@ -537,39 +589,6 @@
         }
     }
 
-    // --- theme -------------------------------------------------------------------------------------------------
-
-    function toCss(color) {
-        if (!color) {
-            return null;
-        }
-        return "rgb(" + Math.round(color.red) + ", " + Math.round(color.green) + ", " + Math.round(color.blue) + ")";
-    }
-
-    // CSS variables from Premiere's skin: background and a text colour derived from its brightness (PANEL 3).
-    function themeVars(skin) {
-        var bg = skin && skin.panelBackgroundColor && skin.panelBackgroundColor.color;
-        if (!bg) {
-            return null;
-        }
-        var luma = 0.299 * bg.red + 0.587 * bg.green + 0.114 * bg.blue;
-        var dark = luma < 128;
-        function shade(delta) {
-            var f = function (v) {
-                return Math.max(0, Math.min(255, Math.round(v + delta)));
-            };
-            return "rgb(" + f(bg.red) + ", " + f(bg.green) + ", " + f(bg.blue) + ")";
-        }
-        return {
-            "--deck-bg": toCss(bg),
-            "--deck-bg-raised": shade(dark ? 14 : -14),
-            "--deck-bg-input": shade(dark ? -10 : 10),
-            "--deck-border": shade(dark ? 32 : -32),
-            "--deck-text": dark ? "#d6d6d6" : "#222222",
-            "--deck-text-dim": dark ? "#9a9a9a" : "#5a5a5a"
-        };
-    }
-
     // --- runtime (CEP or a browser) ----------------------------------------------------------------------------
 
     function Display(container) {
@@ -617,13 +636,6 @@
 
     Display.prototype.start = function () {
         var self = this;
-        this.applyTheme();
-        var cs = this.common.csInterface();
-        if (cs) {
-            cs.addEventListener("com.adobe.csxs.events.ThemeColorChanged", function () {
-                self.applyTheme();
-            });
-        }
         this.client = new this.common.DeckClient({
             role: "display",
             onMessage: function (message) {
@@ -640,20 +652,6 @@
         this.armNoHost();
         this.render();
         this.client.start();
-    };
-
-    Display.prototype.applyTheme = function () {
-        var env = this.common.environment();
-        var vars = themeVars(env.skin);
-        if (!vars) {
-            return;
-        }
-        var style = root.document.documentElement.style;
-        for (var name in vars) {
-            if (vars.hasOwnProperty(name)) {
-                style.setProperty(name, vars[name]);
-            }
-        }
     };
 
     Display.prototype.armNoHost = function () {
@@ -710,7 +708,7 @@
                 var node = nodes[i];
                 if (node.kind === "button" && node.confirm && node.id + (rowId ? "|" + rowId : "") === key && !node.busy && !node.disabled) {
                     found = true;
-                } else if (node.kind === "row") {
+                } else if (node.kind === "row" || node.kind === "group") {
                     visit(node.items, null);
                 } else if (node.kind === "list") {
                     for (var r = 0; r < (node.rows || []).length; r++) {
@@ -768,20 +766,23 @@
     Display.prototype.bindEvents = function () {
         var self = this;
         var box = this.container;
+        var toggleSection = function (el) {
+            var id = el.getAttribute("data-section");
+            var section = self.findSection(id);
+            var now = !isCollapsed(section || {id: id}, self.local);
+            self.local.collapsed[id] = now;
+            try {
+                root.localStorage.setItem(COLLAPSE_KEY + id, now ? "1" : "0");
+            } catch (e) {
+                // Not remembered without storage.
+            }
+            self.render();
+        };
         box.addEventListener("click", function (event) {
             var target = event.target;
             var el;
             if ((el = closest(target, "data-section", box))) {
-                var id = el.getAttribute("data-section");
-                var section = self.findSection(id);
-                var now = !isCollapsed(section || {id: id}, self.local);
-                self.local.collapsed[id] = now;
-                try {
-                    root.localStorage.setItem(COLLAPSE_KEY + id, now ? "1" : "0");
-                } catch (e) {
-                    // Not remembered without storage.
-                }
-                self.render();
+                toggleSection(el);
                 return;
             }
             if ((el = closest(target, "data-start-host", box))) {
@@ -839,6 +840,9 @@
             if (event.key === "Enter" && el.getAttribute && el.getAttribute("data-kind") === "input") {
                 event.preventDefault();
                 self.sendAction(el.getAttribute("data-action"), el.value);
+            } else if ((event.key === "Enter" || event.key === " ") && el.getAttribute && el.hasAttribute("data-section")) {
+                event.preventDefault();
+                toggleSection(el);
             } else if (event.key === "Escape" && self.local.confirming) {
                 self.local.confirming = null;
                 self.render();
@@ -887,7 +891,6 @@
         renderNodes: renderNodes,
         diff: diff,
         applyOps: applyOps,
-        themeVars: themeVars,
         isCollapsed: isCollapsed,
         headerStatus: headerStatus,
         Display: Display
