@@ -936,9 +936,10 @@ class Actions(Base):
     def test_render_host_blocks(self):
         page = self.module.render_host()
         ids = [b["id"] for b in page["blocks"]]
-        for block_id in ("status", "main", "journal", "collect_plan", "pack_options", "project_settings", "layout",
+        for block_id in ("status", "main", "journal", "collect_plan", "pack_options", "layout",
                          "layout_folders", "layout_rules", "overrides"):
             self.assertIn(block_id, ids)
+        self.assertNotIn("project_settings", ids)  # drawn once by the host window's Settings card (MODULES.md 5)
         main = next(b for b in page["blocks"] if b["id"] == "main")
         self.assertIn("files.collect", [b["id"] for b in main["items"]])
         pack = next(b for b in page["blocks"] if b["id"] == "pack_options")

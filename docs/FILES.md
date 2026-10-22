@@ -254,8 +254,10 @@ Block shapes of `BRIDGE_API.md` 5. `{"title": "Files", "status": {...}, "blocks"
 - Set up only: `journal` (table: When, Change, Name, From, To, Status; per-row `undo` for undoable entries; filter
   select `host:journal_op`, search input `host:journal_query`), `collect_plan` (list; with a plan also
   `collect_totals` table per folder and `collect_actions` with `collect_run` / `collect_discard`), `pack_options`
-  (form: `pack_zip` via `host:project_setting`, submit `pack`), `project_settings` (form: `enforce_bins`,
-  `mirror_bins`, `import_exports`, `watch` via `host:project_setting` with `{"key", "value"}`).
+  (form: `pack_zip` via `host:project_setting`, submit `pack`). The project switches (`enforce_bins`,
+  `mirror_bins`, `import_exports`, `watch`) are drawn once by the host window's Settings card from
+  `settings_schema()`; a stored `watch` value reaches `on_setting_changed`, which starts or stops the watcher
+  (`MODULES.md` 5). `host:project_setting` with `{"key", "value"}` stays for the pack form and scripts.
 - `layout` (form: setting-style `layout` select via `host:layout_select`; input node `host:layout_save` with the
   layout JSON text, submit "Save layout": validated, written to `.premiere-deck\layout.json`, `layout` becomes
   `custom`), `layout_folders` (list), `layout_rules` (table: #, Match, Folder), `overrides` (table with per-row

@@ -60,7 +60,13 @@ class Alpha(Module):
         return [SettingField("count", "Count", "int", 3),
                 SettingField("mode", "Mode", "select", "a", options=[{"value": "a", "label": "A"},
                                                                      {"value": "b", "label": "B"}]),
-                SettingField("watch", "Watch", "bool", True, scope="project")]
+                SettingField("watch", "Watch", "bool", True, scope="project"),
+                SettingField("bins", "Bins", "text", "A, B")]
+
+    def on_setting_changed(self, key, scope, value):
+        self._note("setting", key, scope, value)
+        if key == "mode":
+            raise RuntimeError("side effect broke")
 
 
 class Beta(Module):
@@ -237,6 +243,12 @@ class RegistryTests(unittest.TestCase):
         self.assertFalse(fields["watch"]["available"])
         self.assertEqual(self.registry.set_module_setting("alpha", "count", "7"), 7)
         self.assertEqual(self.hosts["alpha"].settings.get("count"), 7)
+        self.assertIn(("setting", "count", "host", 7), self.alpha.calls)  # the hook runs after the store
+        self.assertEqual(self.registry.set_module_setting("alpha", "mode", "b"), "b")  # a raising hook is guarded
+        self.assertEqual(self.hosts["alpha"].settings.get("mode"), "b")
+        self.hosts["alpha"].settings.set("bins", ["A", "B", "C"])  # a list behind a text field is shown joined
+        fields = {f["key"]: f for f in self.registry.module_settings("alpha")["fields"]}
+        self.assertEqual(fields["bins"]["value"], "A, B, C")
         with self.assertRaises(ValueError):
             self.registry.set_module_setting("alpha", "mode", "z")
         with self.assertRaises(ValueError):

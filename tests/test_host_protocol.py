@@ -33,6 +33,19 @@ class TreeValidation(unittest.TestCase):
         with self.assertRaises(P.ProtocolError):
             P.validate_tree(self.tree([{"kind": "text", "text": "x", "tone": "loud"}]))
 
+    def test_group_node(self):
+        group = P.node_group("Timeline", [P.node_button("a.one", "One"), P.node_button("a.two", "Two"),
+                                          P.node_row([P.node_text("x")])], columns=2)
+        P.validate_tree(self.tree([group, P.node_group(None, [])]))
+        with self.assertRaises(P.ProtocolError):  # ids inside a group count
+            P.validate_tree(self.tree([P.node_group("A", [P.node_button("a.one", "One")]), P.node_button("a.one", "Two")]))
+        with self.assertRaises(P.ProtocolError):  # no nesting
+            P.validate_tree(self.tree([P.node_group("A", [P.node_group("B", [])])]))
+        with self.assertRaises(P.ProtocolError):  # columns 1 or 2
+            P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "columns": 3}]))
+        with self.assertRaises(P.ProtocolError):  # title is a string or null
+            P.validate_tree(self.tree([{"kind": "group", "title": 5, "items": []}]))
+
     def test_select_needs_options_and_rows_need_ids(self):
         with self.assertRaises(P.ProtocolError):
             P.validate_tree(self.tree([{"kind": "select", "id": "a.s", "label": "S", "value": "", "options": []}]))

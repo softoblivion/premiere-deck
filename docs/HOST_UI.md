@@ -16,8 +16,11 @@ the kit's title bar, tray icon while Premiere runs. Copy neutral and factual (`_
 
 ## 2. Navigation
 
-Left rail with five entries: Deck, Files, Actions, Search, Settings. The content area shows one page. The version
-pill with the update popover and sheet (kit `update.js`) sits in the title bar.
+Left rail with four entries: Deck, Files, Actions, Search (Deck first, then one entry per module). The content area
+shows one page. The title bar carries the version pill with the update popover and sheet (kit `update.js`) and, in
+the window capsule beside minimize and close, the gear that opens the settings sheet (3.5). The id `settings` is not
+a page: `showPage('settings')`, the `navigate` event with `page: "settings"` and the Deck page's "Open Settings"
+links all open the sheet over the current page.
 
 ## 3. Pages
 
@@ -32,9 +35,12 @@ pill with the update popover and sheet (kit `update.js`) sits in the title bar.
 3.3 **Actions**: the action list with visibility switches and the export presets folder (`QUICK_ACTIONS.md` 2, 3).
 3.4 **Search**: `AI_SEARCH.md` 4: query field, thumbnail grid (4 columns), hit actions, index status and the
     model download card.
-3.5 **Settings**: Premiere executable (auto-detected; override), panel status (installed version, Reinstall,
-    Remove the panel, debug-mode fallback state), ffmpeg status, data folder (Open), "Keep running with Premiere",
-    theme, Updates rows (kit), About (version, licence, GitHub link).
+3.5 **Settings** (a sheet, `ui/js/settings.js`, not a page): the kit's modal sheet (`Overlay`, preset `sheet`) that grows
+    out of the title-bar gear, with kit rows and its own scroll. Groups: Premiere (executable with Choose file / Use
+    detected, version), Panel (installed and bundled version, target folder, debug-mode fallback state, Reinstall,
+    Remove the panel), Tools (ffmpeg status and Download), Data (data folder, Open), Behaviour ("Keep running with
+    Premiere"), Appearance (kit theme row), Updates (kit rows), About (version, licence, GitHub link). Changes are
+    saved at once; a refusal restores the control and shows a toast. The values are refreshed each time the sheet opens.
 
 ## 4. Module pages
 
@@ -63,7 +69,8 @@ is `"auto"` or a path ending in `.exe`; a bad or hand-edited value falls back to
 ## 7. Implementation notes (host worker)
 
 - Rail: Deck, then one entry per module in `order` (taken from `modules()`, so a new module gets its page without a
-  window change; a module missing from the build shows greyed with "Not installed in this build"), then Settings.
+  window change; a module missing from the build shows greyed with "Not installed in this build"); Settings is
+  the title-bar sheet (3.5), not a rail entry.
 - Premiere states on the Deck card come from `PremiereState.state` (`BRIDGE_API.md` 3.2): `not_running`, `starting`
   (host launch or process seen less than 20 s ago), `connected`, `no_panel` (Premiere runs, no agent after 20 s; the
   card then offers the debug-mode fallback once, behind a confirmation).

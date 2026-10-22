@@ -62,6 +62,34 @@ class State:
                     "hellos": list(self.hellos)}
 
 
+def quick_actions_like(model: dict) -> list:
+    """The layout of the Quick actions module: one two-column group per category, an action's select right before
+    its own button, the last result as a small line (docs/QUICK_ACTIONS.md 1)."""
+    def button(action_id: str, label: str, **kw: Any) -> dict:
+        return protocol.node_button(f"demo.qa.{action_id}", label, **kw)
+
+    groups = [
+        ("Timeline", [button("adjustment", "Adjustment layer"), button("gaps", "Remove all gaps"),
+                      button("razor", "Razor all tracks"), button("empty", "Delete empty tracks")]),
+        ("Selection", [button("same", "Select same source"), button("offline", "Select offline clips")]),
+        ("Clips", [button("scale", "Set to frame size"), button("labels", "Colour labels by bin")]),
+        ("Tracks", [button("solo", "Solo audio track"), button("lock", "Lock other tracks", tone="accent")]),
+        ("Project", [button("version", "Save version"), button("consolidate", "Consolidate duplicates"),
+                     button("folder", "Open project folder"), button("reveal", "Reveal clip file")]),
+        ("Sequence", [protocol.node_select("demo.qa.format", "Format", "9x16",
+                                           [{"value": "9x16", "label": "9:16 vertical"},
+                                            {"value": "1x1", "label": "1:1 square"}]),
+                      button("social", "Social copy")]),
+        ("Export", [button("frame", "Export frame", busy=model["busy"]),
+                    protocol.node_select("demo.qa.preset", "Preset", "yt",
+                                         [{"value": "yt", "label": "YouTube 1080p HD"}]),
+                    button("sequence", "Export sequence")]),
+    ]
+    nodes = [protocol.node_group(title, items, columns=2) for title, items in groups]
+    nodes.append(protocol.node_text(f"Last input: {model['last_input'] or 'none'}", small=True))
+    return nodes
+
+
 def sample_ui(model: dict, revision: int) -> dict:
     """A tree with every node kind of PROTOCOL 6.1."""
     rows = [protocol.list_row(row_id, title, subtitle=sub, tone=tone,
@@ -86,10 +114,25 @@ def sample_ui(model: dict, revision: int) -> dict:
         protocol.node_progress(None, "Indeterminate"),
         protocol.node_divider(),
         protocol.node_row([protocol.node_button("demo.row.a", "Row A"), protocol.node_button("demo.row.b", "Row B")]),
+        protocol.node_group("Group, one column", [protocol.node_button("demo.g1.a", "First"),
+                                                  protocol.node_button("demo.g1.b", "Second", tone="ok")]),
+        protocol.node_group("Group, two columns", [
+            protocol.node_button("demo.g2.a", "Accent", tone="accent"),
+            protocol.node_button("demo.g2.b", "Warn", tone="warn"),
+            protocol.node_button("demo.g2.c", "Error", tone="error", confirm="Run the error action?"),
+            protocol.node_button("demo.g2.d", "Ok", tone="ok"),
+            protocol.node_text("A text node breaks the run", small=True),
+            protocol.node_button("demo.g2.e", "Busy", busy=model["busy"]),
+            protocol.node_button("demo.g2.f", "Disabled", disabled=True),
+            protocol.node_button("demo.g2.g", "A label that is much too long to fit one half-width pill"),
+        ], columns=2),
         protocol.node_list("demo.list", rows, empty="No rows"),
     ]
     sections = [
         protocol.section("demo", "Node kinds", controls, status=protocol.status(f"revision {revision}", "ok")),
+        protocol.section("actions", "Quick actions", quick_actions_like(model),
+                         status=protocol.status("Running · Export frame" if model["busy"] else "Ready",
+                                                "accent" if model["busy"] else "neutral")),
         protocol.section("second", "Second section", [protocol.node_text("Collapsed by default")], collapsed=True),
     ]
     return protocol.ui(revision, "Premiere Deck", protocol.status("Connected · dev server", "ok"), sections,

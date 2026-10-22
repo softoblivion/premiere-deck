@@ -116,6 +116,7 @@ everywhere; `tone` is one of `neutral`, `ok`, `warn`, `error`, `accent`):
 | `progress` | `value` (0..1 or null for indeterminate), `label` | progress bar |
 | `list` | `id`, `rows` (`[{"id","title","subtitle","tone","thumb" (data URL or null),"bar" (0..1 or null),"actions":[button nodes]}]`), `empty` (text when no rows) | a list with per-row buttons; a row's button sends its own `id` with `row` = the row id; a numeric `bar` is drawn as a thin bar under the subtitle (the fraction of its track that is filled; `null` or absent draws none) |
 | `row` | `items` (nodes) | nodes side by side |
+| `group` | `title` (string or null), `items` (nodes), `columns` (1 or 2, default 1) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 the display lays consecutive buttons out in two columns (a node that is not a button takes the full width). Groups do not nest |
 | `divider` | | a thin rule |
 
 Action ids are `<module>.<action>` (`files.collect`, `actions.adjustment_layer`); `host.*` ids belong to the

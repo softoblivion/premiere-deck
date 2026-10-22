@@ -36,6 +36,7 @@ create(ctx) -> start() -> [project_opened(project) ... project_closed()]* -> sto
 | `render() -> list[UiNode]` | whenever the host rebuilds the UI tree (after any action, event, job progress or `ctx.ui.invalidate()`) | pure: builds nodes from state, no I/O |
 | `render_host() -> dict | None` | the host window asks for the module's page model (`HOST_UI.md` 4) | pure |
 | `settings_schema() -> list[SettingField]` | the host window builds the module's settings | static |
+| `on_setting_changed(key, scope, value)` | after the host window stored a value of `settings_schema()` through the module page's Settings card (`set_module_setting`) | apply side effects only (drop a loaded model, start or stop a watcher); the value is already stored and validated by kind |
 | `stop()` | host shutdown or module disabled | release everything; idempotent |
 
 Exceptions in any hook are caught by the registry, logged under `module.<id>` and shown as a toast "Files: <one
@@ -87,6 +88,13 @@ sentence (`_workspace\CONVENTIONS.md`, UI copy).
 with kinds `bool`, `int`, `text`, `select`, `path`. The host window renders them; values are read with
 `ctx.settings.get` (`scope="host"`) or `ctx.settings.project.get` (`scope="project"`). A module validates on read
 and falls back to the default on a bad value; nothing crashes on a hand-edited file.
+
+The Settings card the host window draws on the module page is the only place where these fields appear: a
+module's `render_host()` must not repeat schema fields in its own `form` blocks (it did in v1.0.0, which showed
+every AI search and Files project setting twice). The card writes through `set_module_setting`, which coerces the
+value by kind (a `text` field stores a string; a module that keeps a list parses it on read, as `exclude_bins`
+does), stores it, calls `on_setting_changed(key, scope, value)` on the module thread and re-renders. A `text`
+value that is stored as a list is shown joined with ", ".
 
 ## 6. Scripts of a module
 

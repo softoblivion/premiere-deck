@@ -42,8 +42,10 @@ Dropped: `nest_selection` (Nest selection). ExtendScript has no Nest command: `s
 creates a separate sequence from the in/out range and leaves the selected clips in place, and neither the DOM nor
 QE offers a call that replaces clips with a nested sequence. Its `input` node is dropped with it.
 
-Rendering: a small text heading per group in the order of the table, a divider between groups; actions without
-controls sit two per `row`; an action's `select` sits right above its own full-width button. A select's choice is
+Rendering: one `group` node per group of the table, in the table's order, titled with the group name and set to
+`columns` 2, so the panel lays the action buttons out in two columns under a small caption. An action's `select` or
+`input` controls sit in the same group right before its own button; the panel gives them the full width and a button
+that follows them starts a new column run (a run of one button is drawn full width). A select's choice is
 remembered (section 3). The last result is shown as a small text line under the groups. Long actions
 (`label_by_bin`, `social_copy`, `export_frame`, `export_sequence`) run as jobs with `busy` on their button, the
 section status "Running · <Label>", and a second press ignored while it runs; their toast arrives through

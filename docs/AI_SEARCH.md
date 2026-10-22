@@ -168,8 +168,9 @@ Host page (`render_host()`): `{"blocks": [...]}` with
   bar, times: [{seconds, label, bar}], actions: [button nodes]}]`.
 - `table` `search.clips` (project open): `columns: [{key, label}]`, `rows: [{id, name, bin, state, tone}]`
   (Indexed / Pending / the failure sentence / "Skipped: <reason>"), at most 500 rows, `empty`.
-- `form` `search.settings`: `action` "search.setting", `fields: [{key, label, kind, value, options, hint,
-  scope}]` (project fields only while a project is open).
+- The settings of section 6 are not part of the page model: the host window draws them once in its Settings
+  card from `settings_schema()` and reports a stored value through `on_setting_changed` (`MODULES.md` 5). The
+  `search.setting` action (`{"key", "value"}`) stays for scripts and tests.
 
 ## 5. Privacy and resources
 

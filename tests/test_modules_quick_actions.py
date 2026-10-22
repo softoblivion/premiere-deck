@@ -37,6 +37,20 @@ ALL_IDS = ("adjustment_layer", "remove_gaps", "razor_all", "delete_empty_tracks"
            "export_sequence")
 
 
+def flat(nodes):
+    """The nodes of a rendered section with the contents of groups and rows spliced in, in order."""
+    out = []
+    for node in nodes:
+        out.append(node)
+        if node.get("kind") in ("group", "row"):
+            out.extend(flat(node["items"]))
+    return out
+
+
+def rendered_button(module, action_id):
+    return next(n for n in flat(module.render()) if n.get("id") == action_id)
+
+
 class QuickActionsCase(unittest.TestCase):
     def setUp(self):
         base = os.environ.get("PREMIERE_DECK_HOME")
@@ -439,7 +453,7 @@ class SequenceAndExport(QuickActionsCase):
         self.module.preset_roots = [empty]
         self.module.refresh_presets()
         self.assertEqual(self.click("export_sequence"), ("warn", "No export presets found"))
-        nodes = {n.get("id"): n for n in self.module.render() if n.get("id")}
+        nodes = {n.get("id"): n for n in flat(self.module.render()) if n.get("id")}
         self.assertTrue(nodes["actions.export_sequence"]["disabled"])
         self.assertTrue(nodes["actions.export_sequence.preset"]["disabled"])
         self.module.section()  # still a valid tree
@@ -478,7 +492,7 @@ class JobsAndRendering(QuickActionsCase):
         host.premiere.eval_results["actions.export_frame"] = {"path": r"D:\f.png"}
         result = module.on_action("actions.export_frame")
         self.assertIsNone(result.toast)
-        button = next(n for n in module.render() if n.get("id") == "actions.export_frame")
+        button = rendered_button(module, "actions.export_frame")
         self.assertTrue(button["busy"])
         self.assertEqual(module.section_status(), {"text": "Running · Export frame", "tone": "accent"})
         self.assertFalse(module.on_action("actions.export_frame").rerender)  # a second press is ignored
@@ -486,7 +500,7 @@ class JobsAndRendering(QuickActionsCase):
         host.jobs.step()
         self.assertEqual(host.ui.toasts, [("ok", "Frame saved · f.png")])
         self.assertGreaterEqual(host.ui.invalidations, 1)
-        button = next(n for n in module.render() if n.get("id") == "actions.export_frame")
+        button = rendered_button(module, "actions.export_frame")
         self.assertFalse(button["busy"])
         self.assertIsNone(module.section_status())
 
@@ -520,25 +534,38 @@ class JobsAndRendering(QuickActionsCase):
 
     def test_render_groups_in_order_and_validates(self):
         section = self.module.section()
-        groups = [n["text"] for n in section["items"] if n["kind"] == "text"]
-        self.assertEqual(groups, ["Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence", "Export"])
-        ids = []
-        for node in section["items"]:
-            for item in node.get("items", [node]):
-                if item.get("id"):
-                    ids.append(item["id"])
-        self.assertEqual(ids.index("actions.social_copy.format") + 1, ids.index("actions.social_copy"))
+        items = section["items"]
+        self.assertTrue(all(n["kind"] == "group" for n in items), "no loose headings, dividers or rows")
+        self.assertEqual([n["title"] for n in items],
+                         ["Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence", "Export"])
+        self.assertEqual([n["columns"] for n in items], [2] * 7)
+        # Membership: every group holds exactly the actions of its group, buttons never wrapped in a row.
+        for group in items:
+            self.assertFalse(any(n["kind"] in ("row", "divider", "group") for n in group["items"]))
+            buttons = [n["id"] for n in group["items"] if n["kind"] == "button"]
+            expected = [f"actions.{aid}" for aid in ALL_IDS if self.module.actions[aid].group == group["title"]]
+            self.assertEqual(buttons, expected, group["title"])
+        # An action's controls sit in its group, directly before its own button.
+        by_title = {n["title"]: [i["id"] for i in n["items"]] for n in items}
+        ids = by_title["Sequence"]
+        self.assertEqual(ids, ["actions.social_copy.format", "actions.social_copy"])
+        ids = by_title["Export"]
         self.assertEqual(ids.index("actions.export_sequence.preset") + 1, ids.index("actions.export_sequence"))
-        self.assertEqual(sorted(i for i in ids if i.count(".") == 1), sorted(f"actions.{a}" for a in ALL_IDS))
+        self.assertEqual(ids, ["actions.export_frame", "actions.export_sequence.preset", "actions.export_sequence"])
+        self.assertEqual({n["kind"] for g in items for n in g["items"] if "." in n["id"].split("actions.", 1)[1]},
+                         {"select"})
+        all_ids = [n["id"] for n in flat(items) if n.get("id")]
+        self.assertEqual(sorted(i for i in all_ids if i.count(".") == 1), sorted(f"actions.{a}" for a in ALL_IDS))
 
     def test_render_with_hidden_actions(self):
         host, module = self.make(settings={"hidden": ["select_same_source", "select_offline", "export_frame"]})
         section = module.section()
-        texts = [n["text"] for n in section["items"] if n["kind"] == "text"]
-        self.assertNotIn("Selection", texts)
-        flat = [i.get("id") for n in section["items"] for i in n.get("items", [n])]
-        self.assertNotIn("actions.export_frame", flat)
-        self.assertIn("actions.export_sequence", flat)
+        titles = [n["title"] for n in section["items"] if n["kind"] == "group"]
+        self.assertNotIn("Selection", titles, "a group without visible actions is not rendered")
+        self.assertEqual(titles, ["Timeline", "Clips", "Tracks", "Project", "Sequence", "Export"])
+        ids = [n.get("id") for n in flat(section["items"])]
+        self.assertNotIn("actions.export_frame", ids)
+        self.assertIn("actions.export_sequence", ids)
         module.on_action("actions.host:visible.export_frame", True)
         module.on_action("actions.host:visible.razor_all", False)
         self.assertEqual(host.settings.get("hidden"), ["razor_all", "select_same_source", "select_offline"])

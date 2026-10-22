@@ -957,16 +957,22 @@ class ModuleSettings(ModuleCase):
         m.on_action("search.auto_index", True)
         self.assertIs(self.host.settings.project.get("auto_index"), True)
         self.assertEqual(m.on_action("search.auto_index", "maybe").toast[0], "warn")
-        fields = next(b for b in m.render_host()["blocks"] if b["id"] == "search.settings")["fields"]
-        by_key = {f["key"]: f for f in fields}
-        self.assertEqual(by_key["exclude_bins"]["value"], "Footage")
-        self.assertEqual(by_key["clip_pad"]["value"], "3")
-        self.assertEqual(by_key["step_seconds"]["value"], 5)
+        self.assertEqual(m.setting("exclude_bins"), ["Footage"])
+        self.assertEqual(m.setting("clip_pad"), 3)
+        self.assertEqual(m.setting("step_seconds"), 5)
         self.assertEqual(len(m.settings_schema()), 9)
+        # The page never repeats the schema fields; the host window's Settings card draws them (MODULES.md 5).
+        self.assertNotIn("search.settings", [b["id"] for b in m.render_host()["blocks"]])
+        # Side effects of the host window's Settings card: the hook, with the value already stored.
+        m.ctx.settings.set("provider", "cpu")
+        m.on_setting_changed("provider", "host", "cpu")
+        self.assertIsNone(m.embedder)
+        m.ctx.settings.project.set("exclude_bins", "Footage, Audio")
+        m.on_setting_changed("exclude_bins", "project", "Footage, Audio")
+        self.assertEqual(m.setting("exclude_bins"), ["Footage", "Audio"])
         m.project_closed()
         self.assertEqual(m.on_action("search.setting", {"key": "enabled", "value": True}).toast[0], "warn")
-        self.assertNotIn("enabled", {f["key"] for f in
-                                     next(b for b in m.render_host()["blocks"] if b["id"] == "search.settings")["fields"]})
+        m.on_setting_changed("min_duration", "project", 2)  # no project: nothing to refresh, no error
 
 
 class ModuleActions(ModuleCase):

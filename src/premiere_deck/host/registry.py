@@ -447,6 +447,8 @@ class Registry:
                         value = store.get(f.key, f.default) if available else f.default
                     except Exception:  # noqa: BLE001
                         value = f.default
+                    if f.kind == "text" and isinstance(value, (list, tuple)):
+                        value = ", ".join(str(v) for v in value)
                     fields.append({"key": f.key, "label": f.label, "kind": f.kind, "default": f.default,
                                    "options": f.options, "hint": f.hint, "scope": f.scope, "value": value,
                                    "available": available})
@@ -471,6 +473,7 @@ class Registry:
                 module.ctx.settings.project.set(key, stored)
             else:
                 module.ctx.settings.set(key, stored)
+            self._guard(entry, f"on_setting_changed({key})", lambda: module.on_setting_changed(key, scope, stored))
             self.invalidate()
             return stored
 

@@ -248,6 +248,11 @@ def node_divider() -> dict:
     return {"kind": "divider"}
 
 
+def node_group(title: Optional[str], items: list, *, columns: int = 1) -> dict:
+    """A titled block inside a section (docs/PROTOCOL.md 6.1); `columns` 2 lays consecutive buttons out in pairs."""
+    return {"kind": "group", "title": title, "items": items, "columns": columns}
+
+
 def section(id: str, title: str, items: list, *, status: Optional[dict] = None, collapsed: bool = False) -> dict:
     return {"id": id, "title": title, "collapsed": bool(collapsed), "status": status, "items": items}
 
@@ -259,7 +264,7 @@ def status(text: str, tone: str = "neutral") -> dict:
 
 # --- validation ------------------------------------------------------------------------------------------------
 
-_NODE_KINDS = {"button", "toggle", "select", "input", "text", "progress", "list", "row", "divider"}
+_NODE_KINDS = {"button", "toggle", "select", "input", "text", "progress", "list", "row", "group", "divider"}
 _INTERACTIVE = {"button", "toggle", "select", "input", "list"}
 
 
@@ -323,6 +328,16 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
                         _check_tone(action["tone"])
         if kind == "row":
             _validate_nodes(node.get("items", []), seen)
+        if kind == "group":
+            title = node.get("title")
+            if title is not None and not isinstance(title, str):
+                raise ProtocolError("a group title is a string or null")
+            if node.get("columns", 1) not in (1, 2):
+                raise ProtocolError("group columns is 1 or 2")
+            items = node.get("items", [])
+            if any(isinstance(item, dict) and item.get("kind") == "group" for item in items if isinstance(items, list)):
+                raise ProtocolError("groups do not nest")
+            _validate_nodes(items, seen)
 
 
 def _unique(seen: set, key: str) -> None:

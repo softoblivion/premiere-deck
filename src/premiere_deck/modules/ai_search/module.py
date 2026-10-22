@@ -840,8 +840,7 @@ class AiSearchModule(Module):
             })
         if self._project is not None and self._catalog is not None:
             blocks.append(self._clips_table())
-        blocks.append({"type": "form", "id": "search.settings", "action": "search.setting",
-                       "fields": self._settings_fields()})
+        # The settings fields are drawn once by the host window's Settings card (docs/MODULES.md 5).
         return {"blocks": blocks}
 
     def _model_card(self, state: str) -> dict:
@@ -904,18 +903,9 @@ class AiSearchModule(Module):
                             {"key": "state", "label": "Index"}],
                 "rows": rows, "empty": "No video clips in this project"}
 
-    def _settings_fields(self) -> list[dict]:
-        fields = []
-        for f in self.settings_schema():
-            if f.scope == "project" and self._project is None:
-                continue
-            value = self.setting(f.key)
-            if f.key == "exclude_bins":
-                value = ", ".join(value)
-            elif f.key == "clip_pad":
-                value = f"{value:g}"
-            elif isinstance(value, float) and value.is_integer():
-                value = int(value)
-            fields.append({"key": f.key, "label": f.label, "kind": f.kind, "value": value, "options": f.options,
-                           "hint": f.hint, "scope": f.scope})
-        return fields
+    def on_setting_changed(self, key: str, scope: str, value: Any) -> None:
+        """The host window's Settings card stored a value (docs/MODULES.md 5): same side effects as the action."""
+        if key == "provider":
+            self._reset_embedder()
+        elif key in ("exclude_bins", "min_duration") and self._project is not None:
+            self._refresh_items()

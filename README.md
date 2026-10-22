@@ -19,6 +19,8 @@
 
 <img src="docs/assets/screenshot.png" alt="Premiere Deck main window" width="860">
 
+<img src="docs/assets/settings.png" alt="Premiere Deck settings sheet opened from the gear in the title bar" width="860">
+
 <sub>Launch Premiere Pro from the Deck · let Files sort the project media · run quick actions and AI search from the panel.</sub>
 
 </div>
@@ -105,7 +107,7 @@ Closing the window hides the app to the tray while Premiere runs; it exits when 
 
 ## Settings
 
-On the **Settings** page of the window:
+In the **Settings** sheet (the gear in the title bar):
 
 | Setting | Meaning |
 |---|---|
