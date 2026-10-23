@@ -3,6 +3,11 @@
 `name` patterns are case-insensitive regular expressions searched in the file stem, anchored at the start of a word:
 "vo" matches "VO_take2" and "client vo" but not "devoted". A word starts after anything that is not a letter, so
 "_", "-", digits and spaces all separate words.
+
+`source` and `audio_class` compare against the classifier's fields (docs/FILES.md 3.8). The classifier is run
+lazily: `classify(..., enrich=fn)` calls `fn(info)` once, when the evaluation first reaches a rule with one of those
+fields whose other fields match, so an override, an earlier name rule or a rule of another kind never pays for the
+audio model.
 """
 
 from __future__ import annotations
@@ -13,13 +18,14 @@ import re
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import PurePath
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 from premiere_deck.core.media import KIND_AUDIO, KIND_IMAGE, KIND_VIDEO, MediaInfo, kind_from_extension
 
-from .layout import Layout, clean_folder, norm
+from .layout import Layout, clean_folder, is_under, norm
 
 _INLINE_FLAGS = re.compile(r"^\(\?[aiLmsux]+\)")
+CLASSIFIER_KEYS = ("source", "audio_class")
 
 
 @dataclass(frozen=True)
@@ -33,10 +39,12 @@ class Override:
 class Decision:
     folder: str
     reason: str  # "override: ..." / "rule 3" / "fallback"
+    info: Optional[MediaInfo] = None  # the MediaInfo the decision was made on (enriched when a classifier rule ran)
 
 
-def parse_overrides(value: object) -> list[Override]:
-    """`modules.files.overrides` of project.json; bad entries are skipped (docs/MODULES.md 5)."""
+def parse_overrides(value: object, media_dir: Optional[str] = None) -> list[Override]:
+    """`modules.files.overrides` of project.json; bad entries are skipped (docs/MODULES.md 5), and so is an entry
+    whose target is the Sync folder `media_dir` or lies below it (docs/FILES.md 2)."""
     if not isinstance(value, list):
         return []
     out: list[Override] = []
@@ -46,7 +54,7 @@ def parse_overrides(value: object) -> list[Override]:
         to = clean_folder(entry.get("to"))
         source = entry.get("source")
         name = entry.get("name")
-        if to is None:
+        if to is None or (media_dir and is_under(to, media_dir)):
             continue
         if isinstance(source, str) and source.strip():
             out.append(Override(to=to, source=source.strip()))
@@ -77,7 +85,14 @@ def effective(info: MediaInfo) -> dict:
     has_audio = info.has_audio if info.has_audio is not None else kind == KIND_AUDIO
     ext = (info.ext or PurePath(info.path).suffix.lstrip(".")).lower()
     return {"kind": kind, "alpha": bool(info.alpha), "ext": ext, "duration": info.duration,
-            "has_video": bool(has_video), "has_audio": bool(has_audio), "stem": PurePath(info.path).stem}
+            "has_video": bool(has_video), "has_audio": bool(has_audio), "stem": PurePath(info.path).stem,
+            "source": info.source, "audio_class": info.audio_class}
+
+
+def _one_of(expected, actual) -> bool:
+    if actual is None:
+        return False  # an unknown class matches no value
+    return actual in expected if isinstance(expected, (list, tuple)) else actual == expected
 
 
 def rule_matches(match: dict, info: MediaInfo, values: Optional[dict] = None) -> bool:
@@ -99,6 +114,8 @@ def rule_matches(match: dict, info: MediaInfo, values: Optional[dict] = None) ->
             return False
         if key == "max_duration" and (v["duration"] is None or v["duration"] > expected):
             return False
+        if key in CLASSIFIER_KEYS and not _one_of(expected, v[key]):
+            return False
     return True
 
 
@@ -112,18 +129,35 @@ def override_matches(override: Override, source_path: str) -> bool:
     return False
 
 
+def matching_override(overrides: Sequence[Override], source_path: str) -> Optional[Override]:
+    return next((o for o in overrides if override_matches(o, source_path)), None)
+
+
 def classify(info: MediaInfo, layout: Layout, overrides: Sequence[Override] = (),
-             source_path: Optional[str] = None) -> Decision:
+             source_path: Optional[str] = None,
+             enrich: Optional[Callable[[MediaInfo], MediaInfo]] = None) -> Decision:
     source = source_path or info.path
-    for override in overrides:
-        if override_matches(override, source):
-            return Decision(override.to, f"override: {override.source or override.name}")
+    override = matching_override(overrides, source)
+    if override is not None:
+        return Decision(override.to, f"override: {override.source or override.name}", info)
     values = effective(info)
+    enriched = enrich is None
     for index, rule in enumerate(layout.rules, start=1):
+        needs = [key for key in CLASSIFIER_KEYS if key in rule.match]
+        if not enriched and needs:
+            plain = {key: value for key, value in rule.match.items() if key not in CLASSIFIER_KEYS}
+            if not rule_matches(plain, info, values):
+                continue  # the other fields already fail: no need to classify for this rule
+            enriched = True
+            try:
+                info = enrich(info)
+            except Exception:  # noqa: BLE001 - a classifier failure leaves the fields None (docs/FILES.md 3.8)
+                pass
+            values = effective(info)
         if rule_matches(rule.match, info, values):
-            return Decision(rule.to, f"rule {index}")
-    return Decision(layout.fallback_folder, "fallback")
+            return Decision(rule.to, f"rule {index}", info)
+    return Decision(layout.fallback_folder, "fallback", info)
 
 
-__all__ = ["Decision", "Override", "classify", "effective", "name_matches", "override_matches",
-           "parse_overrides", "rule_matches"]
+__all__ = ["CLASSIFIER_KEYS", "Decision", "Override", "classify", "effective", "matching_override",
+           "name_matches", "override_matches", "parse_overrides", "rule_matches"]

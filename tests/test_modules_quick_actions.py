@@ -12,6 +12,7 @@ from premiere_deck.host import protocol as P
 from premiere_deck.modules.base import FakeHost
 from premiere_deck.modules.quick_actions import presets as presets_mod
 from premiere_deck.modules.quick_actions.action import JSX_DIR, error_sentence, safe_file_stem, script_text, timecode
+from premiere_deck.modules.quick_actions.actions.duplicate_sequence import next_sequence_name
 from premiere_deck.modules.quick_actions.actions.label_by_bin import plan_labels
 from premiere_deck.modules.quick_actions.actions.save_version import next_version_path, version_folder
 from premiere_deck.modules.quick_actions.actions.social_copy import target_size
@@ -24,17 +25,29 @@ SEQUENCE = SequenceInfo("seq1", "Spring", 1920, 1080, 25.0, 60.0)
 V1 = TrackItem("seq1", "video", 0, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True)
 A2 = TrackItem("seq1", "audio", 1, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True)
 
-NEEDS_SEQUENCE = ("adjustment_layer", "remove_gaps", "razor_all", "delete_empty_tracks", "select_same_source",
-                  "select_offline", "scale_to_frame", "solo_track", "lock_others", "reveal_clip", "social_copy",
-                  "export_frame", "export_sequence")
+NEEDS_SEQUENCE = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
+                  "select_offline", "scale_to_frame", "solo_track", "lock_others", "reveal_clip", "duplicate_sequence",
+                  "social_copy", "export_frame", "export_sequence")
 NEEDS_SELECTION = ("select_same_source", "scale_to_frame", "solo_track", "lock_others", "reveal_clip")
-SCRIPTED = ("adjustment_layer", "remove_gaps", "razor_all", "delete_empty_tracks", "select_same_source",
-            "select_offline", "scale_to_frame", "solo_track", "lock_others", "consolidate_duplicates", "social_copy",
-            "export_frame", "export_sequence")
-ALL_IDS = ("adjustment_layer", "remove_gaps", "razor_all", "delete_empty_tracks", "select_same_source",
+SCRIPTED = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
+            "select_offline", "scale_to_frame", "solo_track", "lock_others", "consolidate_duplicates",
+            "duplicate_sequence", "social_copy", "export_frame", "export_sequence")
+ALL_IDS = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
            "select_offline", "scale_to_frame", "label_by_bin", "solo_track", "lock_others", "save_version",
-           "consolidate_duplicates", "open_project_folder", "reveal_clip", "social_copy", "export_frame",
-           "export_sequence")
+           "consolidate_duplicates", "open_project_folder", "reveal_clip", "duplicate_sequence", "social_copy",
+           "export_frame", "export_sequence")
+# docs/QUICK_ACTIONS.md 1: id -> (icon, short)
+TILES = {
+    "adjustment_layer": ("adjustment-layer", "Adjustment layer"), "razor_all": ("razor-all", "Razor all"),
+    "delete_empty_tracks": ("delete-empty-tracks", "Empty tracks"),
+    "select_same_source": ("select-same-source", "Same source"), "select_offline": ("select-offline", "Offline clips"),
+    "scale_to_frame": ("scale-to-frame", "Frame size"), "label_by_bin": ("label-by-bin", "Label by bin"),
+    "solo_track": ("solo-track", "Solo track"), "lock_others": ("lock-others", "Lock others"),
+    "save_version": ("save-version", "Save version"), "consolidate_duplicates": ("consolidate", "Consolidate"),
+    "open_project_folder": ("open-folder", "Project folder"), "reveal_clip": ("reveal-clip", "Reveal clip"),
+    "duplicate_sequence": ("duplicate-sequence", "Duplicate"), "social_copy": ("social-copy", "Social copy"),
+    "export_frame": ("export-frame", "Export frame"), "export_sequence": ("export-sequence", "Export"),
+}
 
 
 def flat(nodes):
@@ -79,13 +92,20 @@ class QuickActionsCase(unittest.TestCase):
         return host, module
 
     def click(self, action_id, module=None, host=None, value=None):
+        """Presses a tile; returns the reported (outcome, text) and keeps its detail in `self.detail`. A press never
+        sends a toast (docs/MODULES.md 4)."""
         module = module or self.module
         host = host or self.host
-        before = len(host.ui.toasts)
+        results, toasts = len(host.ui.results), len(host.ui.toasts)
         result = module.on_action(f"actions.{action_id}", value)
-        if result is not None and result.toast:
-            return result.toast
-        return host.ui.toasts[-1] if len(host.ui.toasts) > before else None
+        self.assertTrue(result is None or not result.toast, "a press reports through ctx.ui.result, not a toast")
+        self.assertEqual(len(host.ui.toasts), toasts)
+        self.detail = None
+        if len(host.ui.results) == results:
+            return None
+        button_id, outcome, text, self.detail = host.ui.results[-1]
+        self.assertEqual(button_id, action_id)
+        return outcome, text
 
     def evals(self, host=None, name=None):
         calls = (host or self.host).premiere.calls_named("eval")
@@ -138,7 +158,8 @@ class ScriptErrors(QuickActionsCase):
                 label = module.actions[action_id].label
                 with self.assertLogs("module.actions.test", level="WARNING"):
                     toast = self.click(action_id, module, host)
-                self.assertEqual(toast, ("error", f"{label} failed: No free video track above the selection."))
+                self.assertEqual(toast, ("error", f"{label} failed"))
+                self.assertEqual(self.detail, "No free video track above the selection.")
 
     def test_raw_errors_are_not_shown(self):
         for action_id in SCRIPTED:
@@ -148,21 +169,24 @@ class ScriptErrors(QuickActionsCase):
                 label = module.actions[action_id].label
                 with self.assertLogs("module.actions.test", level="WARNING"):
                     toast = self.click(action_id, module, host)
-                self.assertEqual(toast, ("error", f"{label} failed: Premiere reported a script error."))
+                self.assertEqual(toast, ("error", f"{label} failed"))
+                self.assertEqual(self.detail, "Premiere reported a script error.")
 
     def test_facade_errors_of_host_side_actions(self):
         self.host.premiere.save_project_as = mock.Mock(side_effect=PremiereError("deck: The disk is full."))
         self.host.premiere.snapshot = mock.Mock(side_effect=PremiereError("timeout"))
         with self.assertLogs("module.actions.test", level="WARNING"):
-            self.assertEqual(self.click("save_version"), ("error", "Save version failed: The disk is full."))
-            self.assertEqual(self.click("label_by_bin"),
-                             ("error", "Colour labels by bin failed: Premiere is waiting for a dialog."))
+            self.assertEqual(self.click("save_version"), ("error", "Save version failed"))
+            self.assertEqual(self.detail, "The disk is full.")
+            self.assertEqual(self.click("label_by_bin"), ("error", "Colour labels by bin failed"))
+            self.assertEqual(self.detail, "Premiere is waiting for a dialog.")
 
     def test_python_bug_becomes_sentence(self):
-        self.host.premiere.eval_results["actions.remove_gaps"] = lambda args: 1 / 0
+        self.host.premiere.eval_results["actions.razor_all"] = lambda args: 1 / 0
         with self.assertLogs("module.actions.test", level="ERROR"):
-            toast = self.click("remove_gaps")
-        self.assertEqual(toast, ("error", "Remove all gaps failed: an internal error occurred. Details are in the log."))
+            toast = self.click("razor_all")
+        self.assertEqual(toast, ("error", "Razor all tracks failed"))
+        self.assertEqual(self.detail, "An internal error occurred. Details are in the log.")
 
     def test_error_sentence(self):
         self.assertEqual(error_sentence("deck: Select a video clip"), "Select a video clip.")
@@ -194,16 +218,11 @@ class TimelineActions(QuickActionsCase):
         self.click("adjustment_layer", module, host)
         self.assertEqual(self.evals(host)[0][1]["min_track"], 0)
 
-    def test_remove_gaps(self):
-        results = self.host.premiere.eval_results
-        results["actions.remove_gaps"] = {"closed": 4, "blocked": 0, "removed": 7.2}
-        self.assertEqual(self.click("remove_gaps"), ("ok", "Removed 4 gaps · 00:00:07"))
-        results["actions.remove_gaps"] = {"closed": 1, "blocked": 2, "removed": 1}
-        self.assertEqual(self.click("remove_gaps"), ("ok", "Removed 1 gap · 00:00:01 · 2 kept by a locked track"))
-        results["actions.remove_gaps"] = {"closed": 0, "blocked": 0, "removed": 0}
-        self.assertEqual(self.click("remove_gaps"), ("neutral", "No gaps found"))
-        results["actions.remove_gaps"] = {"closed": 0, "blocked": 1, "removed": 0}
-        self.assertEqual(self.click("remove_gaps")[0], "warn")
+    def test_remove_gaps_is_gone(self):
+        self.assertNotIn("remove_gaps", self.module.actions)
+        self.assertFalse((JSX_DIR / "remove_gaps.jsx").exists())
+        self.assertEqual(self.module.on_action("actions.remove_gaps").toast[0], "warn")  # an unknown id
+        self.assertEqual(self.host.premiere.calls_named("eval"), [])
 
     def test_razor_all(self):
         results = self.host.premiere.eval_results
@@ -213,9 +232,12 @@ class TimelineActions(QuickActionsCase):
         self.assertEqual(self.click("razor_all"), ("ok", "Cut 2 tracks at 00:00:01 · 1 locked track skipped"))
         results["actions.razor_all"] = {"cuts": 0, "locked": 0, "failed": 0, "seconds": 1}
         self.assertEqual(self.click("razor_all"), ("neutral", "No clip under the playhead"))
+        results["actions.razor_all"] = {"cuts": 0, "locked": 2, "failed": 0, "seconds": 1}
+        self.assertEqual(self.click("razor_all"), ("warn", "Nothing cut"))
+        self.assertEqual(self.detail, "The clips under the playhead are on locked tracks.")
         results["actions.razor_all"] = {"cuts": 0, "locked": 0, "failed": 2, "seconds": 1}
-        self.assertEqual(self.click("razor_all"),
-                         ("error", "Razor all tracks failed: Premiere did not cut at the playhead."))
+        self.assertEqual(self.click("razor_all"), ("error", "Razor all tracks failed"))
+        self.assertEqual(self.detail, "Premiere did not cut at the playhead.")
 
     def test_delete_empty_tracks(self):
         results = self.host.premiere.eval_results
@@ -390,6 +412,32 @@ class ProjectActions(QuickActionsCase):
 
 
 class SequenceAndExport(QuickActionsCase):
+    def test_duplicate_sequence_naming(self):
+        self.assertEqual(next_sequence_name("Spring", ["Spring"]), "Spring v2")
+        self.assertEqual(next_sequence_name("Spring v2", ["Spring", "Spring v2"]), "Spring v3")
+        self.assertEqual(next_sequence_name("Spring v2", ["Spring", "Spring v2", "Spring v3"]), "Spring v4")
+        self.assertEqual(next_sequence_name("Spring", ["Spring", "Spring v2", "SPRING V3"]), "Spring v4")
+        self.assertEqual(next_sequence_name("Spring v9", ["Spring v9"]), "Spring v10")
+        self.assertEqual(next_sequence_name("Spring v007", []), "Spring v8")
+        self.assertEqual(next_sequence_name("Mix v", []), "Mix v v2")
+        self.assertEqual(next_sequence_name("v2", []), "v2 v2")
+        self.assertEqual(next_sequence_name(" v2", []), " v2 v2")
+        self.assertEqual(next_sequence_name("Take 2", ["Take 2 v2"]), "Take 2 v3")
+
+    def test_duplicate_sequence(self):
+        pr = self.host.premiere
+        pr.sequences_value = [SEQUENCE, SequenceInfo("seq9", "Spring v2", 1920, 1080, 25.0, 10.0)]
+        pr.eval_results["actions.duplicate_sequence"] = lambda a: {"name": a["name"], "sequence_id": "seq10"}
+        self.assertEqual(self.click("duplicate_sequence"), ("ok", "Duplicated as Spring v3"))
+        (name, args, timeout), = self.evals()
+        self.assertEqual((name, args), ("actions.duplicate_sequence", {"sequence_id": "seq1", "name": "Spring v3"}))
+
+    def test_duplicate_sequence_script_finds_the_copy_and_keeps_the_original_active(self):
+        code = (JSX_DIR / "duplicate_sequence.jsx").read_text(encoding="utf-8")
+        for fragment in ("seq.clone()", "before[String(seqs[i].sequenceID)]", "copy.name = __args.name",
+                         "app.project.openSequence(seq.sequenceID)"):
+            self.assertIn(fragment, code)
+
     def test_social_copy_arguments(self):
         self.host.premiere.eval_results["actions.social_copy"] = lambda a: {
             "name": a["name"], "sequence_id": "seq2", "width": a["width"], "height": a["height"]}
@@ -398,7 +446,10 @@ class SequenceAndExport(QuickActionsCase):
         self.assertEqual(args, {"sequence_id": "seq1", "numerator": 9, "denominator": 16, "motion": "default",
                                 "name": "Spring 9x16", "width": 1080, "height": 1920})
         self.assertGreaterEqual(timeout, 600000)
-        self.module.on_action("actions.social_copy.format", "4x5")
+        results = len(self.host.ui.results)
+        self.assertIsNone(self.module.on_action("actions.social_copy.format", "4x5"))  # a pick runs nothing
+        self.assertEqual(len(self.host.ui.results), results)
+        self.assertEqual(len(self.evals()), 1)
         self.assertEqual(self.click("social_copy"), ("ok", "Created Spring 4x5 · 1080x1350"))
         self.module.on_action("actions.social_copy.format", "16x9")  # not an option: ignored
         self.assertEqual(self.module.choice(self.module.actions["social_copy"], "format"), "4x5")
@@ -421,6 +472,9 @@ class SequenceAndExport(QuickActionsCase):
         self.host.premiere.eval_results["actions.export_frame"] = {"path": out, "timecode": "00:00:12:05"}
         self.assertEqual(self.click("export_frame"), ("ok", "Frame saved · Spring_00-00-12-05.png"))
         self.assertEqual(self.evals()[0][1], {"out_dir": str(frames), "base_name": "Spring"})
+        self.host.premiere.eval_results["actions.export_frame"] = {}
+        self.assertEqual(self.click("export_frame"), ("error", "Export frame failed"))
+        self.assertEqual(self.detail, "Premiere wrote no frame file.")
         self.assertTrue(frames.is_dir())
         self.assertEqual(self.host.host.revealed, [out])
 
@@ -439,7 +493,9 @@ class SequenceAndExport(QuickActionsCase):
         self.assertEqual(args["out_dir"], str(Path(self.host.project.root) / "Exports"))
         self.assertEqual((args["sequence_id"], args["base_name"], args["in_to_out"]), ("seq1", "Spring", False))
         self.assertGreaterEqual(timeout, 60000)
+        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "YT 1080p")
         self.module.on_action("actions.export_sequence.preset", "tiktok_9x16")
+        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "TT 9:16")
         host_seq = SequenceInfo("seq1", "Spring", 1080, 1920, 25.0, 60.0, in_point=2.0, out_point=10.0)
         self.host.premiere.active_sequence_value = host_seq
         self.click("export_sequence")
@@ -455,7 +511,7 @@ class SequenceAndExport(QuickActionsCase):
         self.assertEqual(self.click("export_sequence"), ("warn", "No export presets found"))
         nodes = {n.get("id"): n for n in flat(self.module.render()) if n.get("id")}
         self.assertTrue(nodes["actions.export_sequence"]["disabled"])
-        self.assertTrue(nodes["actions.export_sequence.preset"]["disabled"])
+        self.assertNotIn("menu", nodes["actions.export_sequence"])
         self.module.section()  # still a valid tree
 
     def test_user_and_shipped_presets(self):
@@ -473,6 +529,7 @@ class SequenceAndExport(QuickActionsCase):
         result = self.module.on_action("actions.host:refresh_presets")
         self.assertEqual(result.toast, ("neutral", "5 export presets found"))
         self.module.on_action("actions.export_sequence.preset", "user:ProRes 422")
+        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "ProRes 4")
         self.host.premiere.eval_results["actions.export_sequence"] = {"path": r"D:\Spring.mov"}
         self.assertEqual(self.click("export_sequence"), ("ok", "Queued in Media Encoder · Spring.mov"))
         self.assertEqual(self.evals()[-1][1]["preset"], str(user / "ProRes 422.epr"))
@@ -492,13 +549,15 @@ class JobsAndRendering(QuickActionsCase):
         host.premiere.eval_results["actions.export_frame"] = {"path": r"D:\f.png"}
         result = module.on_action("actions.export_frame")
         self.assertIsNone(result.toast)
+        self.assertEqual(host.ui.results, [], "the result comes when the job ends")
         button = rendered_button(module, "actions.export_frame")
         self.assertTrue(button["busy"])
         self.assertEqual(module.section_status(), {"text": "Running · Export frame", "tone": "accent"})
         self.assertFalse(module.on_action("actions.export_frame").rerender)  # a second press is ignored
         self.assertEqual(len(host.jobs.jobs), 1)
         host.jobs.step()
-        self.assertEqual(host.ui.toasts, [("ok", "Frame saved · f.png")])
+        self.assertEqual(host.ui.results, [("export_frame", "ok", "Frame saved · f.png", None)])
+        self.assertEqual(host.ui.toasts, [])
         self.assertGreaterEqual(host.ui.invalidations, 1)
         button = rendered_button(module, "actions.export_frame")
         self.assertFalse(button["busy"])
@@ -534,28 +593,52 @@ class JobsAndRendering(QuickActionsCase):
 
     def test_render_groups_in_order_and_validates(self):
         section = self.module.section()
+        self.assertEqual(section["icon"], "actions")
         items = section["items"]
         self.assertTrue(all(n["kind"] == "group" for n in items), "no loose headings, dividers or rows")
         self.assertEqual([n["title"] for n in items],
                          ["Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence", "Export"])
-        self.assertEqual([n["columns"] for n in items], [2] * 7)
-        # Membership: every group holds exactly the actions of its group, buttons never wrapped in a row.
+        self.assertEqual([n["id"] for n in items],
+                         [f"actions.{t}" for t in ("timeline", "selection", "clips", "tracks", "project", "sequence",
+                                                   "export")])
+        self.assertTrue(all(n["tiles"] and n["collapsible"] and n["columns"] == 3 for n in items))
+        # Membership: every group holds exactly the actions of its group, in table order, as plain buttons.
         for group in items:
-            self.assertFalse(any(n["kind"] in ("row", "divider", "group") for n in group["items"]))
-            buttons = [n["id"] for n in group["items"] if n["kind"] == "button"]
+            self.assertTrue(all(n["kind"] == "button" for n in group["items"]))
+            buttons = [n["id"] for n in group["items"]]
             expected = [f"actions.{aid}" for aid in ALL_IDS if self.module.actions[aid].group == group["title"]]
             self.assertEqual(buttons, expected, group["title"])
-        # An action's controls sit in its group, directly before its own button.
-        by_title = {n["title"]: [i["id"] for i in n["items"]] for n in items}
-        ids = by_title["Sequence"]
-        self.assertEqual(ids, ["actions.social_copy.format", "actions.social_copy"])
-        ids = by_title["Export"]
-        self.assertEqual(ids.index("actions.export_sequence.preset") + 1, ids.index("actions.export_sequence"))
-        self.assertEqual(ids, ["actions.export_frame", "actions.export_sequence.preset", "actions.export_sequence"])
-        self.assertEqual({n["kind"] for g in items for n in g["items"] if "." in n["id"].split("actions.", 1)[1]},
-                         {"select"})
         all_ids = [n["id"] for n in flat(items) if n.get("id")]
-        self.assertEqual(sorted(i for i in all_ids if i.count(".") == 1), sorted(f"actions.{a}" for a in ALL_IDS))
+        self.assertEqual(sorted(i for i in all_ids if i.count(".") == 1 and not i.startswith("actions.t")
+                                and i.split(".")[1] in ALL_IDS), sorted(f"actions.{a}" for a in ALL_IDS))
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+
+    def test_every_action_declares_icon_and_short(self):
+        for action_id, (icon, short) in TILES.items():
+            with self.subTest(action_id):
+                node = rendered_button(self.module, f"actions.{action_id}")
+                self.assertEqual((node["icon"], node["short"]), (icon, short))
+                self.assertLessEqual(len(node["short"]), P.SHORT_MAX)
+                self.assertTrue(node["label"] and node["hint"])
+        self.assertEqual(set(TILES) | {"duplicate_sequence"}, set(ALL_IDS))
+
+    def test_choices_are_menus_on_the_tile(self):
+        social = rendered_button(self.module, "actions.social_copy")
+        self.assertEqual(social["menu"], {"id": "actions.social_copy.format", "value": "9x16", "badge": "9:16",
+                                          "options": [{"value": "9x16", "label": "9:16"},
+                                                      {"value": "1x1", "label": "1:1"},
+                                                      {"value": "4x5", "label": "4:5"}]})
+        export = rendered_button(self.module, "actions.export_sequence")
+        self.assertEqual(export["menu"]["id"], "actions.export_sequence.preset")
+        self.assertEqual(export["menu"]["badge"], "YT 1080p")
+        self.assertEqual([o["value"] for o in export["menu"]["options"]],
+                         ["youtube_1080p", "instagram_9x16", "tiktok_9x16", "match_h264"])
+        self.assertLessEqual(max(len(o) for o in (social["menu"]["badge"], export["menu"]["badge"])), 8)
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("kind") in ("select", "input")], [])
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("menu")],
+                         ["actions.social_copy", "actions.export_sequence"])
+        self.module.on_action("actions.social_copy.format", "1x1")
+        self.assertEqual(rendered_button(self.module, "actions.social_copy")["menu"]["badge"], "1:1")
 
     def test_render_with_hidden_actions(self):
         host, module = self.make(settings={"hidden": ["select_same_source", "select_offline", "export_frame"]})
@@ -577,21 +660,20 @@ class JobsAndRendering(QuickActionsCase):
         self.assertIn("hidden", nodes[0]["text"])
 
     def test_settings_fallback_on_broken_values(self):
-        for hidden, choices in (("oops", "bad"), ([1, None, "remove_gaps", "gone"], {"social_copy.format": 5}),
+        for hidden, choices in (("oops", "bad"), ([1, None, "razor_all", "gone"], {"social_copy.format": 5}),
                                 ({"x": 1}, {"export_sequence.preset": "missing"}), (None, None)):
             with self.subTest(hidden=hidden, choices=choices):
                 host, module = self.make(settings={"hidden": hidden, "choices": choices})
                 module.section()
-                expected = {"remove_gaps"} if isinstance(hidden, list) else set()
+                expected = {"razor_all"} if isinstance(hidden, list) else set()
                 self.assertEqual(module.hidden_ids(), expected)
                 self.assertEqual(module.choice(module.actions["social_copy"], "format"), "9x16")
                 self.assertEqual(module.choice(module.actions["export_sequence"], "preset"), "youtube_1080p")
 
-    def test_last_result_is_rendered(self):
+    def test_the_module_renders_no_result_line(self):
         self.host.premiere.eval_results["actions.select_offline"] = {"count": 0}
-        self.click("select_offline")
-        last = self.module.render()[-1]
-        self.assertEqual((last["kind"], last["text"], last["tone"]), ("text", "No offline clips", "neutral"))
+        self.assertEqual(self.click("select_offline"), ("neutral", "No offline clips"))
+        self.assertTrue(all(n["kind"] == "group" for n in self.module.render()), "the panel keeps the result line")
 
     def test_render_host_page(self):
         page = self.module.render_host()
@@ -616,6 +698,8 @@ class JobsAndRendering(QuickActionsCase):
                 self.assertTrue(action.hint.endswith("."))
                 self.assertNotIn("!", action.hint + action.label)
                 self.assertTrue(action.feasibility)
+                self.assertTrue(action.icon and action.short)
+                self.assertLessEqual(len(action.short), P.SHORT_MAX)
                 self.assertIn(action.group, ("Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence",
                                              "Export"))
 

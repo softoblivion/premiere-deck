@@ -1,6 +1,6 @@
 """The Files journal: `<root>\\.premiere-deck\\journal.jsonl` (docs/FILES.md 5.2, 3.6).
 
-Append-only. The first line of an entry carries all its fields; later lines with the same `id` carry only the
+Append-only (the one exception is `drop`, the clean-up of docs/FILES.md 3.2). The first line of an entry carries all its fields; later lines with the same `id` carry only the
 fields that changed (usually `status`) and are folded over the entry when read, so a crash never leaves a
 half-rewritten file. A line that is not a JSON object (hand edit, torn write) is skipped.
 
@@ -24,8 +24,13 @@ FAILED = "failed"
 UNDONE = "undone"
 STATUSES = (PENDING, DONE, FAILED, UNDONE)
 
-# Operations (docs/FILES.md 3). `removed` (an offline item removed from the project) cannot be undone.
+# Operations (docs/FILES.md 3). `removed`, `setup` and `zipped` cannot be undone; `collected` and `packed` are 1.x
+# ops that stay readable (a `collected` entry is undone like `filed`).
 OP_FILED = "filed"
+OP_SORTED = "sorted"
+OP_SYNCED = "synced"
+OP_ZIPPED = "zipped"
+OP_SETUP = "setup"
 OP_COLLECTED = "collected"
 OP_BINNED = "binned"
 OP_IMPORTED = "imported"
@@ -33,7 +38,10 @@ OP_RENAMED = "renamed"
 OP_MOVED_DISK = "moved_disk"
 OP_MOVED_BIN = "moved_bin"
 OP_REMOVED = "removed"
-UNDOABLE = (OP_FILED, OP_COLLECTED, OP_BINNED, OP_IMPORTED, OP_RENAMED, OP_MOVED_DISK, OP_MOVED_BIN)
+UNDOABLE = (OP_FILED, OP_SORTED, OP_SYNCED, OP_COLLECTED, OP_BINNED, OP_IMPORTED, OP_RENAMED, OP_MOVED_DISK,
+            OP_MOVED_BIN)
+# Ops whose pending entry is a copy or a move of one file (recovery on project open, docs/FILES.md 5.2).
+FILE_OPS = (OP_FILED, OP_SORTED, OP_SYNCED, OP_COLLECTED, OP_MOVED_BIN)
 
 FIELDS = ("id", "at", "op", "node_id", "name", "from", "to", "bin_from", "bin_to", "hash", "copied", "status",
           "undo_of")
@@ -165,6 +173,38 @@ class Journal:
 
     def mark_failed(self, entry_id: str, error: str, **changes) -> dict:
         return self.update(entry_id, status=FAILED, error=error, **changes)
+
+    def drop(self, entry_ids: Iterable[str]) -> int:
+        """Rewrite the file once without every line of the given entries (atomic replace through core/paths).
+        Other lines are kept verbatim. Returns the number of entries dropped; nothing is written when none match."""
+        from premiere_deck.core.paths import atomic_write_text
+
+        ids = set(entry_ids)
+        if not ids:
+            return 0
+        with self._lock:
+            self._load()
+            present = ids & set(self._entries)
+            if not present:
+                return 0
+            kept: list[str] = []
+            with open(self.path, "r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    text = line.rstrip("\r\n")
+                    if not text.strip():
+                        continue
+                    try:
+                        record = json.loads(text)
+                    except ValueError:
+                        kept.append(text)
+                        continue
+                    if isinstance(record, dict) and record.get("id") in present:
+                        continue
+                    kept.append(text)
+            atomic_write_text(self.path, "".join(line + "\n" for line in kept))
+            self._loaded_size = -1
+            self._load()
+        return len(present)
 
     def module_copy_hash(self, path: str, norm) -> Optional[str]:
         """The content hash recorded when the module itself created the file at `path` (a copy it made), or None

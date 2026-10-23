@@ -2,7 +2,7 @@
 
 Owner: integrator. Every function of Premiere Deck is a module: a Python package under `src/premiere_deck/modules/<name>/`
 with a `module.py` that defines one subclass of `Module` (`src/premiere_deck/modules/base.py`). The host discovers
-modules from the registry list (`host/registry.py`, `MODULES = ["files", "quick_actions", "ai_search"]`), creates
+modules from the registry list (`host/registry.py`, `MODULES = ["files", "quick_actions"]`), creates
 them at start and routes everything by the module `id`. A module never imports another module; shared needs go
 through `HostServices`.
 
@@ -11,9 +11,10 @@ through `HostServices`.
 ```python
 class FilesModule(Module):
     id = "files"                      # prefix of every action id and setting key; folder name
-    title = "Files"                   # section title in the panel and the host window
+    title = "Files"                   # tab title in the panel and the host window
+    icon = "folder"                   # symbol name of the panel sprite for the tab (PANEL.md 1); None = no icon
     description = "Keeps project media sorted on disk and in bins."
-    order = 10                        # section order in the panel (lower first)
+    order = 10                        # tab order in the panel and the host window (lower first)
     events = ["project.opened", "project.closed", "project.items_added", "project.changed"]
     requires = []                     # host capabilities: "ffprobe", "ffmpeg", "gpu" (informational, shown when missing)
     default_enabled = True            # a disabled module is created but never started
@@ -54,23 +55,29 @@ this with a thread check).
 | Attribute | Type | Purpose |
 |---|---|---|
 | `ctx.premiere` | `PremiereApi` (`PREMIERE_API.md`) | typed operations in Premiere and `eval(name, code, args)` for module jsx |
-| `ctx.jobs` | `JobRunner` | `submit(fn, *, title, on_progress=None, on_done=None, on_error=None) -> Job`; `Job.cancel()`, `Job.progress(value, label)` from inside; `running()` lists the module's own queued and running jobs; `high_priority_running() -> bool` is true while a job of priority `high` of any module (a Files copy) is queued or running, so low-priority work (AI search indexing) can pause cooperatively; it is false unless such a job exists (`FakeJobs.high_priority` sets it in tests) |
+| `ctx.jobs` | `JobRunner` | `submit(fn, *, title, on_progress=None, on_done=None, on_error=None) -> Job`; `Job.cancel()`, `Job.progress(value, label)` from inside; `running()` lists the module's own queued and running jobs; `high_priority_running() -> bool` is true while a job of priority `high` of any module (a Files copy) is queued or running, so low-priority background work can pause cooperatively; it is false unless such a job exists (`FakeJobs.high_priority` sets it in tests) |
 | `ctx.settings` | `ModuleSettings` | `get(key, default)`, `set(key, value)` for host-level settings (`settings.json` under `modules.<id>`); `project.get/set` for the current project's settings (`<root>\.premiere-deck\project.json` under `modules.<id>`) |
-| `ctx.paths` | `AppPaths` | data folder helpers; `models_dir`, `logs_dir`, `cache_dir(module_id)` |
+| `ctx.paths` | `AppPaths` | data folder helpers; `logs_dir`, `cache_dir(module_id)` |
 | `ctx.tools` | `Tools` | `ffprobe(path) -> MediaInfo`, `ffmpeg(args, ...)`, `has("ffmpeg")`, `ensure("ffmpeg", on_progress)`; `ffmpeg_pipe(args) -> subprocess.Popen` starts ffmpeg (the executable is prepended) for a caller that reads its output: stdout and stderr are pipes, no console window, UTF-8 environment, stdin closed, and the process is registered in a Job Object of the host, so it ends with the host. The caller reads both pipes, waits, and calls `kill()` on a cancel; it raises `FileNotFoundError` when ffmpeg is missing (`FakeTools` records the arguments and returns a Popen of `python -c "pass"`) |
-| `ctx.ui` | `UiPort` | `invalidate()` (re-render soon, coalesced), `toast(tone, text)`, `confirm(question) -> bool` (host window dialog, blocking on a job thread only) |
+| `ctx.ui` | `UiPort` | `invalidate()` (re-render soon, coalesced), `toast(tone, text)`, `result(button_id, outcome, text, detail=None)` (section 4), `confirm(question) -> bool` (host window dialog, blocking on a job thread only) |
 | `ctx.project` | `ProjectInfo | None` | current project: `path`, `root` (project folder), `name`, `deck_dir` (`<root>\.premiere-deck`) |
 | `ctx.log` | `logging.Logger` | `module.<id>` |
-| `ctx.host` | `HostInfo` | `version`, `data_dir`, `open_path(path)`, `reveal(path)`, `open_url(url)` |
+| `ctx.host` | `HostInfo` | `version`, `data_dir`, `open_path(path)`, `reveal(path)`, `open_url(url)`, `show(page=None)` (brings the host window to the front; `page` = this module's id selects its tab, sent as the `navigate` event of `BRIDGE_API.md` 4) |
 | `ctx.events` | `EventBus` | `emit(name, data)` for module-to-host notifications (`journal.appended`, used by the host window) |
 | `ctx.post` | `Callable[[Callable[[], None]], None]` | runs a function on the module thread; the only way for a job, watcher or server thread to touch module state; a module may own a `threading.Timer` (Files coalesces Premiere events this way) as long as its callback goes through `ctx.post` |
 
 ## 4. UI
 
-`render()` returns the nodes of the module's section (`PROTOCOL.md` 6.1). Helpers in `base.py` build nodes:
-`button(id, label, **kw)`, `toggle(id, label, value, **kw)`, `select(...)`, `input(...)`, `text(...)`,
-`progress(...)`, `list_(...)`, `row(...)`, `divider()`. Ids are given without the module prefix; `base.py` adds
-`<id>.` and strips it again before `on_action`. A node id must be stable across renders (the display diffs by it).
+`render()` returns the nodes of the module's section, which the panel shows as the module's tab (`PROTOCOL.md`
+6.1). Helpers in `base.py` build nodes: `button(id, label, **kw)` (keywords include the 2.0 fields `icon`,
+`short`, `meta`, `variant` and `menu=menu(id, value, options, badge)`), `toggle(id, label, value, **kw)`,
+`select(...)`, `input(...)`, `text(...)` (with `chip=True`), `progress(value, label, *, detail=None, cancel=None)`,
+`list_(...)`, `row(...)`, `group(title, items, *, id=None, columns=None, collapsible=False, tiles=False)`,
+`menu(id, value, options, badge)`, `divider()`. A module that sets `icon` (class attribute, a symbol name of the
+panel sprite) gets its tab icon. Ids are given without the module prefix; `base.py` adds `<id>.` (to node ids, menu
+ids, group ids and `cancel`; an id that already carries the prefix is kept) and strips it again before `on_action`.
+A node id must be stable across renders (the display diffs by it). A short label longer than 16 characters is a
+programming error: the builder raises `ProtocolError`.
 Window-only controls (`HOST_UI.md` 4) use ids `host:<name>` after the prefix (`files.host:undo`); the registry
 strips the module prefix, so `on_action` sees `host:undo`. Only the first dot separates the module id, so a name may
 contain dots (`actions.host:visible.<id>` arrives as `host:visible.<id>`); the window may also send the bare
@@ -78,6 +85,21 @@ contain dots (`actions.host:visible.<id>` arrives as `host:visible.<id>`); the w
 
 `ActionResult` (optional return of `on_action`): `toast: tuple[tone, text] | None`, `rerender: bool = True`.
 Returning `None` means "re-render, no toast".
+
+Results: `ctx.ui.result(button_id, outcome, text, detail=None)` reports the outcome of one pressed control.
+`button_id` is the local id of the button (the helper adds the module prefix; a full id with this module's prefix
+is accepted as is); for a menu pick it is the button that carries the menu. `outcome` is `ok`, `warn`, `error` or
+`neutral`; `text` one line ("Adjustment layer added · V3"); `detail` the one-line explanation a failed result
+opens on click, or `None`. The host stamps `at`, sends `action_result` to every display (`PROTOCOL.md` 6.6), sends
+the `result` event to the host window (`BRIDGE_API.md` 4) and records an activity line. Callable from the module
+thread and from a job thread (marshalled like `toast`). Rules:
+
+- A control the user pressed gets exactly one result: at once for a short action, at the end of the job for a long
+  one (the button is `busy` meanwhile; a cancelled job reports `neutral`, "<Label> stopped · ...").
+- A toast is for notices that belong to no press: automatic work (the Files import intercept and watcher), host
+  notices, a precondition found outside an action. A module does not send both a toast and a result for one press.
+- A press that changes nothing reports `neutral` ("No empty tracks" style lines), a precondition or a partial
+  outcome `warn`, a failure `error` with the reason in `text` or `detail`.
 
 Copy rules: neutral, factual sentences; no exclamation marks, no emoji; labels of two or three words; hints one
 sentence (`_workspace\CONVENTIONS.md`, UI copy).
@@ -91,7 +113,7 @@ and falls back to the default on a bad value; nothing crashes on a hand-edited f
 
 The Settings card the host window draws on the module page is the only place where these fields appear: a
 module's `render_host()` must not repeat schema fields in its own `form` blocks (it did in v1.0.0, which showed
-every AI search and Files project setting twice). The card writes through `set_module_setting`, which coerces the
+every Files project setting twice). The card writes through `set_module_setting`, which coerces the
 value by kind (a `text` field stores a string; a module that keeps a list parses it on read, as `exclude_bins`
 does), stores it, calls `on_setting_changed(key, scope, value)` on the module thread and re-renders. A `text`
 value that is stored as a list is shown joined with ", ".
@@ -108,8 +130,8 @@ promote a script into the facade when a second module needs it.
 `modules/base.py` ships `FakeHost`: builds a `ModuleContext` with a `FakePremiere` (records `eval` calls, returns
 canned results per script name, fires events on demand), synchronous `FakeJobs` (runs a job inline, or on
 `step()` when `manual=True`), in-memory settings, a scratch `AppPaths` under `PREMIERE_DECK_HOME`, a `FakeTools`
-with canned `MediaInfo` per path, and a `FakeUi` that records toasts and renders. Module tests use `unittest`
-and never touch the user's Premiere, the registry, or real media; media needed by a test is generated with ffmpeg
+with canned `MediaInfo` per path, and a `FakeUi` that records toasts, results and renders. Module tests use `unittest`
+and never touch the user's Premiere, the registry, or real media; media needed by a test is made by ffmpeg
 or Pillow in the scratch folder.
 
 Each module's tests live in `tests/test_modules_<id>*.py` and cover: render in every state, every action, every

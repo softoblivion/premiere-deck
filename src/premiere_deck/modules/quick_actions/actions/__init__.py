@@ -3,13 +3,13 @@
 from premiere_deck.modules.quick_actions.actions.adjustment_layer import AdjustmentLayer
 from premiere_deck.modules.quick_actions.actions.consolidate_duplicates import ConsolidateDuplicates
 from premiere_deck.modules.quick_actions.actions.delete_empty_tracks import DeleteEmptyTracks
+from premiere_deck.modules.quick_actions.actions.duplicate_sequence import DuplicateSequence
 from premiere_deck.modules.quick_actions.actions.export_frame import ExportFrame
 from premiere_deck.modules.quick_actions.actions.export_sequence import ExportSequence
 from premiere_deck.modules.quick_actions.actions.label_by_bin import LabelByBin
 from premiere_deck.modules.quick_actions.actions.lock_others import LockOthers
 from premiere_deck.modules.quick_actions.actions.open_project_folder import OpenProjectFolder
 from premiere_deck.modules.quick_actions.actions.razor_all import RazorAll
-from premiere_deck.modules.quick_actions.actions.remove_gaps import RemoveGaps
 from premiere_deck.modules.quick_actions.actions.reveal_clip import RevealClip
 from premiere_deck.modules.quick_actions.actions.save_version import SaveVersion
 from premiere_deck.modules.quick_actions.actions.scale_to_frame import ScaleToFrame
@@ -19,12 +19,12 @@ from premiere_deck.modules.quick_actions.actions.social_copy import SocialCopy
 from premiere_deck.modules.quick_actions.actions.solo_track import SoloTrack
 
 ACTION_CLASSES = (
-    AdjustmentLayer, RemoveGaps, RazorAll, DeleteEmptyTracks,
+    AdjustmentLayer, RazorAll, DeleteEmptyTracks,
     SelectSameSource, SelectOffline,
     ScaleToFrame, LabelByBin,
     SoloTrack, LockOthers,
     SaveVersion, ConsolidateDuplicates, OpenProjectFolder, RevealClip,
-    SocialCopy,
+    DuplicateSequence, SocialCopy,
     ExportFrame, ExportSequence,
 )
 

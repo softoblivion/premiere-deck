@@ -29,12 +29,17 @@ PREMIERE_FOLDERS = (
     "adobe premiere pro captured audio",
 )
 PREMIERE_FOLDER_PREFIXES = ("media cache",)
-TEMP_PATTERNS = ("~*", "*.tmp", "*.part", "*.crdownload", "thumbs.db", "desktop.ini", "*.prproj")
-# Folders left out of a pack archive (docs/FILES.md 3.5): caches and previews, not the auto-save copies.
+TEMP_PATTERNS = ("~*", "*.tmp", "*.part", "*.crdownload", "thumbs.db", "desktop.ini", "*.prproj", "*.prmf")
+MASKS_SUFFIX = " masks"  # Premiere's mask folder "<project stem> Masks" beside the project file
+# Folders left out of the ZIP archive (docs/FILES.md 3.6): caches and previews, not the auto-save copies.
 PACK_SKIP_FOLDERS = ("adobe premiere pro video previews", "adobe premiere pro audio previews")
 
-MATCH_KEYS = {"kind", "alpha", "name", "ext", "min_duration", "max_duration", "has_audio", "has_video"}
+MATCH_KEYS = {"kind", "alpha", "name", "ext", "min_duration", "max_duration", "has_audio", "has_video", "source",
+              "audio_class"}
 KINDS = {"video", "audio", "image", "other"}
+SOURCES = ("camera", "stock", "generated", "unknown")
+AUDIO_CLASSES = ("speech", "music", "other")
+DEFAULT_MEDIA_DIR = "Media"
 
 
 class LayoutError(ValueError):
@@ -92,17 +97,28 @@ def is_temp_name(name: str) -> bool:
     return any(fnmatch.fnmatchcase(low, pattern) for pattern in TEMP_PATTERNS)
 
 
-def is_excluded(path: str, root: str, *, check_hidden: bool = True) -> bool:
-    """docs/FILES.md 1.5 for a path inside `root`: Premiere's folders, `.premiere-deck`, temp and hidden files,
-    project files. A path outside the root is excluded only by its own name."""
+def masks_folder(project_path: Optional[str]) -> Optional[str]:
+    """Premiere's mask folder name of a project file, case-folded ("spring masks" for Spring.prproj)."""
+    if not project_path:
+        return None
+    stem = os.path.splitext(os.path.basename(str(project_path)))[0]
+    return (stem + MASKS_SUFFIX).casefold() if stem else None
+
+
+def is_excluded(path: str, root: str, *, check_hidden: bool = True, masks: Optional[str] = None) -> bool:
+    """docs/FILES.md 1.5 for a path inside `root`: Premiere's folders, the mask folder `masks` ("<project stem>
+    masks", from `masks_folder`) and `.prmf` files, `.premiere-deck`, temp and hidden files, project files. A path
+    outside the root is excluded only by its own name."""
     parts = rel_parts(path, root)
     if parts is None:
         parts = [os.path.basename(path)]
     folders, name = parts[:-1], parts[-1] if parts else ""
     for folder in folders:
-        if folder.casefold() == DECK_DIR or is_premiere_folder(folder) or folder.startswith("."):
+        low = folder.casefold()
+        if low == DECK_DIR or is_premiere_folder(folder) or folder.startswith(".") or (masks and low == masks):
             return True
-    if is_temp_name(name) or is_premiere_folder(name) or name.casefold() == DECK_DIR:
+    low = name.casefold()
+    if is_temp_name(name) or is_premiere_folder(name) or low == DECK_DIR or (masks and low == masks):
         return True
     return bool(check_hidden and is_hidden(path))
 
@@ -125,6 +141,7 @@ class Layout:
     rules: tuple[Rule, ...]
     mirror_subfolders: bool = True
     exports_dir: str = "Exports"
+    media_dir: str = DEFAULT_MEDIA_DIR
     source: str = ""
     raw: dict = field(default_factory=dict, compare=False)
 
@@ -152,12 +169,25 @@ class Layout:
     def top_folders(self) -> set[str]:
         return {folder.split("/")[0].casefold() for folder in self.folders}
 
+    def in_media_dir(self, folder: Optional[str]) -> bool:
+        """`folder` ("/"-separated, relative) is the Sync folder or lies below it."""
+        return is_under(folder, self.media_dir)
+
     def to_json(self) -> dict:
         return {
             "id": self.id, "name": self.name, "project_dir": self.project_dir, "folders": list(self.folders),
             "rules": [{"match": dict(rule.match), "to": rule.to} for rule in self.rules],
-            "mirror_subfolders": self.mirror_subfolders, "exports_dir": self.exports_dir,
+            "mirror_subfolders": self.mirror_subfolders, "exports_dir": self.exports_dir, "media_dir": self.media_dir,
         }
+
+
+def is_under(folder: Optional[str], parent: Optional[str]) -> bool:
+    """Relative "/"-separated folder `folder` equals `parent` or lies below it (case-insensitive)."""
+    if not folder or not parent:
+        return False
+    a = [p.casefold() for p in folder.split("/") if p]
+    b = [p.casefold() for p in parent.split("/") if p]
+    return bool(b) and a[:len(b)] == b
 
 
 def clean_folder(value: object) -> Optional[str]:
@@ -198,6 +228,15 @@ def _clean_match(match: object) -> dict:
             except re.error as exc:
                 raise LayoutError(f"name is not a valid regular expression: {exc}") from exc
             out[key] = value
+        elif key in ("source", "audio_class"):
+            allowed = SOURCES if key == "source" else AUDIO_CLASSES
+            values = [value] if isinstance(value, str) else value
+            if not isinstance(values, list) or not values or not all(isinstance(v, str) for v in values):
+                raise LayoutError(f"{key} is one value or a list of values")
+            for item in values:
+                if item not in allowed:
+                    raise LayoutError(f"unknown {key} {item!r}")
+            out[key] = values[0] if isinstance(value, str) else list(values)
         elif key == "ext":
             values = [value] if isinstance(value, str) else value
             if not isinstance(values, list) or not all(isinstance(v, str) and v for v in values):
@@ -226,6 +265,11 @@ def parse_layout(data: object, source: str = "") -> Layout:
     rules_raw = data.get("rules")
     if not isinstance(rules_raw, list) or not rules_raw:
         raise LayoutError("rules is a non-empty list")
+    media_dir = clean_folder(data.get("media_dir", DEFAULT_MEDIA_DIR))
+    if media_dir is None:
+        raise LayoutError(f"bad media_dir {data.get('media_dir')!r}")
+    if media_dir.casefold() not in {f.casefold() for f in folders}:
+        folders.append(media_dir)  # a 1.x layout without the Sync folder
     rules: list[Rule] = []
     for value in rules_raw:
         if not isinstance(value, dict):
@@ -233,6 +277,8 @@ def parse_layout(data: object, source: str = "") -> Layout:
         to = clean_folder(value.get("to"))
         if to is None:
             raise LayoutError(f"bad target folder {value.get('to')!r}")
+        if is_under(to, media_dir):
+            raise LayoutError(f"a rule cannot file into the Sync folder {media_dir!r}")
         rules.append(Rule(_clean_match(value.get("match", {})), to))
     project_dir = clean_folder(data.get("project_dir", "Project")) or "Project"
     exports_dir = clean_folder(data.get("exports_dir", "Exports")) or "Exports"
@@ -245,6 +291,7 @@ def parse_layout(data: object, source: str = "") -> Layout:
         rules=tuple(rules),
         mirror_subfolders=mirror if isinstance(mirror, bool) else True,
         exports_dir=exports_dir,
+        media_dir=media_dir,
         source=source,
         raw=dict(data),
     )
@@ -303,9 +350,13 @@ def detect_root(project_path: str, layout: Layout) -> str:
 class Mapper:
     """Maps disk folders under a root to bin paths and back for one layout (docs/FILES.md 2, mirror_subfolders)."""
 
-    def __init__(self, root: str, layout: Layout) -> None:
+    def __init__(self, root: str, layout: Layout, masks: Optional[str] = None) -> None:
         self.root = os.path.abspath(root)
         self.layout = layout
+        self.masks = masks  # "<project stem> masks", case-folded (masks_folder)
+
+    def excluded(self, path: str, *, check_hidden: bool = True) -> bool:
+        return is_excluded(path, self.root, check_hidden=check_hidden, masks=self.masks)
 
     # disk -> project
     def folder_of(self, path: str) -> Optional[list[str]]:
@@ -319,7 +370,7 @@ class Mapper:
         parts = self.folder_of(path)
         if not parts:
             return None
-        if is_excluded(path, self.root, check_hidden=False):
+        if self.excluded(path, check_hidden=False):
             return None
         rel = "/".join(parts)
         if rel.casefold() == self.layout.project_dir.casefold() or parts[0].casefold() == self.layout.project_dir.split("/")[0].casefold():
@@ -335,6 +386,25 @@ class Mapper:
 
     def in_layout(self, path: str) -> bool:
         return self.layout_folder_of(path) is not None
+
+    def deepest_layout_folder(self, path: str) -> Optional[str]:
+        """The deepest layout folder (layout spelling) that contains `path`, or None (loose, project_dir, a folder
+        outside the layout, outside the root)."""
+        parts = self.folder_of(path)
+        if not parts or self.excluded(path, check_hidden=False):
+            return None
+        if parts[0].casefold() == self.layout.project_dir.split("/")[0].casefold():
+            return None
+        for depth in range(len(parts), 0, -1):
+            canonical = self.layout.canonical("/".join(parts[:depth]))
+            if canonical:
+                return canonical
+        return None
+
+    def rel_folder(self, path: str) -> Optional[str]:
+        """The folder of `path` relative to the root ("/"-separated, "" for the root), None outside."""
+        parts = self.folder_of(path)
+        return None if parts is None else "/".join(parts)
 
     def bin_for_folder(self, folder: str) -> str:
         """Bin path of a folder: the same path with "/" (bin names = folder names)."""

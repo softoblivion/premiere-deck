@@ -1,19 +1,21 @@
-"""Files module with FakeHost: render states, intercept, bin mirror, collect, pack, undo, suppression, settings."""
+"""Files module with FakeHost: render states, intercept, bin mirror, Sort, Sync, Make ZIP, undo, suppression,
+settings, recovery and the journal clean-up (docs/FILES.md 3 to 8)."""
 
 import json
 import os
 import time
 import unittest
+from unittest import mock
 
 from premiere_deck.host import protocol as P
-from premiere_deck.modules.base import ActionResult
 from premiere_deck.modules.files import journal as J
 from premiere_deck.modules.files.layout import norm
 from premiere_deck.modules.files.module import FilesModule
-from premiere_deck.premiere.model import PremiereError, PremiereUnavailable, ProjectItem
+from premiere_deck.premiere.model import PremiereError, ProjectItem, SequenceInfo, TrackItem
 from tests.test_modules_files_support import FilesCase, info, write_file
 
-BLOCK_TYPES = {"cards", "table", "list", "form", "actions", "text", "progress"}
+BLOCK_TYPES = {"cards", "table", "list", "form", "actions", "text", "progress", "chips"}
+TILES = ["files.sort", "files.sync_all", "files.sync_used", "files.zip"]
 
 
 def check_block(test, block):
@@ -26,20 +28,16 @@ def check_block(test, block):
         test.assertEqual(node["kind"], "button")
         test.assertTrue(node["id"].startswith("files."), node["id"])
 
-    if kind in ("cards", "actions"):
-        test.assertIsInstance(block["items"], list)
+    if kind == "actions":
         for item in block["items"]:
-            if kind == "actions":
-                check_button(item)
-            else:
-                test.assertTrue({"id", "title", "value", "detail", "tone"} <= set(item))
-                for action in item["actions"]:
-                    check_button(action)
+            check_button(item)
+    elif kind == "chips":
+        for item in block["items"]:
+            test.assertTrue({"id", "text", "tone"} <= set(item))
     elif kind == "table":
         keys = [c["key"] for c in block["columns"]]
         for row in block["rows"]:
             test.assertIsInstance(row["id"], str)
-            test.assertNotIn("cells", row)
             for key in keys:
                 test.assertIn(key, row)
             for action in row.get("actions", []):
@@ -51,6 +49,8 @@ def check_block(test, block):
     elif kind == "list":
         for row in block["rows"]:
             test.assertTrue({"id", "title", "subtitle"} <= set(row))
+            for action in row.get("actions", []):
+                check_button(action)
     elif kind == "form":
         for field in block["fields"]:
             if "kind" in field and field["kind"] in ("input", "toggle", "select") and "id" in field:
@@ -60,39 +60,33 @@ def check_block(test, block):
                 test.assertIn(field["kind"], ("bool", "int", "text", "select", "path"))
         if block.get("submit"):
             check_button(block["submit"])
+    elif kind == "progress":
+        test.assertIn("label", block)
+
+
+def walk(nodes):
+    for node in nodes:
+        yield node
+        if node.get("kind") in ("row", "group"):
+            yield from walk(node["items"])
 
 
 def node_ids(nodes):
-    out = []
-    for node in nodes:
-        if "id" in node:
-            out.append(node["id"])
-        if node.get("kind") == "row":
-            out.extend(node_ids(node["items"]))
-    return out
+    return [node["id"] for node in walk(nodes) if "id" in node and node.get("kind") != "group"]
 
 
 def texts(nodes):
     out = []
-    for node in nodes:
+    for node in walk(nodes):
         if node.get("kind") == "text":
             out.append(node["text"])
-        if node.get("kind") == "row":
-            out.extend(texts(node["items"]))
         if node.get("kind") == "button":
             out.append(node["label"])
     return out
 
 
 def find(nodes, node_id):
-    for node in nodes:
-        if node.get("id") == node_id:
-            return node
-        if node.get("kind") == "row":
-            hit = find(node["items"], node_id)
-            if hit:
-                return hit
-    return None
+    return next((node for node in walk(nodes) if node.get("id") == node_id), None)
 
 
 class Base(FilesCase):
@@ -107,6 +101,14 @@ class Base(FilesCase):
         json.dumps(page)
         return sec
 
+    def block(self, block_id):
+        return next((b for b in self.module.render_host()["blocks"] if b["id"] == block_id), None)
+
+    def place(self, *items):
+        """Items the project already has (no intercept): the snapshot is taken without an event."""
+        self.pr.set_items(list(self.pr.snapshot_value.items) + list(items))
+        self.module._take_snapshot(self.module._state)
+
 
 class RenderStates(Base):
     def test_no_project(self):
@@ -117,8 +119,9 @@ class RenderStates(Base):
         self.assertEqual(sec["status"]["text"], "No project")
         self.assertIn("Open a project", sec["items"][0]["text"])
         self.assertEqual(module.render_host()["status"]["text"], "No project open")
-        result = module.on_action("files.collect")
+        result = module.on_action("files.sort")
         self.assertFalse(result.rerender)
+        self.assertEqual(self.host.ui.results[-1][:2], ("sort", "neutral"))
 
     def test_not_set_up_observes_only(self):
         self.make_module()
@@ -129,45 +132,119 @@ class RenderStates(Base):
         self.user_import(clip)
         self.assertEqual(self.pr.calls_named("relink"), [])
         self.assertFalse(os.path.exists(self.in_root("Footage", "clip.mp4")))
-        self.assertIn("1 items are outside the project folder.", texts(self.module.render()))
-        for action in ("files.collect", "files.pack", "files.undo_last", "files.watch"):
-            self.assertEqual(self.module.on_action(action).toast[1], "Set up this project first")
+        self.assertIn("1 item outside the project folder.", texts(self.module.render()))
+        for action in ("sort", "sync_all", "sync_used", "zip", "undo_last", "journal", "stop"):
+            self.assertEqual(self.press(f"files.{action}"), (action, "warn", "Set up this project first", None))
+        self.assertEqual(self.press("files.open_folder")[1], "ok")
+        self.assertEqual(self.host.host.opened, [self.root])
         self.assertFalse(os.path.exists(os.path.join(self.root, ".premiere-deck", "journal.jsonl")))
+        page = self.module.render_host()
+        self.assertEqual([b["id"] for b in page["blocks"][:2]], ["setup_actions", "status_chips"])
+        self.assertEqual(page["subtitle"], self.root)
+        self.assertEqual(page["header_actions"][0]["id"], "files.open_folder")
 
     def test_setup_creates_folders_bins_and_journal(self):
         self.make_module(enabled=True, watch=False)
-        for folder in ("Footage", "Audio/Music", "Audio/SFX", "Audio/Voice", "Graphics", "Overlays", "Motion",
-                       "Exports/Frames", "Project"):
+        for folder in ("Footage", "Stock", "Generated", "Media", "Audio/Music", "Audio/SFX", "Audio/Voice", "Graphics",
+                       "Overlays", "Motion", "Exports/Frames", "Project"):
             self.assertTrue(os.path.isdir(self.in_root(*folder.split("/"))), folder)
         bins = [args[0] for args, _ in self.pr.calls_named("create_bin_path")]
-        self.assertIn("Audio/SFX", bins)
+        for name in ("Audio/SFX", "Stock", "Generated", "Media"):
+            self.assertIn(name, bins)
         self.assertNotIn("Project", bins)
         self.assertTrue(self.host.settings.project.values["enabled"])
         self.assertEqual(self.host.settings.project.values["layout"], "default")
         self.assertEqual(self.journal()[-1]["op"], "setup")
+        self.assertEqual(self.host.ui.results[-1], ("setup", "ok", "Project set up · 13 folders", None))
+        self.assertEqual(self.host.ui.toasts, [])
         sec = self.check_render()
         self.assertEqual(sec["status"]["text"], "Paused")
-        self.assertEqual(self.module.on_action("files.setup").toast[1], "This project is already set up")
+        self.assertEqual(self.press("files.setup"), ("setup", "neutral", "This project is already set up", None))
+        self.assertEqual(os.listdir(os.path.join(self.root, ".premiere-deck")), ["journal.jsonl"])  # check file gone
+
+    def test_setup_without_write_access(self):
+        self.make_module()
+        with mock.patch("premiere_deck.modules.files.module.write_check", return_value="access denied"):
+            result = self.press("files.setup")
+        self.assertEqual(result, ("setup", "error", "No write access to the project folder", "access denied"))
+        self.assertFalse(os.path.isdir(self.in_root("Footage")))
+        self.assertNotIn("enabled", self.host.settings.project.values)
 
     def test_watching_status(self):
         self.make_module(enabled=True)
         try:
             sec = self.check_render()
             self.assertEqual(sec["status"], {"text": "Watching · Sample", "tone": "ok"})
-            watch = find(sec["items"], "files.watch")
-            self.assertTrue(watch["value"])
+            self.assertIsNone(find(sec["items"], "files.watch"))  # a project setting of the host window now
         finally:
-            self.module.on_action("files.watch", False)
+            self.module.on_setting_changed("watch", "project", False)
         self.assertEqual(self.module.section()["status"]["text"], "Paused")
 
-    def test_enabled_render_has_every_control(self):
+    def test_enabled_render_has_the_2_0_layout(self):
         self.make_module(enabled=True, watch=False)
+        write_file(self.in_root("loose.mp4"))
+        self.place(ProjectItem("l1", "loose.mp4", "clip", media_path=self.in_root("loose.mp4")),
+                   ProjectItem("x1", "ext.mp4", "clip", media_path=self.ext("ext.mp4")),
+                   ProjectItem("o1", "gone.mp4", "clip", media_path=self.in_root("Footage", "gone.mp4"),
+                               is_offline=True))
         sec = self.check_render()
-        ids = node_ids(sec["items"])
-        for node_id in ("files.collect", "files.pack", "files.undo_last", "files.watch", "files.recent"):
-            self.assertIn(node_id, ids)
-        self.assertTrue(find(sec["items"], "files.undo_last")["disabled"])  # setup itself is not undoable
-        self.assertEqual(find(sec["items"], "files.collect")["label"], "Collect project")
+        items = sec["items"]
+        header = items[0]
+        self.assertEqual(header["kind"], "row")
+        self.assertEqual(header["items"][0]["text"], "Sample")
+        folder = header["items"][1]
+        self.assertEqual((folder["id"], folder["variant"], folder["icon"], folder["label"]),
+                         ("files.open_folder", "icon", "open-folder", "Open project folder"))
+        self.assertEqual(items[1]["text"], self.root)
+        chips = items[2]["items"]
+        self.assertTrue(all(c["chip"] for c in chips))
+        self.assertEqual([(c["text"], c["tone"]) for c in chips],
+                         [("1 in the root", "neutral"), ("1 outside", "warn"), ("1 offline", "error")])
+        group = items[3]
+        self.assertEqual((group["kind"], group["id"], group["tiles"], group["columns"], group["title"]),
+                         ("group", "files.actions", True, 2, None))
+        tiles = {t["id"]: t for t in group["items"]}
+        self.assertEqual(list(tiles), TILES)
+        self.assertEqual([(t["icon"], t["short"]) for t in tiles.values()],
+                         [("sort", "Sort project"), ("sync-all", "Sync all media"), ("sync-used", "Sync used media"),
+                          ("zip", "Make ZIP")])
+        self.assertTrue(all(t["hint"] for t in tiles.values()))
+        self.assertEqual(tiles["files.sort"]["meta"], "1 item to file")
+        self.assertEqual(tiles["files.sort"]["confirm"],
+                         "Move 1 file into the layout folders? Every move is journaled and can be undone.")
+        self.assertEqual(tiles["files.sync_all"]["meta"], "1 outside the root")
+        self.assertEqual(tiles["files.sync_all"]["confirm"], "Copy 1 file from outside the project folder into Media?")
+        self.assertEqual(tiles["files.sync_used"]["meta"], "0 in sequences")
+        self.assertEqual(tiles["files.sync_used"]["confirm"],
+                         "Copy the files used in sequences from outside the project folder into Media?")
+        self.assertEqual(tiles["files.zip"]["meta"], "Checks offline first")
+        self.assertNotIn("confirm", tiles["files.zip"])
+        bottom = items[4]["items"]
+        self.assertEqual(bottom[0]["id"], "files.journal")
+        self.assertTrue(bottom[0]["label"].startswith("Journal · "))
+        self.assertEqual((bottom[1]["id"], bottom[1]["variant"], bottom[1]["icon"]), ("files.undo_last", "icon", "undo"))
+        self.assertTrue(bottom[1]["disabled"])  # setup itself is not undoable
+        offline = items[5]
+        self.assertEqual((offline["kind"], offline["id"], offline["title"], offline["collapsible"]),
+                         ("group", "files.offline", "Offline", True))
+        rows = offline["items"][0]["rows"]
+        self.assertEqual([a["id"] for a in rows[0]["actions"]], ["files.locate", "files.remove"])
+        self.assertEqual(rows[0]["actions"][1]["confirm"],
+                         "Remove gone.mp4 from the project? The file on disk is not touched.")
+        for removed in ("files.collect", "files.pack", "files.watch", "files.recent", "files.cancel"):
+            self.assertNotIn(removed, node_ids(items))
+
+    def test_meta_without_estimate_and_used_count(self):
+        self.make_module(enabled=True, watch=False)
+        src = self.ext("used.mp4")
+        self.pr.sequences_value = [SequenceInfo("seq1", "Main", 1920, 1080, 25.0, 10.0)]
+        self.pr.track_items_value = {"seq1": [TrackItem("seq1", "video", 0, 0, "used.mp4", "u1", 0, 1, 0, 1)]}
+        self.place(ProjectItem("u1", "used.mp4", "clip", media_path=src))
+        self.module._refresh_used(self.module._state, force=True)
+        tiles = {t["id"]: t for t in find(self.module.render(), "files.actions")["items"]}
+        self.assertEqual(tiles["files.sort"]["meta"], "Nothing to file")
+        self.assertIn("Sort the media", tiles["files.sort"]["confirm"])
+        self.assertEqual(tiles["files.sync_used"]["meta"], "1 in sequences")
 
     def test_render_offline_layout_error_and_premiere_error(self):
         os.makedirs(os.path.join(self.root, ".premiere-deck"))
@@ -178,26 +255,33 @@ class RenderStates(Base):
         self.pr.set_items([gone])
         self.make_module(enabled=True, watch=False, layout="custom")
         sec = self.check_render()
-        all_text = texts(sec["items"])
-        self.assertTrue(any("layout.json could not be read" in t for t in all_text))
-        offline = find(sec["items"], "files.offline")
-        self.assertEqual(offline["rows"][0]["id"], "g1")
-        self.assertEqual([a["id"] for a in offline["rows"][0]["actions"]], ["files.locate", "files.remove"])
-        self.assertTrue(offline["rows"][0]["actions"][1]["confirm"])
+        self.assertTrue(any("layout.json could not be read" in t for t in texts(sec["items"])))
+        self.assertIsNotNone(self.block("layout_error"))
         self.pr.connected = False
         self.fire("project.changed")
         self.assertTrue(any("did not answer" in t for t in texts(self.module.render())))
 
-    def test_render_while_a_job_runs_and_with_a_plan(self):
+    def test_busy_tile_disables_the_others_and_shows_progress(self):
         self.host.jobs.manual = True
         self.make_module(enabled=True, watch=False)
-        self.user_import(self.ext("a.mp4"))
+        self.host.jobs.step()
+        write_file(self.in_root("loose.mp4"))
+        self.place(ProjectItem("l1", "loose.mp4", "clip", media_path=self.in_root("loose.mp4")))
+        self.module.on_action("files.sort")
         sec = self.check_render()
-        self.assertIn("files.cancel", node_ids(sec["items"]))
+        tiles = {t["id"]: t for t in find(sec["items"], "files.actions")["items"]}
+        self.assertTrue(tiles["files.sort"]["busy"])
+        self.assertTrue(all(tiles[t]["disabled"] for t in TILES[1:]))
+        progress = next(n for n in walk(sec["items"]) if n["kind"] == "progress")
+        self.assertEqual(progress["cancel"], "files.stop")
         self.assertEqual(sec["status"]["tone"], "accent")
         self.assertEqual(self.host.jobs.jobs[-1].priority, "high")
+        job_blocks = [b for b in self.module.render_host()["blocks"] if b["id"].startswith("job_")]
+        self.assertEqual(job_blocks[0]["cancel"], "files.stop")
+        self.assertEqual(self.press("files.zip"), ("zip", "neutral", "Another action is running", None))
         self.host.jobs.step()
-        self.assertNotIn("files.cancel", node_ids(self.module.section()["items"]))
+        self.assertEqual(self.host.ui.results[-1][:2], ("sort", "ok"))
+        self.assertFalse(any(n["kind"] == "progress" for n in walk(self.module.section()["items"])))
 
     def test_settings_schema(self):
         self.make_module()
@@ -205,7 +289,7 @@ class RenderStates(Base):
         self.assertEqual({k for k, f in fields.items() if f.scope == "host"},
                          {"toast_filed", "copy_buffer_mb", "stable_seconds", "default_layout"})
         self.assertEqual({k for k, f in fields.items() if f.scope == "project"},
-                         {"enforce_bins", "mirror_bins", "import_exports", "watch", "pack_zip"})
+                         {"enforce_bins", "mirror_bins", "import_exports", "watch"})
         self.assertEqual(fields["default_layout"].options[0]["value"], "default")
 
 
@@ -230,12 +314,33 @@ class Intercept(Base):
         self.assertEqual(entry["bin_from"], "")
         self.assertTrue(entry["hash"])
         self.assertEqual(self.toasts(), ["Filed A001.mp4 into Footage"])
+        self.assertEqual(self.host.ui.results, [("setup", "ok", "Project set up · 13 folders", None)])  # no result
         name, data = self.host.events.emitted[-1]
         self.assertEqual((name, data["op"], data["text"]), ("journal.appended", "filed", "Filed A001.mp4 into Footage"))
         self.assertEqual(self.host.jobs.jobs[-1].priority, "high")
         # the module's own bin move does not trigger the mirror
         self.fire("project.changed")
         self.assertEqual(len(self.pr.calls_named("relink")), 1)
+
+    def test_stock_and_generated_names_go_to_their_folders(self):
+        stock = self.ext("pexels-city-night.mp4")
+        generated = self.ext("kling_0012.mp4")
+        for path in (stock, generated):
+            self.host.tools.infos[path] = info(path, "video", has_audio=True, duration=8.0)
+        a, b = self.user_import(stock), self.user_import(generated)
+        self.assertEqual(self.item(a.node_id).tree_path, "Stock")
+        self.assertEqual(self.item(b.node_id).tree_path, "Generated")
+
+    def test_audio_class_decides_after_the_name_rules(self):
+        self.module._classifier.classes.update({"talk.wav": (0.9, 0.1), "song.wav": (0.0, 1.4),
+                                                "rain.wav": (0.05, 0.1), "sfx_speech.wav": (0.9, 0.0)})
+        folders = {}
+        for name in ("talk.wav", "song.wav", "rain.wav", "sfx_speech.wav"):
+            path = self.ext(name)
+            self.host.tools.infos[path] = info(path, "audio", duration=45.0)
+            folders[name] = self.item(self.user_import(path).node_id).tree_path
+        self.assertEqual(folders, {"talk.wav": "Audio/Voice", "song.wav": "Audio/Music", "rain.wav": "Audio/SFX",
+                                   "sfx_speech.wav": "Audio/SFX"})
 
     def test_alpha_video_goes_to_overlays_and_toasts_merge(self):
         files = [self.ext(f"f{i}.mov", 1000 + i) for i in range(3)]
@@ -308,8 +413,10 @@ class Intercept(Base):
 
     def test_exclusions_offline_and_sequences_are_ignored(self):
         autosave = write_file(self.in_root("Adobe Premiere Pro Auto-Save", "x.mp4"))
+        masks = write_file(self.in_root("Sample Masks", "a.prmf"))
         temp = self.ext("download.mp4.crdownload")
         self.user_import(autosave)
+        self.user_import(masks)
         self.user_import(temp)
         self.user_import(os.path.join(self.downloads, "missing.mp4"), offline=True)
         seq = ProjectItem("s1", "Sequence 01", "sequence", is_sequence=True)
@@ -338,16 +445,25 @@ class Intercept(Base):
         self.assertEqual(self.pr.calls_named("relink"), [])
         self.assertEqual(len(self.module._state.external), len(external))
 
-    def test_copy_failure_is_reported(self):
-        from unittest import mock
-
+    def test_copy_failure_reason_is_in_the_toast_and_the_journal(self):
         src = self.ext("locked.mp4")
-        with mock.patch("premiere_deck.modules.files.module.copy_file", side_effect=PermissionError("locked")):
+        with mock.patch("premiere_deck.modules.files.module.copy_file", side_effect=PermissionError(13, "denied")):
             item = self.user_import(src)
         self.assertEqual(self.item(item.node_id).media_path, src)
-        self.assertEqual(self.toasts(), ["Could not copy locked.mp4"])
-        self.assertEqual(self.journal()[-1]["status"], "failed")
+        self.assertEqual(self.toasts(), ["Could not copy locked.mp4 · access denied"])
+        self.assertEqual((self.journal()[-1]["status"], self.journal()[-1]["error"]), ("failed", "access denied"))
         self.assertFalse(os.path.exists(self.in_root("Footage", "locked.mp4")))
+
+    def test_write_check_failure_stops_the_intercept_for_the_session(self):
+        self.module._state.write_ok = None
+        with mock.patch("premiere_deck.modules.files.module.write_check", return_value="access denied") as check:
+            first = self.user_import(self.ext("one.mp4"))
+            second = self.user_import(self.ext("two.mp4"))
+        self.assertEqual(check.call_count, 1)
+        self.assertEqual(self.toasts(), ["No write access to the project folder"])
+        self.assertEqual(self.item(first.node_id).media_path, os.path.join(self.downloads, "one.mp4"))
+        self.assertEqual(self.item(second.node_id).media_path, os.path.join(self.downloads, "two.mp4"))
+        self.assertEqual(os.listdir(self.in_root("Footage")), [])
 
 
 class BinMirror(Base):
@@ -355,20 +471,22 @@ class BinMirror(Base):
         super().setUp()
         self.make_module(enabled=True, watch=False)
 
-    def test_user_file_moved_to_another_layout_bin_is_copied_and_kept(self):
+    def test_user_file_moved_to_another_layout_bin_is_moved_on_disk(self):
         path = write_file(self.in_root("Footage", "grain.mov"), 5000)
-        item = ProjectItem("b1", "grain.mov", "clip", tree_path="Footage", media_path=path)
-        self.pr.set_items(list(self.pr.snapshot_value.items) + [item])
-        self.fire("project.changed")
+        self.place(ProjectItem("b1", "grain.mov", "clip", tree_path="Footage", media_path=path))
         self.user_move_bin("b1", "Overlays")
         target = self.in_root("Overlays", "grain.mov")
         self.assertTrue(os.path.isfile(target))
-        self.assertTrue(os.path.isfile(path))  # the user's file is never deleted
+        self.assertFalse(os.path.exists(path))  # a rename inside the root
         self.assertEqual(self.item("b1").media_path, target)
         entry = self.journal()[-1]
-        self.assertEqual((entry["op"], entry["status"], entry["deleted_from"]), ("moved_bin", "done", False))
+        self.assertEqual((entry["op"], entry["status"], entry["moved"], entry["copied"]),
+                         ("moved_bin", "done", True, False))
+        # the correction of a classification: Footage -> Stock files it under Stock
+        self.user_move_bin("b1", "Stock")
+        self.assertTrue(os.path.isfile(self.in_root("Stock", "grain.mov")))
 
-    def test_module_copy_moved_to_another_bin_removes_the_old_copy(self):
+    def test_module_copy_moved_to_another_bin_leaves_no_old_copy(self):
         src = self.ext("clip.mp4", 8000)
         item = self.user_import(src)
         first = self.in_root("Footage", "clip.mp4")
@@ -378,9 +496,8 @@ class BinMirror(Base):
         self.assertTrue(os.path.isfile(moved))
         self.assertFalse(os.path.exists(first))
         self.assertTrue(os.path.isfile(src))
-        self.assertTrue(self.journal()[-1]["deleted_from"])
 
-    def test_old_copy_referenced_by_another_item_stays(self):
+    def test_file_shared_by_another_item_is_copied(self):
         src = self.ext("shared.mp4", 8000)
         first = self.user_import(src)
         second = self.user_import(src)  # same source again: reuses the copy
@@ -388,6 +505,17 @@ class BinMirror(Base):
         self.assertEqual(self.item(second.node_id).media_path, copy)
         self.user_move_bin(first.node_id, "Overlays")
         self.assertTrue(os.path.isfile(copy))
+        self.assertTrue(os.path.isfile(self.in_root("Overlays", "shared.mp4")))
+        self.assertTrue(self.journal()[-1]["copied"])
+
+    def test_relink_failure_moves_the_file_back(self):
+        path = write_file(self.in_root("Footage", "back.mov"), 5000)
+        self.place(ProjectItem("b2", "back.mov", "clip", tree_path="Footage", media_path=path))
+        self.pr.relink_result = False
+        self.user_move_bin("b2", "Overlays")
+        self.assertTrue(os.path.isfile(path))
+        self.assertFalse(os.path.exists(self.in_root("Overlays", "back.mov")))
+        self.assertEqual(self.journal()[-1]["status"], "failed")
 
     def test_bin_without_folder_and_mirror_off(self):
         path = write_file(self.in_root("Footage", "keep.mp4"))
@@ -401,141 +529,255 @@ class BinMirror(Base):
         self.assertFalse(os.path.exists(self.in_root("Overlays", "keep.mp4")))
 
     def test_external_item_moved_between_bins_is_left_alone(self):
-        self.host.settings.project.values["enforce_bins"] = True
         src = self.ext("ext.mp4")
-        item = ProjectItem("e1", "ext.mp4", "clip", tree_path="", media_path=src)
-        self.pr.set_items(list(self.pr.snapshot_value.items) + [item])
-        self.module._take_snapshot(self.module._state)  # already known: not a new import
+        self.place(ProjectItem("e1", "ext.mp4", "clip", tree_path="", media_path=src))
         self.user_move_bin("e1", "Overlays")
         self.assertEqual(self.item("e1").media_path, src)
 
 
-class Collect(Base):
-    manual_jobs = True
-
+class Sort(Base):
     def setUp(self):
         super().setUp()
         self.make_module(enabled=True, watch=False)
-        self.host.jobs.step()
-        self.sources = [self.ext("a.mp4", 1000), self.ext("b.wav", 2000), write_file(self.in_root("loose.png"), 300)]
-        self.host.tools.infos[self.sources[1]] = info(self.sources[1], "audio", duration=60.0)
-        items = [ProjectItem(f"c{i}", os.path.basename(p), "clip", media_path=p) for i, p in enumerate(self.sources)]
-        items.append(ProjectItem("off", "gone.mp4", "clip", media_path=os.path.join(self.downloads, "gone.mp4"), is_offline=True))
-        self.pr.set_items(items)
-        self.module._take_snapshot(self.module._state)
+        self.host.ui.results.clear()
 
-    def test_plan_then_run(self):
-        sec = self.module.section()
-        self.assertEqual(find(sec["items"], "files.collect")["label"], "Collect project · 3 external")
-        self.assertIsNone(self.module.on_action("files.collect"))
-        self.assertTrue(find(self.module.section()["items"], "files.collect")["busy"])
-        self.host.jobs.step()
-        plan = self.module._state.plan
-        self.assertEqual([e.folder for e in plan.entries], ["Footage", "Audio/Music", "Graphics"])
-        self.assertEqual(plan.total_bytes, 3300)
-        self.assertEqual([m["node_id"] for m in plan.missing], ["off"])
-        sec = self.check_render()
-        self.assertIn("3 files · 3.2 KB · Run", texts(sec["items"]))
-        run = find(sec["items"], "files.collect_run")
-        self.assertIn("Copy 3 files", run["confirm"])
-        page = self.module.render_host()
-        totals = next(b for b in page["blocks"] if b["id"] == "collect_totals")
-        self.assertEqual([r["folder"] for r in totals["rows"]], ["Audio/Music", "Footage", "Graphics"])
-        self.assertIsNone(self.module.on_action("files.collect_run"))
-        self.host.jobs.step()
-        self.assertIsNone(self.module._state.plan)
-        self.assertEqual(self.item("c0").media_path, self.in_root("Footage", "a.mp4"))
-        self.assertEqual(self.item("c1").tree_path, "Audio/Music")
-        self.assertEqual(self.item("c2").media_path, self.in_root("Graphics", "loose.png"))
-        self.assertTrue(all(os.path.isfile(p) for p in self.sources))
-        self.assertEqual([e["op"] for e in self.journal()[-3:]], ["collected"] * 3)
-        self.assertIn("Collected 3 files", self.toasts())
-        self.assertEqual(self.module._state.external, [])
+    def video(self, *parts, size=4000, seed=""):
+        path = write_file(self.in_root(*parts), size, seed)
+        self.host.tools.infos[path] = info(path, "video", has_audio=True, duration=12.0)
+        return path
 
-    def test_cancel_keeps_finished_items(self):
-        self.module.on_action("files.collect")
-        self.host.jobs.step()
-        original = self.module._copy_one
+    def test_sort_moves_loose_media_and_misfiled_stock_and_can_be_undone(self):
+        loose = self.video("C0042.MP4")
+        synced = self.video("Media", "kling_0007.mp4")
+        stock = self.video("Footage", "pexels-forest.mp4")
+        right = self.video("Footage", "A001_C002.mov")
+        self.place(ProjectItem("a", "C0042.MP4", "clip", media_path=loose),
+                   ProjectItem("b", "kling_0007.mp4", "clip", tree_path="Media", media_path=synced),
+                   ProjectItem("c", "pexels-forest.mp4", "clip", tree_path="Footage", media_path=stock),
+                   ProjectItem("d", "A001_C002.mov", "clip", tree_path="Footage", media_path=right))
+        self.assertEqual(self.module._state.sort_estimate, 2)  # loose and in Media, without probing
+        result = self.press("files.sort")
+        self.assertEqual(result, ("sort", "ok", "Sorted 3 files · 11.7 KB", None))
+        self.assertEqual((self.item("a").media_path, self.item("a").tree_path), (self.in_root("Footage", "C0042.MP4"), "Footage"))
+        self.assertEqual(self.item("b").media_path, self.in_root("Generated", "kling_0007.mp4"))
+        self.assertEqual((self.item("c").media_path, self.item("c").tree_path),
+                         (self.in_root("Stock", "pexels-forest.mp4"), "Stock"))
+        self.assertEqual(self.item("d").media_path, right)
+        self.assertFalse(os.path.exists(loose))  # moved, not copied
+        sorted_entries = [e for e in self.journal() if e["op"] == "sorted"]
+        self.assertEqual(len(sorted_entries), 3)
+        self.assertTrue(all(e["status"] == "done" and e["moved"] and not e["copied"] for e in sorted_entries))
+        self.assertEqual(self.pr.calls_named("relink")[0][0], ("a", self.in_root("Footage", "C0042.MP4")))
+        # undo of the last sort move: file and bin go back together
+        result = self.press("files.undo_last")
+        self.assertEqual(result[:2], ("undo_last", "ok"))
+        self.assertEqual((self.item("c").media_path, self.item("c").tree_path), (stock, "Footage"))
+        self.assertTrue(os.path.isfile(stock))
+        self.assertFalse(os.path.exists(self.in_root("Stock", "pexels-forest.mp4")))
+        self.assertEqual(self.journal()[-1]["undo_of"], sorted_entries[-1]["id"])
 
-        def copy_then_cancel(state, job, task, op, on_bytes):
-            result = original(state, job, task, op, on_bytes)
-            job.cancel()
-            return result
+    def test_nothing_to_sort(self):
+        self.assertEqual(self.press("files.sort"), ("sort", "neutral", "Nothing to sort", None))
 
-        self.module._copy_one = copy_then_cancel
-        self.module.on_action("files.collect_run")
-        self.host.jobs.step()
-        self.assertEqual(self.item("c0").media_path, self.in_root("Footage", "a.mp4"))
-        self.assertEqual(self.item("c1").media_path, self.sources[1])
-        self.assertIn("Collect stopped · 1 of 3 filed", self.toasts())
-        self.assertEqual(len(self.module._state.external), 2)
+    def test_user_placed_files_overrides_and_same_top_folder_stay(self):
+        placed = self.video("Footage", "pexels-placed.mp4")
+        J.Journal(os.path.join(self.root, ".premiere-deck", "journal.jsonl")).append(
+            "moved_bin", status="done", node_id="p", name="pexels-placed.mp4", to=placed, **{"from": "x"})
+        named = self.video("Footage", "pexels-named.mp4")
+        self.host.settings.project.values["overrides"] = [{"name": "*named*", "to": "Footage"}]
+        audio = write_file(self.in_root("Audio", "SFX", "theme.wav"))
+        self.host.tools.infos[audio] = info(audio, "audio", duration=200.0)
+        self.place(ProjectItem("p", "pexels-placed.mp4", "clip", tree_path="Footage", media_path=placed),
+                   ProjectItem("n", "pexels-named.mp4", "clip", tree_path="Footage", media_path=named),
+                   ProjectItem("s", "theme.wav", "clip", tree_path="Audio/SFX", media_path=audio))
+        self.assertEqual(self.press("files.sort")[2], "Nothing to sort")
+        self.assertTrue(os.path.isfile(placed) and os.path.isfile(named) and os.path.isfile(audio))
 
-    def test_cancel_action_and_discard(self):
-        self.module.on_action("files.collect")
-        self.assertEqual(self.module.on_action("files.cancel").toast[1], "Stopping")
-        self.host.jobs.step()
-        self.assertIsNone(self.module._state.plan)
-        self.module.on_action("files.collect")
-        self.host.jobs.step()
-        self.assertIsNotNone(self.module._state.plan)
-        self.module.on_action("files.collect_discard")
-        self.assertIsNone(self.module._state.plan)
-        self.assertEqual(self.module.on_action("files.cancel").toast, None)
+    def test_file_under_its_folder_in_another_bin_only_changes_bin(self):
+        path = self.video("Footage", "Day1", "C0001.MP4")
+        self.place(ProjectItem("x", "C0001.MP4", "clip", tree_path="Selects", media_path=path))
+        result = self.press("files.sort")
+        self.assertEqual(result[:3], ("sort", "ok", "Sorted 1 file · 0 B"))
+        self.assertEqual((self.item("x").media_path, self.item("x").tree_path), (path, "Footage/Day1"))
+        self.assertEqual(self.journal()[-1]["op"], "binned")
+        self.assertEqual(self.pr.calls_named("relink"), [])
 
-    def test_run_without_plan_plans_first(self):
-        self.module.on_action("files.collect_run")
-        self.host.jobs.step()
-        self.host.jobs.step()
-        self.assertEqual(self.item("c0").media_path, self.in_root("Footage", "a.mp4"))
+    def test_shared_file_is_copied_so_every_item_keeps_a_file(self):
+        loose = self.video("shared.mp4")
+        self.place(ProjectItem("a", "shared.mp4", "clip", media_path=loose),
+                   ProjectItem("b", "shared copy", "clip", media_path=loose))
+        self.assertEqual(self.press("files.sort")[1], "ok")
+        target = self.in_root("Footage", "shared.mp4")
+        self.assertTrue(os.path.isfile(loose))
+        self.assertEqual({self.item("a").media_path, self.item("b").media_path}, {target})
+        entries = [e for e in self.journal() if e["op"] == "sorted"]
+        self.assertEqual([(e["copied"], e["moved"]) for e in entries], [(True, False), (False, False)])
+        self.press("files.undo_last")
+        self.press("files.undo_last")
+        self.assertEqual({self.item("a").media_path, self.item("b").media_path}, {loose})
+        self.assertFalse(os.path.exists(target))  # the module's copy is gone again
 
-    def test_busy_guard(self):
-        self.module.on_action("files.collect")
-        self.assertEqual(self.module.on_action("files.collect").toast[1], "Collect is already running")
-        self.assertEqual(self.module.on_action("files.pack").toast[1], "Collect or pack is already running")
+    def test_move_failure_and_relink_failure(self):
+        a = self.video("a.mp4")
+        b = self.video("b.mp4")
+        self.place(ProjectItem("a", "a.mp4", "clip", media_path=a), ProjectItem("b", "b.mp4", "clip", media_path=b))
+        real = __import__("premiere_deck.modules.files.module", fromlist=["move_file"]).move_file
+
+        def flaky(source, target):
+            if source == a:
+                raise OSError(13, "in use", source, 32)  # errno, text, file, winerror
+            real(source, target)
+
+        with mock.patch("premiere_deck.modules.files.module.move_file", side_effect=flaky):
+            result = self.press("files.sort")
+        self.assertEqual(result, ("sort", "warn", "Sorted 1 of 2 files · 1 failed", "a.mp4: file in use"))
+        failed = next(e for e in self.journal() if e["op"] == "sorted" and e["status"] == "failed")
+        self.assertEqual(failed["error"], "file in use")
+        self.assertTrue(os.path.isfile(a))
+        # a relink failure moves the file back
+        self.pr.relink_result = False
+        result = self.press("files.sort")
+        self.assertEqual(result, ("sort", "warn", "Sorted 0 of 1 files · 1 failed", "a.mp4: relink failed"))
+        self.assertTrue(os.path.isfile(a))
+        self.assertFalse(os.path.exists(self.in_root("Footage", "a.mp4")))
+
+    def test_write_check_and_stop(self):
+        loose = self.video("loose.mp4")
+        self.place(ProjectItem("l", "loose.mp4", "clip", media_path=loose))
+        with mock.patch("premiere_deck.modules.files.module.write_check", return_value="disk full"):
+            self.assertEqual(self.press("files.sort"),
+                             ("sort", "error", "No write access to the project folder", "disk full"))
+        self.host.jobs.manual = True
+        self.module.on_action("files.sort")
+        self.module.on_action("files.stop")
         self.host.jobs.step()
+        self.assertEqual(self.host.ui.results[-1], ("sort", "neutral", "Sort stopped · 0 of 0 filed", None))
+        self.assertTrue(os.path.isfile(loose))
+        self.assertEqual(self.press("files.stop"), ("stop", "neutral", "Nothing to stop", None))
 
 
-class PackProject(Base):
+class Sync(Base):
     def setUp(self):
         super().setUp()
         self.make_module(enabled=True, watch=False)
-        self.inside = write_file(self.in_root("Footage", "in.mp4"), 1000)
-        self.external = self.ext("out.mp4", 1000)
-        self.pr.set_items([
-            ProjectItem("p1", "in.mp4", "clip", tree_path="Footage", media_path=self.inside),
-            ProjectItem("p2", "out.mp4", "clip", media_path=self.external),
-            ProjectItem("p3", "gone.wav", "clip", media_path=self.in_root("Audio", "gone.wav"), is_offline=True),
-        ])
-        self.module._take_snapshot(self.module._state)
-        self.host.ui.toasts.clear()
+        self.host.ui.results.clear()
 
-    def test_pack_collects_reports_offline_and_zips(self):
-        self.host.settings.project.values["pack_zip"] = True
-        self.assertIn("Copy 1 file from outside", find(self.module.render(), "files.pack")["confirm"])
-        self.assertIsNone(self.module.on_action("files.pack"))
-        self.assertEqual(self.item("p2").media_path, self.in_root("Footage", "out.mp4"))
-        report_path = os.path.join(self.root, ".premiere-deck", "pack-report.txt")
-        with open(report_path, encoding="utf-8") as handle:
-            report = handle.read()
-        self.assertIn("Offline: 1", report)
-        self.assertIn("gone.wav", report)
-        self.assertIn("Outside the project folder: 0", report)
-        zip_path = self.root + ".zip"
-        self.assertIn(f"Archive: {zip_path}", report)
-        self.assertTrue(os.path.isfile(zip_path))
-        line = self.module._state.pack_report.line()
-        self.assertIn("gone.wav", line)
-        self.assertEqual(self.host.ui.toasts[-1], ("warn", line))
-        self.assertIn(line, texts(self.module.render()))
-        self.check_render()
+    def test_sync_all_copies_flat_into_media_and_undo(self):
+        a = self.ext("a.mp4", 3000)
+        b = write_file(os.path.join(self.downloads, "sub", "a.mp4"), 2000, "other")
+        c = self.ext("pexels-1.mp4", 1000)
+        self.place(ProjectItem("a", "a.mp4", "clip", tree_path="Inbox", media_path=a),
+                   ProjectItem("b", "a.mp4 (other)", "clip", media_path=b),
+                   ProjectItem("c", "pexels-1.mp4", "clip", media_path=c))
+        self.assertEqual(self.press("files.sync_all"), ("sync_all", "ok", "Synced 3 files into Media · 5.9 KB", None))
+        self.assertEqual(sorted(os.listdir(self.in_root("Media"))), ["a (2).mp4", "a.mp4", "pexels-1.mp4"])
+        self.assertEqual({self.item(n).tree_path for n in "abc"}, {"Media"})
+        self.assertEqual(self.item("c").media_path, self.in_root("Media", "pexels-1.mp4"))  # no classification
+        self.assertTrue(os.path.isfile(a))
+        entries = [e for e in self.journal() if e["op"] == "synced"]
+        self.assertTrue(all(e["status"] == "done" and e["copied"] for e in entries))
+        self.press("files.undo", row=entries[0]["id"])
+        self.assertEqual((self.item("a").media_path, self.item("a").tree_path), (a, "Inbox"))
+        self.assertFalse(os.path.exists(self.in_root("Media", "a.mp4")))
+        # Sort files the synced media from Media into the layout
+        self.host.tools.infos[self.in_root("Media", "pexels-1.mp4")] = info(self.in_root("Media", "pexels-1.mp4"),
+                                                                          "video", duration=5.0, has_audio=True)
+        self.assertEqual(self.press("files.sort")[1], "ok")
+        self.assertEqual(self.item("c").media_path, self.in_root("Stock", "pexels-1.mp4"))
 
-    def test_pack_ok_without_zip(self):
-        self.pr.set_items([ProjectItem("p1", "in.mp4", "clip", tree_path="Footage", media_path=self.inside)])
-        self.module._take_snapshot(self.module._state)
-        self.module.on_action("files.pack")
-        self.assertTrue(self.module._state.pack_report.ok)
-        self.assertEqual(self.host.ui.toasts[-1][0], "ok")
+    def test_offline_items_are_counted_and_equal_files_reused(self):
+        a = self.ext("a.mp4", 3000, "same")
+        write_file(self.in_root("Media", "a.mp4"), 3000, "same")
+        self.place(ProjectItem("a", "a.mp4", "clip", media_path=a),
+                   ProjectItem("o", "lost.wav", "clip", media_path=os.path.join(self.downloads, "lost.wav"),
+                               is_offline=True))
+        result = self.press("files.sync_all")
+        self.assertEqual(result, ("sync_all", "warn", "Synced 1 of 1 files · 1 offline", "Offline: lost.wav"))
+        self.assertFalse(self.journal()[-1]["copied"])
+        self.assertEqual(os.listdir(self.in_root("Media")), ["a.mp4"])
+
+    def test_sync_used_takes_only_items_in_sequences(self):
+        used, unused = self.ext("used.mp4"), self.ext("unused.mp4")
+        self.place(ProjectItem("u", "used.mp4", "clip", media_path=used),
+                   ProjectItem("n", "unused.mp4", "clip", media_path=unused))
+        self.assertEqual(self.press("files.sync_used"),
+                         ("sync_used", "neutral", "No used media outside the project folder", None))
+        self.pr.sequences_value = [SequenceInfo("seq1", "Main", 1920, 1080, 25.0, 10.0)]
+        self.pr.track_items_value = {"seq1": [TrackItem("seq1", "video", 0, 0, "used.mp4", "u", 0, 1, 0, 1)]}
+        self.assertEqual(self.press("files.sync_used")[:2], ("sync_used", "ok"))
+        self.assertEqual(self.item("u").media_path, self.in_root("Media", "used.mp4"))
+        self.assertEqual(self.item("n").media_path, unused)
+
+    def test_nothing_free_space_and_stop(self):
+        self.assertEqual(self.press("files.sync_all"),
+                         ("sync_all", "neutral", "Nothing outside the project folder", None))
+        a = self.ext("big.mp4", 5000)
+        self.place(ProjectItem("a", "big.mp4", "clip", media_path=a))
+        with mock.patch("premiere_deck.modules.files.module.free_bytes", return_value=100):
+            self.assertEqual(self.press("files.sync_all"),
+                             ("sync_all", "error", "Not enough free space · needs 4.9 KB", None))
+        self.assertFalse(os.path.exists(self.in_root("Media", "big.mp4")))
+        self.host.jobs.manual = True
+        self.module.on_action("files.sync_all")
+        self.module.on_action("files.stop")
+        self.host.jobs.step()
+        self.assertEqual(self.host.ui.results[-1], ("sync_all", "neutral", "Sync stopped · 0 of 1 copied", None))
+
+    def test_copy_failure_reason(self):
+        a = self.ext("a.mp4")
+        self.place(ProjectItem("a", "a.mp4", "clip", media_path=a))
+        with mock.patch("premiere_deck.modules.files.module.copy_file", side_effect=OSError(28, "No space left")):
+            result = self.press("files.sync_all")
+        self.assertEqual(result, ("sync_all", "warn", "Synced 0 of 1 files · 1 failed", "a.mp4: disk full"))
+        self.assertEqual(self.journal()[-1]["error"], "disk full")
+
+
+class MakeZip(Base):
+    def setUp(self):
+        super().setUp()
+        self.make_module(enabled=True, watch=False)
+        self.host.ui.results.clear()
+
+    def test_zip_is_refused_with_media_outside_the_root(self):
+        self.place(ProjectItem("x", "ext.mp4", "clip", media_path=self.ext("ext.mp4")))
+        result = self.press("files.zip")
+        self.assertEqual(result, ("zip", "warn", "Sync all media first · 1 file outside the folder", None))
         self.assertFalse(os.path.exists(self.root + ".zip"))
+
+    def test_zip_beside_the_root_with_report_and_offline(self):
+        import zipfile
+
+        inside = write_file(self.in_root("Footage", "a.mp4"), 2000)
+        self.place(ProjectItem("a", "a.mp4", "clip", media_path=inside))
+        result = self.press("files.zip")
+        self.assertEqual(result[:2], ("zip", "ok"))
+        self.assertTrue(result[2].startswith("ZIP ready · "), result)
+        self.assertEqual(result[3], self.root + ".zip")
+        with zipfile.ZipFile(self.root + ".zip") as archive:
+            names = archive.namelist()
+        self.assertIn("Sample/Footage/a.mp4", names)
+        self.assertIn("Sample/.premiere-deck/pack-report.txt", names)
+        entry = self.journal()[-1]
+        self.assertEqual((entry["op"], entry["status"], entry["to"]), ("zipped", "done", self.root + ".zip"))
+        self.place(ProjectItem("o", "b.wav", "clip", media_path=self.in_root("Audio", "b.wav"), is_offline=True))
+        result = self.press("files.zip")
+        self.assertEqual(result[:3], ("zip", "warn", "ZIP ready · 1 offline: b.wav"))
+        self.assertTrue(os.path.isfile(self.root + " (2).zip"))
+        self.assertEqual(self.press("files.undo_last")[1], "neutral")  # zipped entries are not undoable
+
+    def test_write_failure_and_stop(self):
+        write_file(self.in_root("Footage", "a.mp4"), 2000)
+        with mock.patch("premiere_deck.modules.files.module.make_zip", side_effect=OSError(28, "No space")):
+            result = self.press("files.zip")
+        self.assertEqual(result, ("zip", "error", "Could not write the ZIP · disk full", None))
+        self.assertEqual((self.journal()[-1]["status"], self.journal()[-1]["error"]), ("failed", "disk full"))
+        self.host.jobs.manual = True
+        self.module.on_action("files.zip")
+        self.module.on_action("files.stop")
+        self.host.jobs.step()
+        self.assertEqual(self.host.ui.results[-1][:2], ("zip", "neutral"))
+        self.assertTrue(self.host.ui.results[-1][2].startswith("ZIP stopped · "))
+        self.assertFalse(any(name.endswith(".part") for name in os.listdir(os.path.dirname(self.root))))
 
 
 class Undo(Base):
@@ -544,22 +786,21 @@ class Undo(Base):
         self.make_module(enabled=True, watch=False)
 
     def test_nothing_to_undo(self):
-        self.assertEqual(self.module.on_action("files.undo_last").toast, ("neutral", "Nothing to undo"))
+        self.assertEqual(self.press("files.undo_last"), ("undo_last", "neutral", "Nothing to undo", None))
         self.assertTrue(find(self.module.render(), "files.undo_last")["disabled"])
 
     def test_undo_filed(self):
         src = self.ext("u.mp4", 5000)
         item = self.user_import(src, "Inbox")
         copy = self.in_root("Footage", "u.mp4")
-        result = self.module.on_action("files.undo_last")
-        self.assertEqual(result.toast[0], "ok", result.toast)
+        self.assertEqual(self.press("files.undo_last"), ("undo_last", "ok", "Undone · filed u.mp4", None))
         self.assertEqual(self.item(item.node_id).media_path, src)
         self.assertEqual(self.item(item.node_id).tree_path, "Inbox")
         self.assertFalse(os.path.exists(copy))
         self.assertTrue(os.path.isfile(src))
         last = self.journal()[-1]
         self.assertEqual((last["status"], last["undo_of"], last["deleted"]), ("undone", self.journal()[-2]["id"], True))
-        self.assertEqual(self.module.on_action("files.undo_last").toast, ("neutral", "Nothing to undo"))
+        self.assertEqual(self.press("files.undo_last")[2], "Nothing to undo")
         # the module's own changes during undo do not re-file the item
         self.fire("project.changed")
         self.assertEqual(self.item(item.node_id).media_path, src)
@@ -568,7 +809,7 @@ class Undo(Base):
         src = self.ext("v.mp4", 5000)
         self.user_import(src)
         write_file(self.in_root("Footage", "v.mp4"), 5000, "edited by the user")
-        self.module.on_action("files.undo_last")
+        self.press("files.undo_last")
         self.assertTrue(os.path.isfile(self.in_root("Footage", "v.mp4")))
         self.assertFalse(self.journal()[-1]["deleted"])
 
@@ -576,14 +817,14 @@ class Undo(Base):
         src = self.ext("w.mp4")
         self.user_import(src)
         os.remove(src)
-        result = self.module.on_action("files.undo_last")
-        self.assertEqual(result.toast[0], "warn")
-        self.assertIn("no longer at", result.toast[1])
+        result = self.press("files.undo_last")
+        self.assertEqual(result[1], "warn")
+        self.assertTrue(result[2].startswith("Cannot undo · the original file is no longer at"))
 
     def test_undo_binned(self):
         path = write_file(self.in_root("Graphics", "g.png"))
         item = self.user_import(path, "Misc")
-        self.module.on_action("files.undo_last")
+        self.press("files.undo_last")
         self.assertEqual(self.item(item.node_id).tree_path, "Misc")
 
     def test_undo_imported_removes_the_item_and_keeps_the_file(self):
@@ -593,7 +834,7 @@ class Undo(Base):
         created = [i for i in self.pr.snapshot_value.items if i.media_path == path]
         self.assertEqual(len(created), 1)
         self.assertEqual(created[0].tree_path, "Footage")
-        self.module.on_action("files.undo_last")
+        self.press("files.undo_last")
         self.assertEqual(self.pr.calls_named("remove_items")[-1][0], ((created[0].node_id,),))
         self.assertEqual([i for i in self.pr.snapshot_value.items if i.media_path == path], [])
         self.assertTrue(os.path.isfile(path))
@@ -608,7 +849,7 @@ class Undo(Base):
         self.module._apply_disk_change(self.module._state, {"type": "moved", "src": old, "path": new})
         self.assertEqual((self.item("r1").name, self.item("r1").media_path), ("new.mp4", new))
         self.assertEqual(self.journal()[-1]["op"], "renamed")
-        self.module.on_action("files.undo_last")
+        self.press("files.undo_last")
         self.assertEqual(self.item("r1").name, "old.mp4")
         self.assertEqual(self.item("r1").media_path, new)  # the old file name no longer exists
 
@@ -623,49 +864,58 @@ class Undo(Base):
         self.assertEqual((self.item("m1").tree_path, self.item("m1").media_path), ("Overlays", new))
         self.assertEqual(self.journal()[-1]["op"], "moved_disk")
         write_file(old)  # the user put a file back at the old place
-        self.module.on_action("files.undo_last")
+        self.press("files.undo_last")
         self.assertEqual((self.item("m1").tree_path, self.item("m1").media_path), ("Footage", old))
 
-    def test_undo_moved_bin_recreates_the_deleted_copy(self):
-        src = self.ext("mb.mp4", 7000)
-        item = self.user_import(src)
-        first = self.in_root("Footage", "mb.mp4")
-        self.user_move_bin(item.node_id, "Overlays")
-        self.assertFalse(os.path.exists(first))
+    def test_undo_moved_bin_moves_the_file_back(self):
+        path = write_file(self.in_root("Footage", "mb.mp4"), 7000)
+        self.place(ProjectItem("mb", "mb.mp4", "clip", tree_path="Footage", media_path=path))
+        self.user_move_bin("mb", "Overlays")
         moved = self.in_root("Overlays", "mb.mp4")
-        result = self.module.on_action("files.undo_last")
-        self.assertEqual(result.toast[0], "ok", result.toast)
+        self.assertFalse(os.path.exists(path))
+        self.assertEqual(self.press("files.undo_last")[1], "ok")
+        self.assertTrue(os.path.isfile(path))
+        self.assertFalse(os.path.exists(moved))
+        self.assertEqual((self.item("mb").media_path, self.item("mb").tree_path), (path, "Footage"))
+
+    def test_undo_of_a_1x_moved_bin_copy_recreates_the_deleted_copy(self):
+        src = self.ext("old.mp4", 7000)
+        item = self.user_import(src)
+        first = self.in_root("Footage", "old.mp4")
+        moved = self.in_root("Overlays", "old.mp4")
+        os.replace(first, moved)  # what a 1.x bin move left: a copy in Overlays, the first copy deleted
+        journal = self.module._state.journal
+        journal.append("moved_bin", status="done", node_id=item.node_id, name="old.mp4", **{"from": first}, to=moved,
+                       bin_from="Footage", bin_to="Overlays", hash=self.journal()[-1]["hash"], copied=True,
+                       deleted_from=True)
+        self.pr._replace(item.node_id, media_path=moved, tree_path="Overlays")
+        self.module._take_snapshot(self.module._state)
+        self.assertEqual(self.press("files.undo_last")[1], "ok")
         self.assertTrue(os.path.isfile(first))
         self.assertFalse(os.path.exists(moved))
-        self.assertEqual((self.item(item.node_id).media_path, self.item(item.node_id).tree_path), (first, "Footage"))
-        undo = self.journal()[-1]
-        self.assertTrue(undo["recreated"])
-        # and the filed entry below can still be undone: back to the original, the recreated copy goes
-        self.module.on_action("files.undo_last")
+        self.assertTrue(self.journal()[-1]["recreated"])
+        self.press("files.undo_last")  # and the filed entry below goes back to the original
         self.assertEqual(self.item(item.node_id).media_path, src)
-        self.assertFalse(os.path.exists(first))
 
     def test_undo_by_row_from_the_host_window_and_limit(self):
         paths = [write_file(self.in_root("Graphics", f"g{i}.png")) for i in range(3)]
         items = [self.user_import(p, "Misc") for p in paths]
         entries = [e for e in self.journal() if e["op"] == "binned"]
-        result = self.module.on_action("files.undo", row=entries[0]["id"])
-        self.assertEqual(result.toast[0], "ok")
+        self.assertEqual(self.press("files.undo", row=entries[0]["id"])[:2], ("undo", "ok"))
         self.assertEqual(self.item(items[0].node_id).tree_path, "Misc")
         self.assertEqual(self.item(items[1].node_id).tree_path, "Graphics")
-        self.assertEqual(self.module.on_action("files.undo", row="nope").toast[0], "warn")
-        page = self.module.render_host()
-        journal = next(b for b in page["blocks"] if b["id"] == "journal")
-        undo_rows = [r["id"] for r in journal["rows"] if r["actions"]]
+        self.assertEqual(self.press("files.undo", row="nope")[1], "warn")
+        self.module.on_action("files.host:journal_all")
+        undo_rows = [r["id"] for r in self.block("journal")["rows"] if r["actions"]]
         self.assertEqual(set(undo_rows), {entries[1]["id"], entries[2]["id"]})
         self.module.UNDO_LIMIT = 1
-        self.assertEqual(self.module.on_action("files.undo", row=entries[1]["id"]).toast[0], "warn")
+        self.assertEqual(self.press("files.undo", row=entries[1]["id"])[1], "warn")
 
     def test_undo_when_the_item_was_deleted(self):
         src = self.ext("del.mp4")
         item = self.user_import(src)
         self.pr.set_items([i for i in self.pr.snapshot_value.items if i.node_id != item.node_id])
-        self.assertEqual(self.module.on_action("files.undo_last").toast[1], "The item is no longer in the project")
+        self.assertEqual(self.press("files.undo_last")[2], "Cannot undo · the item is no longer in the project")
 
 
 class Suppression(Base):
@@ -694,10 +944,19 @@ class Suppression(Base):
         self.module._on_disk_change(self.module._state, {"type": "created", "path": self.in_root("Footage", "copy.mp4")})
         self.assertEqual(len(self.host.jobs.jobs), before)
         self.user_import(src)
-        # the copy just made was registered before the copy: the watcher hit is dropped
         jobs = len(self.host.jobs.jobs)
         self.module._on_disk_change(self.module._state, {"type": "created", "path": self.in_root("Footage", "copy (2).mp4")})
         self.assertEqual(len(self.host.jobs.jobs), jobs + 1)  # a different path is not suppressed
+
+    def test_sort_moves_do_not_reach_the_watcher(self):
+        loose = write_file(self.in_root("C0001.MP4"))
+        self.place(ProjectItem("a", "C0001.MP4", "clip", media_path=loose))
+        self.press("files.sort")
+        before = len(self.host.jobs.jobs)
+        self.module._on_disk_change(self.module._state, {"type": "moved", "src": loose,
+                                                         "path": self.in_root("Footage", "C0001.MP4")})
+        self.assertEqual(len(self.host.jobs.jobs), before)
+        self.assertFalse(self.module._suppress.contains(("disk", norm(loose))))
 
     def test_suppression_ttl(self):
         self.module._suppress.ttl = 0.05
@@ -711,9 +970,23 @@ class Suppression(Base):
         self.assertTrue(self.module._watch_ignored(state, self.in_root("Sample.prproj")))
         self.assertTrue(self.module._watch_ignored(state, self.in_root(".premiere-deck", "journal.jsonl")))
         self.assertTrue(self.module._watch_ignored(state, self.in_root("Footage", "a.mp4.part")))
+        self.assertTrue(self.module._watch_ignored(state, self.in_root("Sample Masks", "x.prmf")))
+        self.assertTrue(self.module._watch_ignored(state, self.in_root("Sample Masks")))
         self.assertFalse(self.module._watch_ignored(state, self.in_root("Footage", "a.mp4")))
+        self.assertFalse(self.module._watch_accepts(state, self.in_root("Footage", "notes.txt")))
+        self.assertTrue(self.module._watch_accepts(state, self.in_root("Footage", "a.MP4")))
         self.host.settings.project.values["import_exports"] = True
         self.assertFalse(self.module._watch_ignored(state, self.in_root("Exports", "final.mp4")))
+
+    def test_ignored_files_get_no_journal_entry(self):
+        self.host.settings.project.values["watch"] = True
+        before = len(self.journal())
+        for path in (write_file(self.in_root("Sample Masks", "m.prmf")), write_file(self.in_root("Footage", "a.prin")),
+                     write_file(self.in_root("Footage", "readme.txt"))):
+            self.module._apply_disk_change(self.module._state, {"type": "created", "path": path})
+        self.assertEqual(len(self.journal()), before)
+        self.assertEqual(self.pr.calls_named("import_files"), [])
+        self.assertEqual(self.toasts(), [])
 
 
 class SettingsAndRecovery(Base):
@@ -723,8 +996,8 @@ class SettingsAndRecovery(Base):
         self.host.settings.values.update(copy_buffer_mb=-4, stable_seconds="2", toast_filed="no",
                                          default_layout="missing")
         m = self.module
-        self.assertEqual([m._proj(k) for k in ("enforce_bins", "mirror_bins", "import_exports", "watch", "pack_zip")],
-                         [True, True, False, True, False])
+        self.assertEqual([m._proj(k) for k in ("enforce_bins", "mirror_bins", "import_exports", "watch")],
+                         [True, True, False, True])
         self.assertEqual(m._proj("overrides"), [])
         self.assertEqual(m._proj("layout"), "default")
         self.assertEqual(m._host("copy_buffer_mb"), 16)
@@ -733,6 +1006,7 @@ class SettingsAndRecovery(Base):
         self.assertEqual(m._host("default_layout"), "default")
         self.host.settings.project.values["enabled"] = "true"
         self.assertFalse(m._enabled())
+        self.assertEqual(self.host.settings.project.values["pack_zip"], [])  # a 1.x key is ignored and kept
         self.check_render()
 
     def test_settings_store_that_raises(self):
@@ -771,6 +1045,7 @@ class SettingsAndRecovery(Base):
         with open(os.path.join(deck, "layout.json"), "w", encoding="utf-8") as handle:
             json.dump(custom, handle)
         self.make_module(enabled=True, watch=False, layout="custom")
+        self.assertIn("Media", self.module._state.layout.folders)  # a 1.x layout gets the Sync folder
         item = self.user_import(self.ext("x.wav"))
         self.assertEqual(self.item(item.node_id).media_path, self.in_root("Sound", "x.wav"))
 
@@ -784,15 +1059,28 @@ class SettingsAndRecovery(Base):
         write_file(self.in_root("Footage", "stale.mp4.part"), 100)
         relinked_src = self.ext("relinked.mp4")
         relinked = write_file(self.in_root("Footage", "relinked.mp4"))
+        moved_to = write_file(self.in_root("Stock", "pexels-9.mp4"))
+        moved_from = self.in_root("pexels-9.mp4")
+        undone_to = write_file(self.in_root("Stock", "pexels-8.mp4"))
+        undone_from = self.in_root("pexels-8.mp4")
+        zip_part = write_file(self.root + ".zip.part", 10)
         self.pr.set_items([ProjectItem("h1", "half.mp4", "clip", media_path=src),
                            ProjectItem("s1", "stale.mp4", "clip", media_path=stale),
-                           ProjectItem("r1", "relinked.mp4", "clip", tree_path="Footage", media_path=relinked)])
+                           ProjectItem("r1", "relinked.mp4", "clip", tree_path="Footage", media_path=relinked),
+                           ProjectItem("m1", "pexels-9.mp4", "clip", media_path=moved_from),
+                           ProjectItem("m2", "pexels-8.mp4", "clip", media_path=undone_from)])
         e1 = journal.append("filed", node_id="h1", name="half.mp4", **{"from": src}, to=done_copy, bin_from="",
                             bin_to="Footage", copied=True)
         e2 = journal.append("filed", node_id="s1", name="stale.mp4", **{"from": stale}, to=self.in_root("Footage", "stale.mp4"),
                             bin_from="", bin_to="Footage", copied=True)
         e3 = journal.append("filed", node_id="r1", name="relinked.mp4", **{"from": relinked_src}, to=relinked,
                             bin_from="", bin_to="Footage", copied=True)
+        e4 = journal.append("sorted", node_id="m1", name="pexels-9.mp4", **{"from": moved_from}, to=moved_to,
+                            bin_from="", bin_to="Stock", copied=False, moved=True)
+        write_file(undone_from)  # the move did not happen yet: both exist, the source still holds the file
+        e5 = journal.append("sorted", node_id="m2", name="pexels-8.mp4", **{"from": undone_from}, to=undone_to,
+                            bin_from="", bin_to="Stock", copied=False, moved=True)
+        e6 = journal.append("zipped", name="Sample.zip", to=self.root + ".zip")
         self.module.project_opened(self.project)
         state = self.module._state.journal
         self.assertEqual(state.get(e1["id"])["status"], "done")
@@ -802,6 +1090,38 @@ class SettingsAndRecovery(Base):
         self.assertFalse(os.path.exists(self.in_root("Footage", "stale.mp4.part")))
         self.assertEqual(state.get(e3["id"])["status"], "done")
         self.assertTrue(state.get(e3["id"])["recovered"])
+        self.assertEqual((state.get(e4["id"])["status"], self.item("m1").media_path), ("done", moved_to))
+        self.assertEqual(state.get(e5["id"])["status"], "failed")
+        self.assertTrue(os.path.isfile(undone_from) and os.path.isfile(undone_to))  # nothing overwritten
+        self.assertEqual(state.get(e6["id"])["status"], "failed")
+        self.assertFalse(os.path.exists(zip_part))
+
+    def test_clean_up_drops_failed_entries_of_ignored_files_once(self):
+        self.make_module(enabled=True, watch=False)
+        self.module.project_closed()
+        path = os.path.join(self.root, ".premiere-deck", "journal.jsonl")
+        journal = J.Journal(path)
+        mask = journal.append("imported", name="a.prmf", to=self.in_root("Sample Masks", "a.prmf"), bin_to="Sample Masks")
+        journal.mark_failed(mask["id"], "nothing imported")
+        other = journal.append("imported", name="x.prin", to=self.in_root("Footage", "x.prin"))
+        journal.mark_failed(other["id"], "nothing imported")
+        real = journal.append("imported", name="clip.mp4", to=self.in_root("Footage", "clip.mp4"))
+        journal.mark_failed(real["id"], "nothing imported")
+        with open(path, "a", encoding="utf-8") as handle:
+            handle.write("{torn line\n")
+        self.module.project_opened(self.project)
+        ids = [e["id"] for e in self.journal()]
+        self.assertNotIn(mask["id"], ids)
+        self.assertNotIn(other["id"], ids)
+        self.assertIn(real["id"], ids)
+        with open(path, encoding="utf-8") as handle:
+            content = handle.read()
+        self.assertIn("{torn line", content)
+        self.assertNotIn("prmf", content)
+        stamp = os.stat(path).st_mtime_ns
+        self.module.project_closed()
+        self.module.project_opened(self.project)
+        self.assertEqual(os.stat(path).st_mtime_ns, stamp)  # nothing matches: the file is not touched
 
     def test_closing_cancels_a_queued_copy(self):
         self.host.jobs.manual = True
@@ -855,12 +1175,11 @@ class Actions(Base):
         missing = self.in_root("Footage", "Day9", "lost.mp4")
         self.pr.set_items([ProjectItem("o1", "lost.mp4", "clip", tree_path="Footage", media_path=missing, is_offline=True)])
         self.fire("project.changed")
-        result = self.module.on_action("files.locate", row="o1")
-        self.assertFalse(result.rerender)
+        result = self.press("files.locate", row="o1")
+        self.assertEqual(result[:2], ("locate", "ok"))
         self.assertEqual(self.host.host.revealed, [self.in_root("Footage")])
-        self.assertEqual(self.module.on_action("files.locate", row="zz").toast[0], "warn")
-        result = self.module.on_action("files.remove", row="o1")
-        self.assertEqual(result.toast, ("ok", "Removed lost.mp4 from the project"))
+        self.assertEqual(self.press("files.locate", row="zz")[1], "warn")
+        self.assertEqual(self.press("files.remove", row="o1"), ("remove", "ok", "Removed lost.mp4 from the project", None))
         args, _ = self.pr.calls_named("remove_items")[-1]
         self.assertEqual(args, (("o1",),))
         self.assertNotIn("o1", self.pr.snapshot_value.by_node_id())
@@ -873,22 +1192,29 @@ class Actions(Base):
         self.pr.remove_items = boom
         self.pr.set_items([ProjectItem("o2", "x.mp4", "clip", media_path=missing, is_offline=True)])
         self.fire("project.changed")
-        self.assertEqual(self.module.on_action("files.remove", row="o2").toast[0], "error")
+        self.assertEqual(self.press("files.remove", row="o2")[1], "error")
 
-    def test_watch_toggle(self):
-        self.module.on_action("files.watch", True)
+    def test_open_folder_and_journal(self):
+        self.assertEqual(self.press("files.open_folder")[:2], ("open_folder", "ok"))
+        self.assertEqual(self.host.host.opened, [self.root])
+        self.assertEqual(self.press("files.journal")[:2], ("journal", "ok"))
+        self.assertEqual(self.host.host.shown, ["files"])
+
+    def test_watch_setting_starts_and_stops_the_watcher(self):
+        self.module.on_setting_changed("watch", "project", True)
         self.assertIsNotNone(self.module._state.watcher)
         self.assertTrue(self.host.settings.project.values["watch"])
-        self.module.on_action("files.watch", False)
+        self.module.on_setting_changed("watch", "project", False)
         self.assertIsNone(self.module._state.watcher)
         self.assertFalse(self.host.settings.project.values["watch"])
 
     def test_host_project_setting(self):
         self.assertIsNone(self.module.on_action("files.host:project_setting", {"key": "enforce_bins", "value": False}))
         self.assertFalse(self.host.settings.project.values["enforce_bins"])
-        self.module.on_action("files.host:project_setting", {"mirror_bins": False, "pack_zip": True})
-        self.assertEqual((self.host.settings.project.values["mirror_bins"], self.host.settings.project.values["pack_zip"]),
-                         (False, True))
+        self.module.on_action("files.host:project_setting", {"mirror_bins": False})
+        self.assertFalse(self.host.settings.project.values["mirror_bins"])
+        self.assertEqual(self.module.on_action("files.host:project_setting", {"key": "pack_zip", "value": True}).toast[0],
+                         "warn")
         self.assertEqual(self.module.on_action("files.host:project_setting", {"key": "enabled", "value": False}).toast[0], "warn")
         self.assertTrue(self.host.settings.project.values["enabled"])
 
@@ -904,6 +1230,8 @@ class Actions(Base):
         self.assertEqual(self.item(item.node_id).tree_path, "B-Roll")
         self.assertEqual(self.module.on_action("files.host:layout_save", "{nope").toast[0], "error")
         self.assertEqual(self.module.on_action("files.host:layout_save", {"layout": {"folders": []}}).toast[0], "error")
+        bad = dict(layout, rules=[{"match": {}, "to": "Media"}])
+        self.assertIn("Sync folder", self.module.on_action("files.host:layout_save", {"layout": bad}).toast[1])
         self.assertEqual(self.module.on_action("files.host:layout_reset").toast[0], "ok")
         self.assertEqual(self.module._state.layout.id, "default")
         self.assertIsNone(self.module.on_action("files.host:layout_select", {"value": "custom"}))
@@ -912,38 +1240,66 @@ class Actions(Base):
 
     def test_host_overrides_journal_filter_reveal(self):
         result = self.module.on_action("files.host:overrides_save",
-                                       [{"source": self.downloads, "to": "Audio/SFX"}, {"to": "x"}])
-        self.assertEqual(result.toast, ("warn", "Overrides saved · 1 invalid skipped"))
+                                       [{"source": self.downloads, "to": "Audio/SFX"}, {"to": "x"},
+                                        {"name": "*", "to": "Media"}])
+        self.assertEqual(result.toast, ("warn", "Overrides saved · 2 invalid skipped"))
         item = self.user_import(self.ext("long_track.wav"))
         self.assertEqual(self.item(item.node_id).tree_path, "Audio/SFX")
         self.assertEqual(self.module.on_action("files.host:overrides_save", "x").toast[0], "warn")
+        self.module.on_action("files.host:journal_all")
         self.module.on_action("files.host:journal_filter", {"op": "filed", "query": "long"})
-        journal = next(b for b in self.module.render_host()["blocks"] if b["id"] == "journal")
+        journal = self.block("journal")
         self.assertEqual([r["name"] for r in journal["rows"]], ["long_track.wav"])
         self.module.on_action("host:journal_op", "")  # the registry passes window ids without the prefix
         self.module.on_action("host:journal_query", "")
-        journal = next(b for b in self.module.render_host()["blocks"] if b["id"] == "journal")
+        journal = self.block("journal")
         self.assertGreater(len(journal["rows"]), 1)
         self.assertEqual(journal["filters"][0]["id"], "files.host:journal_op")
         self.assertEqual(journal["search"]["id"], "files.host:journal_query")
         self.assertFalse(self.module.on_action("files.host:reveal").rerender)
         self.assertEqual(self.host.host.revealed[-1], self.root)
 
-    def test_unknown_actions(self):
+    def test_unknown_and_removed_actions(self):
         self.assertEqual(self.module.on_action("files.nothing").toast[0], "warn")
         self.assertEqual(self.module.on_action("files.host:nothing").toast[0], "warn")
+        before = (len(self.host.ui.results), len(self.host.ui.toasts))
+        for old in ("files.collect", "files.collect_run", "files.collect_discard", "files.pack", "files.cancel"):
+            result = self.module.on_action(old)
+            self.assertIsNone(result.toast)
+            self.assertFalse(result.rerender)
+        self.assertEqual((len(self.host.ui.results), len(self.host.ui.toasts)), before)
 
     def test_render_host_blocks(self):
+        src = self.ext("a.mp4")
+        for index in range(5):
+            write_file(self.in_root("Graphics", f"g{index}.png"))
+            self.user_import(self.in_root("Graphics", f"g{index}.png"), "Misc")
+        self.place(ProjectItem("x", "a.mp4", "clip", media_path=src))
         page = self.module.render_host()
+        self.assertEqual((page["title"], page["subtitle"]), ("Files", self.root))
+        self.assertEqual(page["header_actions"][0]["variant"], "icon")
         ids = [b["id"] for b in page["blocks"]]
-        for block_id in ("status", "main", "journal", "collect_plan", "pack_options", "layout",
-                         "layout_folders", "layout_rules", "overrides"):
+        self.assertEqual(ids[:2], ["status_chips", "main"])
+        self.assertEqual(self.block("last_result")["rows"][0]["title"], "Project set up · 13 folders")
+        for block_id in ("journal", "journal_actions", "layout", "layout_folders", "layout_rules", "overrides",
+                         "override_add"):
             self.assertIn(block_id, ids)
-        self.assertNotIn("project_settings", ids)  # drawn once by the host window's Settings card (MODULES.md 5)
-        main = next(b for b in page["blocks"] if b["id"] == "main")
-        self.assertIn("files.collect", [b["id"] for b in main["items"]])
-        pack = next(b for b in page["blocks"] if b["id"] == "pack_options")
-        self.assertEqual(pack["submit"]["id"], "files.pack")
+        for gone in ("collect_plan", "pack_options", "cards", "status", "project_settings"):
+            self.assertNotIn(gone, ids)
+        main = self.block("main")
+        self.assertEqual((main["tiles"], main["columns"], [b["id"] for b in main["items"]]), (True, 2, TILES))
+        journal = self.block("journal")
+        self.assertEqual(len(journal["rows"]), 3)
+        self.assertNotIn("filters", journal)
+        self.assertEqual(self.block("journal_actions")["items"][0]["label"], "Show all")
+        self.module.on_action("files.host:journal_all")
+        self.assertGreater(len(self.block("journal")["rows"]), 3)
+        self.assertEqual(self.block("journal_actions")["items"][0]["label"], "Show fewer")
+        self.press("files.sync_all")
+        last = self.block("last_result")
+        self.assertEqual(last["rows"][0]["tone"], "ok")
+        self.assertTrue(last["rows"][0]["title"].startswith("Synced 1 file into Media"))
+        self.assertEqual(last["rows"][0]["actions"][0]["id"], "files.undo_last")
         self.check_render()
 
     def test_override_add_and_remove(self):
@@ -954,16 +1310,13 @@ class Actions(Base):
                          [{"source": self.downloads, "to": "Audio/SFX"}, {"name": "*_vo*", "to": "Audio/Voice"}])
         self.assertEqual(self.module.on_action("host:override_add", {"match": "", "to": "x"}).toast[0], "warn")
         self.assertEqual(self.module.on_action("host:override_add", {"match": "*a*", "to": "../x"}).toast[0], "warn")
-        table = next(b for b in self.module.render_host()["blocks"] if b["id"] == "overrides")
+        self.assertEqual(self.module.on_action("host:override_add", {"match": "*a*", "to": "Media"}).toast[0], "warn")
+        table = self.block("overrides")
         self.assertEqual([r["match"] for r in table["rows"]], [self.downloads, "*_vo*"])
+        self.assertNotIn("Media", [o["value"] for o in self.block("override_add")["fields"][1]["options"]])
         self.assertEqual(self.module.on_action("host:override_remove", row="0").toast, ("ok", "Override removed"))
         self.assertEqual(self.host.settings.project.values["overrides"], [{"name": "*_vo*", "to": "Audio/Voice"}])
         self.assertEqual(self.module.on_action("host:override_remove", row="7").toast[0], "warn")
-
-    def test_pack_form_submit_sets_the_zip_option(self):
-        self.module.on_action("pack", {"pack_zip": True})
-        self.assertTrue(self.host.settings.project.values["pack_zip"])
-        self.assertTrue(os.path.isfile(self.root + ".zip"))
 
 
 if __name__ == "__main__":

@@ -18,7 +18,11 @@
 //
 // initBackground(root, options): the colours come from the options, else from the scene tokens
 // (--scene-hue, --scene-accent, --scene-line) of the root's computed style; `fields` overrides the
-// treatment's own fields (the kit's documentation, "Background").
+// treatment's own fields (the kit's documentation, "Background"). The base stops (--bg-*), the
+// vignette and the strength of every layer (--scene-fields-o, --scene-lines-o, --scene-floor-o,
+// --scene-specks-o, --scene-grain-o) are theme tokens read by css/scene.css, so a light theme
+// (Crystal Sky) is the same scene with other token values; retint() re-reads the colours after
+// applyTheme().
 
 import { reducedMotion } from './motion.js';
 

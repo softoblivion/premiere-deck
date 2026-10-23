@@ -1,3 +1,4 @@
+import errno
 import json
 import os
 import unittest
@@ -5,9 +6,12 @@ import zipfile
 
 from premiere_deck.modules.files import journal as J
 from premiere_deck.modules.files.layout import norm
+from unittest import mock
+
+from premiere_deck.modules.files import sync as S
 from premiere_deck.modules.files.sync import (
-    CollectPlan, CopyCancelled, CopyError, PlanEntry, Suppression, build_pack_report, copy_file, fmt_size,
-    free_zip_path, make_zip, pack_files, resolve_target,
+    CopyCancelled, CopyError, Suppression, build_zip_report, copy_file, failure_reason, fmt_size, free_zip_path,
+    make_zip, move_file, pack_files, resolve_target, write_check,
 )
 from premiere_deck.premiere.model import ProjectItem
 from tests.test_modules_files_support import remove_tree, scratch, write_file
@@ -77,6 +81,47 @@ class Copies(unittest.TestCase):
         self.assertFalse(reuse2)
         self.assertNotEqual(norm(first), norm(second))
         self.assertTrue(second.endswith("clip (2).mp4"))
+
+    def test_move_never_overwrites(self):
+        target = os.path.join(self.dest, "moved.mp4")
+        move_file(self.src, target)
+        self.assertFalse(os.path.exists(self.src))
+        self.assertEqual(os.path.getsize(target), 300_000)
+        other = write_file(os.path.join(self.dir, "src", "other.mp4"), 10, "o")
+        with self.assertRaises(CopyError):
+            move_file(other, target)
+        self.assertTrue(os.path.isfile(other))
+
+    def test_failure_reasons(self):
+        self.assertEqual(failure_reason(PermissionError(13, "denied")), "access denied")
+        self.assertEqual(failure_reason(OSError(13, "x", "f", 5)), "access denied")
+        self.assertEqual(failure_reason(OSError(1, "x", "f", 1314)), "access denied")
+        self.assertEqual(failure_reason(OSError(13, "x", "f", 32)), "file in use")
+        self.assertEqual(failure_reason(OSError(13, "x", "f", 33)), "file in use")
+        self.assertEqual(failure_reason(OSError(28, "No space left")), "disk full")
+        self.assertEqual(failure_reason(OSError(22, "x", "f", 112)), "disk full")
+        self.assertEqual(failure_reason(OSError(22, "x", "f", 39)), "disk full")
+        self.assertEqual(failure_reason(OSError(22, "x", "f", 206)), "path too long")
+        self.assertEqual(failure_reason(OSError(errno.ENAMETOOLONG, "File name too long")), "path too long")
+        self.assertEqual(failure_reason(FileNotFoundError(2, "gone")), "source not found")
+        self.assertEqual(failure_reason(OSError(5, "io")), "copy error")
+        self.assertEqual(failure_reason(CopyCancelled()), "cancelled")
+        long_target = "C:\\" + "x" * 300 + ".mp4"
+        with mock.patch.object(S, "long_paths_enabled", return_value=False):
+            self.assertEqual(failure_reason(FileNotFoundError(2, "gone"), target=long_target), "path too long")
+        with mock.patch.object(S, "long_paths_enabled", return_value=True):
+            self.assertEqual(failure_reason(FileNotFoundError(2, "gone"), target=long_target), "source not found")
+
+    def test_write_check(self):
+        root = os.path.join(self.dir, "root")
+        os.makedirs(root)
+        self.assertIsNone(write_check(root))
+        self.assertEqual(os.listdir(os.path.join(root, ".premiere-deck")), [])  # the temporary file is gone
+        with self.assertLogs("module.files.sync", "WARNING"):
+            with mock.patch("builtins.open", side_effect=PermissionError(13, "denied")):
+                self.assertEqual(write_check(root), "access denied")
+            blocker = write_file(os.path.join(self.dir, "file_root"), 10)
+            self.assertIsNotNone(write_check(blocker))  # .premiere-deck cannot be created under a file
 
     def test_sizes(self):
         self.assertEqual(fmt_size(0), "0 B")
@@ -154,6 +199,24 @@ class Journal(unittest.TestCase):
                           hash="def")
         self.assertIsNone(j.module_copy_hash(reused["to"], norm))
 
+    def test_drop_rewrites_once_and_keeps_other_lines(self):
+        j = J.Journal(self.path)
+        keep = j.append(J.OP_IMPORTED, name="a.mp4", to="a.mp4")
+        drop = j.append(J.OP_IMPORTED, name="m.prmf", to="m.prmf")
+        j.mark_failed(drop["id"], "nothing imported")
+        with open(self.path, "a", encoding="utf-8") as handle:
+            handle.write("{torn\n")
+        self.assertEqual(j.drop([]), 0)
+        self.assertEqual(j.drop(["unknown"]), 0)
+        self.assertEqual(j.drop([drop["id"]]), 1)
+        with open(self.path, encoding="utf-8") as handle:
+            lines = handle.read().splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertEqual(lines[1], "{torn")
+        self.assertEqual([e["id"] for e in J.Journal(self.path).entries()], [keep["id"]])
+        later = j.append(J.OP_IMPORTED, name="b.mp4", to="b.mp4")  # appending still works after the rewrite
+        self.assertEqual([e["id"] for e in j.entries()], [keep["id"], later["id"]])
+
     def test_filter(self):
         j = J.Journal(self.path)
         j.append(J.OP_FILED, status=J.DONE, name="Whoosh.wav", to="x")
@@ -162,7 +225,7 @@ class Journal(unittest.TestCase):
         self.assertEqual(J.filter_entries(j.entries(), "", "whoosh")[0]["name"], "Whoosh.wav")
 
 
-class Pack(unittest.TestCase):
+class Zip(unittest.TestCase):
     def setUp(self):
         self.base = scratch("files-pack-")
         self.root = os.path.join(self.base, "Spring")
@@ -183,8 +246,11 @@ class Pack(unittest.TestCase):
                                  "Spring/Footage/a.mp4", "Spring/Spring.prproj"])
 
     def test_zip_is_written_beside_the_root_with_a_free_name(self):
-        first = make_zip(self.root)
+        seen = []
+        first = make_zip(self.root, on_file=lambda k, n, name: seen.append((k, n, name)))
         self.assertEqual(first, self.root + ".zip")
+        self.assertEqual(seen[0][:2], (1, 4))
+        self.assertEqual(seen[-1][0], 4)
         with zipfile.ZipFile(first) as archive:
             self.assertIn("Spring/Footage/a.mp4", archive.namelist())
             self.assertEqual(len(archive.read("Spring/Footage/a.mp4")), 2000)
@@ -192,32 +258,23 @@ class Pack(unittest.TestCase):
         with self.assertRaises(CopyCancelled):
             make_zip(self.root, cancelled=lambda: True)
         self.assertFalse(os.path.exists(self.root + " (2).zip.part"))
+        with self.assertRaises(CopyError):
+            make_zip(self.root, first)  # never overwrites
 
-    def test_report_lists_offline_and_outside(self):
+    def test_report_lists_offline(self):
         inside = os.path.join(self.root, "Footage", "a.mp4")
-        outside = write_file(os.path.join(self.base, "elsewhere.wav"), 10)
         items = [ProjectItem("n1", "a.mp4", "clip", media_path=inside),
+                 ProjectItem("n1b", "a again", "clip", media_path=inside),
                  ProjectItem("n2", "gone.mp4", "clip", media_path=os.path.join(self.root, "Footage", "gone.mp4"), is_offline=True),
-                 ProjectItem("n3", "elsewhere.wav", "clip", media_path=outside),
                  ProjectItem("n4", "Seq", "sequence")]
-        report = build_pack_report("Spring.prproj", self.root, items, lambda p: p.startswith(self.root))
-        self.assertEqual(report.media_items, 3)
-        self.assertEqual(report.inside, 1)
+        report = build_zip_report("Spring.prproj", self.root, items, lambda p: p.startswith(self.root))
+        self.assertEqual((report.media_items, report.inside, report.total_bytes), (3, 2, 2000))
         self.assertFalse(report.ok)
-        self.assertIn("gone.mp4", report.line())
-        self.assertIn("1 offline", report.line())
-        text = report.text()
-        self.assertIn("Offline items:", text)
-        self.assertIn("elsewhere.wav", text)
-
-    def test_plan_groups(self):
-        plan = CollectPlan(entries=[
-            PlanEntry("n1", "a.mp4", "s", "Footage", "t", 1024, False, ""),
-            PlanEntry("n2", "b.mp4", "s", "Footage", "t", 1024, True, ""),
-            PlanEntry("n3", "c.wav", "s", "Audio/SFX", "t", 2048, False, "")])
-        self.assertEqual(plan.total_bytes, 3072)
-        self.assertEqual(plan.summary(), "3 files · 3.0 KB")
-        self.assertEqual([(g["folder"], g["count"]) for g in plan.groups()], [("Audio/SFX", 1), ("Footage", 2)])
+        self.assertEqual(report.line(), "ZIP ready · 1 offline: gone.mp4")
+        self.assertIn("Offline items:", report.text())
+        ok = build_zip_report("Spring.prproj", self.root, items[:1], lambda p: True)
+        ok.files, ok.archive_bytes = 120, int(3.2 * 1024 ** 3)
+        self.assertEqual(ok.line(), "ZIP ready · 120 files · 3.2 GB")
 
 
 if __name__ == "__main__":

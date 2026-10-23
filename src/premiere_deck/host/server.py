@@ -7,8 +7,9 @@ script and no module:
 - `server.agent` is the `AgentTransport` (host/protocol.py) the facade `PremiereApi` is built on. Its handler gets
   every agent message after the handshake (paged results already joined); `add_tap()` lets the hub watch the same
   stream (events, heartbeat) without taking the facade's place.
-- `server.displays` is the `DisplayPort`: broadcasts `ui` / `toast` to every display (a display that connects later
-  gets the last `ui` at once) and delivers `action` and `display.ready` to one handler.
+- `server.displays` is the `DisplayPort`: broadcasts `ui` / `toast` / `theme` / `action_result` / `reload` to every
+  display (a display that connects later gets `theme` and then the last `ui` at once) and delivers `action` and
+  `display.ready` to one handler.
 
 Every callback runs on the server thread; receivers must return fast (the hub posts to the module thread).
 """
@@ -161,6 +162,16 @@ class DisplayPort:
     def toast(self, tone: str, text: str, ms: int = 3500) -> None:
         self._server._broadcast(P.toast(tone, text, ms))
 
+    def send(self, message: dict) -> None:
+        """Any other message to every display (`action_result`, `reload`, ...)."""
+        self._server._broadcast(message)
+
+    def theme(self, name: str) -> None:
+        self._server._broadcast(P.theme(name))
+
+    def reload(self) -> None:
+        self._server._broadcast(P.reload())
+
     def _deliver(self, message: dict) -> None:
         if self._handler is not None:
             try:
@@ -180,7 +191,7 @@ class DeckServer:
     def __init__(self, host_version: str, *, ports: tuple[int, ...] = P.PORT_RANGE, host: str = "127.0.0.1",
                  discovery_dir: Optional[Callable[[], Optional[Path]]] = None, host_exe: Optional[str] = None,
                  autostart_host: bool = True, update_for: Optional[UpdateDecider] = None,
-                 token: Optional[str] = None) -> None:
+                 token: Optional[str] = None, theme: Optional[Callable[[], str]] = None) -> None:
         self.host_version = host_version
         self.ports = tuple(ports)
         self.host = host
@@ -191,6 +202,7 @@ class DeckServer:
         self.autostart_host = autostart_host
         self._discovery_dir = discovery_dir
         self._update_for = update_for
+        self._theme = theme  # the theme name sent to a display right after `welcome` (docs/PROTOCOL.md 6.5)
         self.agent = AgentPort(self)
         self.displays = DisplayPort(self)
         self._agent: Optional[_Client] = None
@@ -389,6 +401,7 @@ class DeckServer:
             self.agent._presence_changed(True, hello)
         else:
             self._displays[client.id] = client
+            await self._send(ws, P.theme(self._theme() if self._theme else P.DEFAULT_THEME), role)
             if self.displays.last_ui is not None:
                 await self._send(ws, self.displays.last_ui, role)
             self.displays._count_changed()

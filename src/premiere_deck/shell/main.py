@@ -1,10 +1,14 @@
 """Application entry point: single instance, logging, hub, bridge, tray and the fixed-size frameless window.
 
-    python -m premiere_deck [--project PATH] [--from-premiere] [--fake] [--debug] [--ui-dir PATH]
+    python -m premiere_deck [--project PATH] [--from-premiere] [--fake [--fake-state STATE]] [--debug] [--ui-dir PATH]
     PremiereDeck.exe --apply-update ...   (the updater's own mode, handled before anything else)
 
 A second start hands its arguments to the running instance (WM_COPYDATA to the window) and exits: the first
 instance shows its window and, with `--project`, launches Premiere with that project (docs/HOST_UI.md 1).
+
+The window has two locked sizes, compact and wide (docs/HOST_UI.md 2): the bridge decides the mode from
+`PremiereState.state` and sends the `window` event; `_Shell` moves the native size (winutil.SizeAnimator) on the
+WinForms UI thread.
 """
 
 from __future__ import annotations
@@ -25,8 +29,8 @@ from premiere_deck.core.selfupdate import APPLY_FLAG, build_scheduler, build_upd
 
 WINDOW_TITLE = APP_NAME
 MUTEX_NAME = "Local\\PremiereDeck.SingleInstance"
-BACKGROUND = "#0b0716"  # close to the Nova theme's darkest scene stop; the page paints over it at once
-WINDOW_SIZE = (1040, 680)  # logical px, fixed (docs/HOST_UI.md)
+BACKGROUND = {"black": "#0d1014", "sky": "#dcebfb"}  # --bg-mid of each theme (ui/themes.json); the page paints over it
+FAKE_STATES = ("not_running", "waiting", "connected")
 HTTP_PORT_FIRST = 42301  # fixed range keeps the page origin (and its localStorage) stable between launches
 HTTP_PORT_TRIES = 40
 
@@ -39,6 +43,8 @@ def parse_args(argv: Optional[list[str]] = None) -> argparse.Namespace:
     parser.add_argument("--project", help="launch Premiere Pro with this project")
     parser.add_argument("--from-premiere", action="store_true", help="started by the panel: start in the tray")
     parser.add_argument("--fake", action="store_true", help="simulate Premiere Pro with an in-process agent")
+    parser.add_argument("--fake-state", choices=FAKE_STATES, default="connected",
+                        help="with --fake: the simulated state at start (default connected)")
     parser.add_argument("--debug", action="store_true", help="WebView2 dev tools and verbose logging")
     parser.add_argument("--ui-dir", help="serve the window page from this folder")
     args, unknown = parser.parse_known_args(argv)
@@ -75,6 +81,20 @@ def pick_http_port() -> int:
                 continue
             return port
     return 0
+
+
+def theme_background(ui_dir: Path, theme: str) -> str:
+    """The page background (`--bg-mid`) of a theme from ui/themes.json, for the window and its DWM border."""
+    try:
+        data = json.loads((ui_dir / "themes.json").read_text("utf-8"))
+        for item in data.get("themes", []):
+            if item.get("name") == theme:
+                value = (item.get("overrides") or {}).get("--bg-mid") or (item.get("derived") or {}).get("--bg-mid")
+                if isinstance(value, str) and len(value) == 7 and value.startswith("#"):
+                    return value
+    except (OSError, ValueError, AttributeError):
+        log.debug("themes.json not readable", exc_info=True)
+    return BACKGROUND.get(theme, BACKGROUND["black"])
 
 
 def hand_over(args: argparse.Namespace) -> bool:
@@ -125,9 +145,13 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     pump = EventPump()
     try:
-        hub = Hub(paths, fake=args.fake)
+        hub = Hub(paths, fake=args.fake, fake_display=args.fake_state == "connected")
         bridge = Bridge(hub, pump, __version__)
         hub.start()
+        if args.fake and args.fake_state == "not_running":
+            from premiere_deck.host.fake_agent import set_fake_premiere
+
+            set_fake_premiere(hub, "not_running")
     except Exception as exc:  # noqa: BLE001
         log.exception("the host could not start")
         winutil.message_box(WINDOW_TITLE, f"Premiere Deck could not start:\n{exc}", error=True)
@@ -140,10 +164,12 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     import webview  # late: pulls in pythonnet and WinForms
 
+    background = theme_background(ui_dir, str(hub.settings.get("theme") or "black"))
+    size = winutil.WINDOW_SIZES[bridge._mode]
     window = webview.create_window(
-        WINDOW_TITLE, url=str(index), js_api=bridge, width=WINDOW_SIZE[0], height=WINDOW_SIZE[1],
+        WINDOW_TITLE, url=str(index), js_api=bridge, width=size[0], height=size[1],
         frameless=True, easy_drag=False, resizable=False, shadow=True, text_select=True,
-        background_color=BACKGROUND, hidden=bool(args.from_premiere))
+        background_color=background, hidden=bool(args.from_premiere))
     bridge._attach_window(window)
 
     def on_closing():
@@ -154,7 +180,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         return None
 
     window.events.closing += on_closing
-    shell = _Shell(window, bridge, hub)
+    shell = _Shell(window, bridge, hub, ui_dir)
     hub.on_open_window = shell.open_window
     if args.from_premiere:
         bridge._hidden = True
@@ -182,13 +208,19 @@ def main(argv: Optional[list[str]] = None) -> int:
 class _Shell:
     """Window-side glue: native setup on the UI thread, tray, second-instance messages, quit with Premiere."""
 
-    def __init__(self, window: Any, bridge: Any, hub: Any) -> None:
+    def __init__(self, window: Any, bridge: Any, hub: Any, ui_dir: Optional[Path] = None) -> None:
         self.window = window
         self.bridge = bridge
         self.hub = hub
+        self.ui_dir = ui_dir or resolve_ui_dir()
         self.tray: Any = None
+        self.hook: Any = None
+        self.sizer: Any = None
+        self.hwnd = 0
         self._native_done = False
+        self._balloon_shown = False  # the tray balloon is shown once per host run
         bridge._on_hide = self._on_hidden
+        bridge._on_theme = self._on_theme
         self._prev_process_cb = None
         if hub.watch is not None:
             previous = hub.watch._on_change
@@ -223,15 +255,31 @@ class _Shell:
         self._native_done = True
         native = self.window.native
         try:
-            hwnd = int(native.Handle.ToInt64())
+            hwnd = self.hwnd = int(native.Handle.ToInt64())
+            theme = str(self.hub.settings.get("theme") or "black")
             winutil.set_rounded_corners(hwnd)
-            winutil.set_border_color(hwnd, BACKGROUND)
+            winutil.set_border_color(hwnd, theme_background(self.ui_dir, theme))
             hook = winutil.FixedSizeHook(hwnd, on_copydata=self._on_copydata)
             if hook.install():
                 _keep_alive.append(hook)
-                rect = hook.lock(*WINDOW_SIZE, apply=native.SetBounds)
-                log.info("window %sx%s logical, %sx%s physical, scale %.2f", WINDOW_SIZE[0], WINDOW_SIZE[1],
-                         rect[2], rect[3], winutil.window_scale(hwnd))
+                self.hook = hook
+                mode = self.bridge._mode
+                size = winutil.WINDOW_SIZES[mode]
+                rect = hook.lock(*size, apply=native.SetBounds)
+                log.info("window %s %sx%s logical, %sx%s physical, scale %.2f, rect %s", mode, size[0], size[1],
+                         rect[2], rect[3], winutil.window_scale(hwnd), winutil.window_rect(hwnd))
+                self.sizer = winutil.SizeAnimator(
+                    invoke=lambda fn: _on_ui_thread(self.window, fn),
+                    apply=native.SetBounds,
+                    set_locked=hook.set_size,
+                    get_rect=lambda: winutil.window_rect(hwnd),
+                    get_work=lambda: winutil.monitor_work_area(hwnd),
+                    get_scale=lambda: winutil.window_scale(hwnd),
+                    logger=log)
+                self.sizer.mode = mode
+                self.bridge._attach_resizer(self._resize, winutil.animations_enabled)
+                if self.bridge._mode != mode:  # the state changed while the window was being set up
+                    self.sizer.set_mode(self.bridge._mode, animate=False)
             else:
                 log.warning("fixed-size hook was not installed")
         except Exception:  # noqa: BLE001
@@ -263,10 +311,31 @@ class _Shell:
     def open_window(self, page: Optional[str]) -> None:
         self.bridge._show(page)
 
+    def _resize(self, mode: str, *, animate: bool = True, ms: int = 300) -> bool:
+        """Bridge -> native: move to the locked size of `mode`; a minimized or hidden window changes at once."""
+        from . import winutil
+
+        sizer = self.sizer
+        if sizer is None:
+            return False
+        if winutil.is_iconic(self.hwnd) or not winutil.is_visible(self.hwnd):
+            animate = False
+        return sizer.set_mode(mode, animate=animate, ms=ms)
+
+    def _on_theme(self, theme: str) -> None:
+        from . import winutil
+
+        if self.hwnd:
+            color = theme_background(self.ui_dir, theme)
+            _on_ui_thread(self.window, lambda: winutil.set_border_color(self.hwnd, color))
+
     def _on_hidden(self) -> None:
         tray = self.tray
-        if tray is not None:
-            _on_ui_thread(self.window, lambda: tray.notify("Premiere Deck keeps running while Premiere Pro is open."))
+        if tray is None or self._balloon_shown:
+            return
+        self._balloon_shown = True
+        log.info("window hidden to the tray; balloon shown (once per run)")
+        _on_ui_thread(self.window, lambda: tray.notify("Premiere Deck keeps running while Premiere Pro is open."))
 
     def _tray_launch(self) -> None:
         threading.Thread(target=self.launch_project, args=(None,), daemon=True, name="launch-premiere").start()

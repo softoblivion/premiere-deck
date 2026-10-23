@@ -10,6 +10,8 @@ DEFAULT_SECONDS = 5.0
 class AdjustmentLayer(Action):
     id = "adjustment_layer"
     label = "Adjustment layer"
+    short = "Adjustment layer"
+    icon = "adjustment-layer"
     hint = "Adds an adjustment layer over the selected clips, or for 5 seconds at the playhead."
     group = "Timeline"
     feasibility = (

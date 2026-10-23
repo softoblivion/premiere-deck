@@ -2,11 +2,15 @@
 
 A small `websockets` server implementing docs/PROTOCOL.md 1-3 for one agent and any number of displays, with a
 `PremiereApi` on top. It writes `deck.json` into the installed panel folder (the dev junction) and removes it on
-exit. The display gets a sample tree with every node kind; its actions change the tree, so the round trip is
-visible in the panel.
+exit. The display gets a 2.0 sample tree: the Files tab (tiles with meta, a job with Stop, journal row), the Actions
+tab rendered by the real Quick actions module on a fake host (tiles, menus, results through `ctx.ui.result`) and a
+tab with every node kind. Its actions change the tree and send `action_result` / `toast`, so the round trip is
+visible in the panel; the host's `theme` message is sent right after `welcome`.
 
 Control, for scripted checks: a loopback HTTP endpoint (default port 47890)
-    POST /exec   body = Python source, run with `api`, `server`, `state` in scope; `result = ...` is returned as JSON
+    POST /exec   body = Python source, run with `api`, `server`, `state` in scope; `result = ...` is returned as JSON.
+                 Handy: `server.set_theme("sky")`, `server.model["job"] = {...}; server.push_ui()`,
+                 `server.broadcast(protocol.action_result("actions.razor_all", "ok", "Cut 3 tracks", None))`
     GET  /state  connection, recorded events, actions and agent messages
 Run:
     set PYTHONPATH=src
@@ -35,7 +39,10 @@ from websockets.asyncio.server import ServerConnection, serve
 
 from premiere_deck import PROTOCOL_VERSION, __version__
 from premiere_deck.host import protocol
+from premiere_deck.modules.base import FakeHost, FakeUi
+from premiere_deck.modules.quick_actions.module import QuickActionsModule
 from premiere_deck.premiere.api import PremiereApi
+from premiere_deck.premiere.model import PremiereError, Selection, SequenceInfo, TrackItem
 
 DEFAULT_PANEL_DIR = Path(os.environ.get("APPDATA", "")) / "Adobe" / "CEP" / "extensions" / "com.softoblivion.premieredeck"
 
@@ -62,36 +69,44 @@ class State:
                     "hellos": list(self.hellos)}
 
 
-def quick_actions_like(model: dict) -> list:
-    """The layout of the Quick actions module: one two-column group per category, an action's select right before
-    its own button, the last result as a small line (docs/QUICK_ACTIONS.md 1)."""
-    def button(action_id: str, label: str, **kw: Any) -> dict:
-        return protocol.node_button(f"demo.qa.{action_id}", label, **kw)
+def files_section(model: dict) -> dict:
+    """The Files tab as the Files module renders it (docs/FILES.md 6): header, path, chips, four tiles with meta, the
+    running job with Stop, the journal row."""
+    job = model["job"]
+    running = job["id"] if job else None
 
-    groups = [
-        ("Timeline", [button("adjustment", "Adjustment layer"), button("gaps", "Remove all gaps"),
-                      button("razor", "Razor all tracks"), button("empty", "Delete empty tracks")]),
-        ("Selection", [button("same", "Select same source"), button("offline", "Select offline clips")]),
-        ("Clips", [button("scale", "Set to frame size"), button("labels", "Colour labels by bin")]),
-        ("Tracks", [button("solo", "Solo audio track"), button("lock", "Lock other tracks", tone="accent")]),
-        ("Project", [button("version", "Save version"), button("consolidate", "Consolidate duplicates"),
-                     button("folder", "Open project folder"), button("reveal", "Reveal clip file")]),
-        ("Sequence", [protocol.node_select("demo.qa.format", "Format", "9x16",
-                                           [{"value": "9x16", "label": "9:16 vertical"},
-                                            {"value": "1x1", "label": "1:1 square"}]),
-                      button("social", "Social copy")]),
-        ("Export", [button("frame", "Export frame", busy=model["busy"]),
-                    protocol.node_select("demo.qa.preset", "Preset", "yt",
-                                         [{"value": "yt", "label": "YouTube 1080p HD"}]),
-                    button("sequence", "Export sequence")]),
+    def tile(local: str, label: str, icon: str, meta: str, confirm: str = None) -> dict:
+        return protocol.node_button(f"files.{local}", label, hint=f"{label}: what it does in one line.", icon=icon,
+                                    short=label, meta=job["tile_meta"] if running == local else meta, confirm=confirm,
+                                    busy=running == local, disabled=bool(running) and running != local)
+
+    items = [
+        protocol.node_row([protocol.node_text("spring-promo_v2"),
+                           protocol.node_button("files.open_folder", "Open project folder", icon="open-folder",
+                                                variant="icon", hint="Opens the project folder in Explorer.")]),
+        protocol.node_text("D:\\Footage\\spring-promo", small=True),
+        protocol.node_row([protocol.node_text("142 in the root", tone="ok", small=True, chip=True),
+                           protocol.node_text("4 outside", tone="warn", small=True, chip=True),
+                           protocol.node_text("1 offline", tone="error", small=True, chip=True)]),
+        protocol.node_group(None, [
+            tile("sort", "Sort project", "sort", "18 items to file", "Sort 18 items into the layout folders?"),
+            tile("sync_all", "Sync all media", "sync-all", "4 outside the root"),
+            tile("sync_used", "Sync used media", "sync-used", "2 in sequences"),
+            tile("zip", "Make ZIP", "zip", "Checks offline first"),
+        ], id="files.actions", columns=2, tiles=True),
     ]
-    nodes = [protocol.node_group(title, items, columns=2) for title, items in groups]
-    nodes.append(protocol.node_text(f"Last input: {model['last_input'] or 'none'}", small=True))
-    return nodes
+    if job:
+        items.append(protocol.node_progress(job["value"], job["label"], detail=job["detail"], cancel="files.stop"))
+    items.append(protocol.node_row([
+        protocol.node_button("files.journal", "Journal · 24 entries", icon="journal", hint="Opens the journal in the host window."),
+        protocol.node_button("files.undo_last", "Undo last", icon="undo", variant="icon", hint="Undoes the last change."),
+    ]))
+    status = protocol.status(job["label"], "accent") if job else protocol.status("Watching · spring-promo_v2", "ok")
+    return protocol.section("files", "Files", items, status=status, icon="folder")
 
 
-def sample_ui(model: dict, revision: int) -> dict:
-    """A tree with every node kind of PROTOCOL 6.1."""
+def kinds_section(model: dict) -> dict:
+    """Every node kind of PROTOCOL 6.1, including the 2.0 fields, for the look of the plain controls."""
     rows = [protocol.list_row(row_id, title, subtitle=sub, tone=tone,
                               actions=[protocol.node_button("demo.list.open", "Open"),
                                        protocol.node_button("demo.list.remove", "Remove", confirm="Remove this row?")])
@@ -101,6 +116,7 @@ def sample_ui(model: dict, revision: int) -> dict:
         protocol.node_button("demo.busy", "Busy for 2 s", busy=model["busy"], tone="accent"),
         protocol.node_button("demo.confirm", "Confirmed action", confirm="Run the confirmed action?", tone="warn"),
         protocol.node_button("demo.disabled", "Disabled button", disabled=True),
+        protocol.node_button("demo.icon", "With an icon", icon="open"),
         protocol.node_toggle("demo.toggle", "A toggle", model["toggle"], hint="Sends its value"),
         protocol.node_select("demo.select", "A select", model["select"],
                              [{"value": "a", "label": "Option A"}, {"value": "b", "label": "Option B"},
@@ -110,12 +126,10 @@ def sample_ui(model: dict, revision: int) -> dict:
         protocol.node_text(f"Last input: {model['last_input'] or '-'}"),
         protocol.node_text("Small dim text", small=True),
         protocol.node_text("Warning text", tone="warn"),
-        protocol.node_progress(model["progress"], "Progress"),
+        protocol.node_progress(model["progress"], "Progress", detail="a-file-name.mp4 > Footage", cancel="demo.stop"),
         protocol.node_progress(None, "Indeterminate"),
         protocol.node_divider(),
         protocol.node_row([protocol.node_button("demo.row.a", "Row A"), protocol.node_button("demo.row.b", "Row B")]),
-        protocol.node_group("Group, one column", [protocol.node_button("demo.g1.a", "First"),
-                                                  protocol.node_button("demo.g1.b", "Second", tone="ok")]),
         protocol.node_group("Group, two columns", [
             protocol.node_button("demo.g2.a", "Accent", tone="accent"),
             protocol.node_button("demo.g2.b", "Warn", tone="warn"),
@@ -125,18 +139,60 @@ def sample_ui(model: dict, revision: int) -> dict:
             protocol.node_button("demo.g2.e", "Busy", busy=model["busy"]),
             protocol.node_button("demo.g2.f", "Disabled", disabled=True),
             protocol.node_button("demo.g2.g", "A label that is much too long to fit one half-width pill"),
-        ], columns=2),
+        ], columns=2, id="demo.two"),
         protocol.node_list("demo.list", rows, empty="No rows"),
     ]
-    sections = [
-        protocol.section("demo", "Node kinds", controls, status=protocol.status(f"revision {revision}", "ok")),
-        protocol.section("actions", "Quick actions", quick_actions_like(model),
-                         status=protocol.status("Running · Export frame" if model["busy"] else "Ready",
-                                                "accent" if model["busy"] else "neutral")),
-        protocol.section("second", "Second section", [protocol.node_text("Collapsed by default")], collapsed=True),
-    ]
+    return protocol.section("demo", "Nodes", controls, status=protocol.status("revision {rev}", "ok"), icon="info")
+
+
+def sample_ui(model: dict, revision: int, actions: list, actions_status: dict) -> dict:
+    sections = [files_section(model),
+                protocol.section("actions", "Actions", actions, status=actions_status, icon="actions")]
+    if model.get("kinds", True):  # `server.model["kinds"] = False` leaves the two tabs of the product
+        sections.append(kinds_section(model))
+        sections[2]["status"] = protocol.status(f"revision {revision}", "ok")
     return protocol.ui(revision, "Premiere Deck", protocol.status("Connected · dev server", "ok"), sections,
                        {"text": f"Premiere Deck {__version__} (dev)", "link": {"label": "Open host", "action": "host.open"}})
+
+
+class LiveUi(FakeUi):
+    """`ctx.ui` of the Quick actions module on the dev host: results and toasts go to the displays."""
+
+    def __init__(self, server: "DevServer") -> None:
+        super().__init__()
+        self.server = server
+
+    def result(self, button_id: str, outcome: str, text: str, detail: Optional[str] = None) -> None:
+        super().result(button_id, outcome, text, detail)
+        full = button_id if button_id.startswith("actions.") else "actions." + button_id
+        self.server.broadcast(protocol.action_result(full, outcome, text, detail))
+
+    def toast(self, tone: str, text: str) -> None:
+        super().toast(tone, text)
+        self.server.toast(text, tone)
+
+    def invalidate(self) -> None:
+        super().invalidate()
+        self.server.push_ui()
+
+
+SEQUENCE = SequenceInfo("seq1", "Spring", 1920, 1080, 25.0, 60.0)
+CLIPS = (TrackItem("seq1", "video", 0, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True),
+         TrackItem("seq1", "audio", 1, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True))
+CANNED = {
+    "actions.adjustment_layer": {"track_index": 2, "start": 12.0, "end": 18.0, "created": False},
+    "actions.razor_all": {"cuts": 3, "locked": 1, "failed": 0, "seconds": 62.4},
+    "actions.delete_empty_tracks": {"video": 2, "audio": 1},
+    "actions.select_offline": {"count": 2},
+    "actions.scale_to_frame": {"clips": 3, "method": "clip"},
+    "actions.solo_track": {"states": [0, 1, 0], "count": 3},
+    "actions.lock_others": {"states": {"video": [0, 0], "audio": [0, 0]}, "locked": 2},
+    "actions.consolidate_duplicates": {},
+    "actions.duplicate_sequence": lambda args: {"name": args["name"], "sequence_id": "seq10"},
+    "actions.social_copy": lambda args: {"name": args["name"], "width": args["width"], "height": args["height"]},
+    "actions.export_frame": {"path": "D:\\Footage\\spring-promo\\Exports\\Frames\\Spring_00-00-12-05.png"},
+    "actions.export_sequence": lambda args: {"path": args["out_dir"] + "\\Spring.mp4"},
+}
 
 
 class DevServer:
@@ -155,8 +211,20 @@ class DevServer:
         self.presence: Callable[[bool, Optional[protocol.Hello]], None] = lambda connected, hello: None
         self.revision = 0
         self.model = {"busy": False, "toggle": True, "select": "b", "input": "", "last_input": "", "progress": 0.3,
+                      "job": None, "theme": "black",
                       "rows": [("r1", "First row", "subtitle one", "ok"), ("r2", "Second row", "subtitle two", "warn"),
                                ("r3", "Third row", "", "neutral")]}
+        self.fake = FakeHost(module_id="actions")
+        self.fake.make_project(name="Spring")
+        self.fake.premiere.active_sequence_value = SEQUENCE
+        self.fake.premiere.sequences_value = [SEQUENCE]
+        self.fake.premiere.selection_value = Selection("seq1", CLIPS)
+        self.fake.premiere.eval_results.update(CANNED)
+        self.fake.premiere.eval_errors["actions.select_same_source"] = PremiereError("deck: No clip with a source is selected.")
+        self.fake.ui = LiveUi(self)
+        self.actions = QuickActionsModule(self.fake.context())
+        self.actions.start()
+        self.job_timer: Optional[threading.Timer] = None
         self.custom_ui: Optional[dict] = None
         self.autostart = False
         self.host_exe: Optional[str] = None
@@ -188,9 +256,14 @@ class DevServer:
 
     def push_ui(self) -> None:
         self.revision += 1
-        tree = self.custom_ui or sample_ui(self.model, self.revision)
+        tree = self.custom_ui or sample_ui(self.model, self.revision, self.actions.render(),
+                                           self.actions.section_status())
         tree = dict(tree, revision=self.revision)
         self.broadcast(tree)
+
+    def set_theme(self, name: str) -> None:
+        self.model["theme"] = name
+        self.broadcast(protocol.theme(name))
 
     def toast(self, text: str, tone: str = "ok", ms: int = 3500) -> None:
         self.broadcast(protocol.toast(tone, text, ms))
@@ -207,10 +280,66 @@ class DevServer:
         with contextlib.suppress(FileNotFoundError):
             (self.panel_dir / "deck.json").unlink()
 
+    def start_job(self, job_id: str, label: str, steps: int, finish: tuple) -> None:
+        """A fake Files job: progress every 0.5 s, then a result (docs/FILES.md 6)."""
+        model = self.model
+        if model["job"]:
+            return
+        model["job"] = {"id": job_id, "label": label, "value": 0.0, "detail": "C0001.MP4 > Footage\\Camera A",
+                        "tile_meta": "0 of %d" % steps, "step": 0, "steps": steps}
+        self.push_ui()
+
+        def tick() -> None:
+            job = model["job"]
+            if not job:
+                return
+            job["step"] += 1
+            if job["step"] >= job["steps"]:
+                model["job"] = None
+                self.broadcast(protocol.action_result(f"files.{job_id}", *finish))
+                self.push_ui()
+                return
+            job["value"] = job["step"] / job["steps"]
+            job["label"] = f"{label} {job['step']} / {job['steps']}"
+            job["tile_meta"] = f"{job['step']} of {job['steps']}"
+            job["detail"] = f"C{job['step']:04d}.MP4 > Footage\\Camera A"
+            self.push_ui()
+            self.job_timer = threading.Timer(0.5, tick)
+            self.job_timer.start()
+
+        self.job_timer = threading.Timer(0.5, tick)
+        self.job_timer.start()
+
     def on_action(self, message: dict) -> None:
         action = message.get("id")
         model = self.model
-        if action == "demo.busy":
+        if isinstance(action, str) and action.startswith("actions."):
+            self.actions.on_action(action, message.get("value"), message.get("row"))
+            self.push_ui()
+            return
+        results = {
+            "files.open_folder": ("ok", "Opened spring-promo", None),
+            "files.journal": ("ok", "Journal opened in the host window", None),
+            "files.undo_last": ("neutral", "Nothing to undo", None),
+        }
+        if action in results:
+            self.broadcast(protocol.action_result(action, *results[action]))
+        elif action == "files.sort":
+            self.start_job("sort", "Sorting project", 12, ("ok", "Sorted 18 files into 4 folders", None))
+        elif action in ("files.sync_all", "files.sync_used"):
+            self.start_job(action.split(".")[1], "Syncing media", 6, ("ok", "Synced 4 files to Media", None))
+        elif action == "files.zip":
+            self.start_job("zip", "Making ZIP", 6, ("warn", "ZIP made · 1 offline file skipped",
+                                                    "spring-promo.zip was made without 1 file that is offline."))
+        elif action == "files.stop":
+            job = model["job"]
+            if job and self.job_timer:
+                self.job_timer.cancel()
+                done = job["step"]
+                model["job"] = None
+                self.broadcast(protocol.action_result(f"files.{job['id']}", "neutral",
+                                                      f"Stopped · {done} of {job['steps']}", None))
+        elif action == "demo.busy":
             model["busy"] = True
 
             def clear() -> None:
@@ -227,8 +356,11 @@ class DevServer:
             model["input"] = ""
         elif action == "demo.list.remove":
             model["rows"] = [row for row in model["rows"] if row[0] != message.get("row")]
-        model["progress"] = round((model["progress"] + 0.1) % 1.0, 2)
-        self.toast(f"{action} value={message.get('value')!r} row={message.get('row')!r}", "ok")
+        if isinstance(action, str) and action.startswith("demo."):
+            model["progress"] = round((model["progress"] + 0.1) % 1.0, 2)
+            self.toast(f"{action} value={message.get('value')!r} row={message.get('row')!r}", "ok")
+        elif action == "host.open":
+            self.toast("host.open: the host window would come to the front", "neutral")
         self.push_ui()
 
     async def connection(self, ws: ServerConnection) -> None:
@@ -255,6 +387,7 @@ class DevServer:
         if role == protocol.ROLE_AGENT:
             await self.serve_agent(ws, hello)
         else:
+            await ws.send(protocol.dumps(protocol.theme(self.model["theme"])))
             await self.serve_display(ws)
 
     async def serve_agent(self, ws: ServerConnection, hello: protocol.Hello) -> None:

@@ -15,7 +15,8 @@ export const store = {
   ffmpeg: null,
   settings: null,
   update: null,
-  page: 'deck',
+  mode: 'compact', // window mode of the last `window` event: compact | wide
+  tab: null, // the module tab of the main state (also remembered outside main)
 };
 
 const subs = new Map();

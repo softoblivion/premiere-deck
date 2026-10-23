@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from premiere_deck.modules.quick_actions.action import Action, Control, require_sequence
+from premiere_deck.modules.quick_actions.action import Action, Menu, require_sequence
 from premiere_deck.modules.quick_actions.results import count, text
 
 # value -> (numerator, denominator, label)
@@ -26,6 +26,8 @@ def _even(value: float) -> int:
 class SocialCopy(Action):
     id = "social_copy"
     label = "Social copy"
+    short = "Social copy"
+    icon = "social-copy"
     hint = "Creates an auto-reframed copy of the active sequence in the chosen format."
     group = "Sequence"
     long = True
@@ -37,9 +39,8 @@ class SocialCopy(Action):
         "take minutes; the script blocks Premiere meanwhile."
     )
 
-    def controls(self, module):
-        return [Control("format", "select", "Format", "9x16",
-                        tuple((value, spec[2]) for value, spec in FORMATS.items()))]
+    def menu(self, module):
+        return Menu("format", "Format", "9x16", tuple((value, spec[2]) for value, spec in FORMATS.items()))
 
     def run(self, ctx, module):
         choice = module.choice(self, "format")

@@ -3,7 +3,8 @@
 Owner: host worker. The only definition of what the host window's page (`src/premiere_deck/ui/`) and the Python
 side (`src/premiere_deck/shell/bridge.py`, backed by `host/hub.py`) say to each other. The mock
 (`ui/js/mock.js`, `index.html?mock=1`) implements the same contract with canned data. Same shape as Media Forge's
-`docs/BRIDGE_API.md`; the update control and the theme follow the Liquid UI kit contract (kit docs, sections 10-11).
+`docs/BRIDGE_API.md`; the update control follows the Liquid UI kit contract (kit docs, section 11), the themes are
+the project's own two (3.3, `HOST_UI.md` 6).
 
 ## 1. Transport
 
@@ -30,11 +31,12 @@ side (`src/premiere_deck/shell/bridge.py`, backed by `host/hub.py`) say to each 
 | `modules()` | `ModuleInfo[]` (3.4) | |
 | `set_module_enabled(id, enabled)` | `ModuleInfo` | starts / stops the module |
 | `module_page(id)` | `{module: ModuleInfo, page: Page or null}` | `page` = the module's `render_host()` (section 5); `null` when the module has no page or is not running |
-| `module_action(id, action, value, row)` | `{ok: bool, toast: [tone, text] or null}` | `action` = a node id from the page (`files.collect`, or local `collect`, or window-only `host:<local>`); `value` and `row` optional. The module's own toast also arrives as a `toast` event |
+| `module_action(id, action, value, row)` | `{ok: bool, toast: [tone, text] or null}` | `action` = a node id from the page (`files.sort`, or local `sort`, or window-only `host:<local>`); `value` and `row` optional. The module's own toast also arrives as a `toast` event, its result (`ctx.ui.result`) as a `result` event |
 | `module_settings(id)` | `{module, fields: Field[], project: name or null}` | `Field` = 3.6 |
 | `set_module_setting(id, key, value, scope)` | the stored value | `scope` = `host` or `project`; converted to the field's kind; rejection with a sentence when it cannot be |
 | `panel_status()` | `PanelStatus` (3.7) | |
-| `panel_reinstall()` | `PanelStatus` | copies the bundled panel again (docs/PANEL.md 4) |
+| `panel_reinstall()` | `PanelStatus` | copies the bundled panel again (docs/PANEL.md 4); the waiting state's "Reinstall panel" |
+| `panel_check_update()` | `{"updated": bool, "installed": version or null, "bundled": version}` | compares the installed panel with the bundled one and reinstalls when they differ, through the same code path as the start-up check (docs/PANEL.md 4.2); `installed` is the version found before the call; the waiting state's "Check panel update". A `panel` event follows when files were replaced |
 | `panel_remove()` | `{removed: bool, registry_removed: string[]}` | docs/PANEL.md 4.4 |
 | `panel_debug_mode(enable)` | `{written_by_host: string[], enabled: string[]}` | writes / removes `PlayerDebugMode`; the page asks for confirmation BEFORE calling with `true` |
 | `ffmpeg_status()` | `Ffmpeg` (3.8) | |
@@ -47,6 +49,7 @@ side (`src/premiere_deck/shell/bridge.py`, backed by `host/hub.py`) say to each 
 | `quit()` | `null` | quits even while Premiere runs |
 | `update_status()` / `check_updates()` / `download_update()` | `UpdateStatus` | kit contract (section 11) |
 | `apply_update()` | bool | the app closes after `true` |
+| `fake_premiere(state)` | `PremiereState` | `--fake` only (else rejected "Only available in the simulated mode."): `not_running` stops the fake agent and its display, `waiting` runs the agent without a display, `connected` adds the display; the `premiere` and `window` events follow from the real connections. The page binds it to Alt+1 / Alt+2 / Alt+3 in `--fake` and in the mock |
 | `log(level, message)` | `null` | `debug` / `info` / `warning` / `error`, logger `premiere_deck.ui` |
 
 ## 3. Payloads
@@ -57,27 +60,38 @@ side (`src/premiere_deck/shell/bridge.py`, backed by `host/hub.py`) say to each 
 {"version": "0.1.0", "fake": false, "data_dir": "D:\\Apps\\PremiereDeck\\premiere-deck_data",
  "premiere": PremiereState, "panel": PanelStatus, "install": InstallResult or null, "modules": [ModuleInfo],
  "recent": [Recent], "activity": [Activity], "jobs": [Job], "ffmpeg": Ffmpeg, "settings": Settings,
- "server": {"port": 47800, "agent": {...} or null, "displays": 0}, "update": UpdateStatus}
+ "server": {"port": 47800, "agent": {...} or null, "displays": 0}, "update": UpdateStatus,
+ "window": {"mode": "compact|wide", "focused": true}}
 ```
 
 ### 3.2 `PremiereState`
 
 ```json
-{"state": "not_running|starting|connected|no_panel", "running": true, "premiere_version": "26.0.0" or null,
- "panel_version": "1.0.0" or null, "project": {"path", "name", "root"} or null, "project_path": "..." or null,
+{"state": "not_running|starting|waiting|connected", "running": true, "agent_connected": false,
+ "premiere_version": "26.0.0" or null, "panel_version": "1.0.0" or null,
+ "project": {"path", "name", "root"} or null, "project_path": "..." or null,
  "exe": "C:\\...\\Adobe Premiere Pro.exe" or null, "installs": [{"exe", "version", "source"}],
  "fallback_offer": false, "displays": 1, "fake": false}
 ```
 
-`starting`: launched by the host (or seen starting) less than 20 s ago and the agent has not connected yet.
-`no_panel`: Premiere runs, no agent after 20 s; with `fallback_offer` true the Deck page offers "Enable Premiere's
-extension debug mode" (docs/PANEL.md 4.3).
+- `not_running`: no Premiere process.
+- `starting`: Premiere was launched by the host (or seen starting) less than 20 s ago and the agent has not connected yet.
+- `waiting`: Premiere runs and no display (the visible panel, `PROTOCOL.md` 1) is connected. The headless agent
+  may or may not be connected (`agent_connected`). With no agent 20 s after the start, `fallback_offer` is true
+  (unless the host already wrote `PlayerDebugMode`) and the home page offers "Enable Premiere's extension debug
+  mode" (docs/PANEL.md 4.3).
+- `connected`: at least one display is connected (`displays` >= 1).
+
+`agent_connected` is true while the agent is handshaken, in every state. The home page state of `HOST_UI.md` 3
+follows `state` one to one: `not_running` -> idle, `starting` and `waiting` -> waiting, `connected` -> main. A
+connected agent without a display is `waiting`, never `connected`.
 
 ### 3.3 `Settings`
 
-`{"premiere_exe": "auto" or path, "keep_running_with_premiere": true, "theme": "nova", "auto_download_updates": true,
-"recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable: the first four. Themes: `dusk`, `nova`,
-`frost`, `bloom` (default `nova`).
+`{"premiere_exe": "auto" or path, "keep_running_with_premiere": true, "theme": "black", "auto_download_updates": true,
+"recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable: the first four. Themes: `black`
+(Crystal Black) and `sky` (Crystal Sky), default `black`; a stored value that is not one of them (including the
+1.x names `dusk`, `nova`, `frost`, `bloom`) falls back to `black` on load. A patch with another value is refused.
 
 ### 3.4 `ModuleInfo`
 
@@ -90,8 +104,9 @@ is not in this build; `import_failed`: it is but could not be loaded (the error 
 
 - `Recent`: `{"path", "name", "folder", "opened_at": ISO text or null, "source": "deck|premiere"}`, Deck's own
   list first, files that no longer exist left out.
-- `Activity`: `{"at": epoch s, "module": id or null, "text": "Collect project finished", "tone"}`, newest first,
-  at most 20. Sources: finished / failed jobs and module events whose data carries `text`.
+- `Activity`: `{"at": epoch s, "module": id or null, "text": "Sort project finished", "tone"}`, newest first,
+  at most 20. Sources: finished / failed jobs, module events whose data carries `text`, and every action result
+  (`ctx.ui.result`, `MODULES.md` 3; `tone` = the result's `outcome`).
 - `Job`: `{"id", "title", "module", "priority", "state": "queued|running|done|failed|cancelled", "progress": 0..1 or
   null, "label", "error", "created_at", "started_at", "finished_at"}`.
 
@@ -117,25 +132,30 @@ open (the page shows them disabled with "Open a project in Premiere Pro").
 
 | Event | Payload | When |
 |---|---|---|
-| `premiere` | `PremiereState` | process start / exit, agent connect / disconnect, project switch, launch |
+| `premiere` | `PremiereState` | process start / exit, agent or display connect / disconnect, project switch, launch |
 | `modules` | `ModuleInfo[]` | after every module re-render (actions, events, jobs, `invalidate()`); the page also re-fetches the visible module page (`module_page`) on it, throttled to one call per 150 ms |
 | `job` | `Job` | every state and progress change |
 | `activity` | `Activity` | new line |
 | `toast` | `{"kind": "info|success|warning|error", "message"}` | module toasts, host notices |
+| `result` | `{"module", "id", "outcome": "ok|warn|error|neutral", "text", "detail", "at"}` | an action result (`ctx.ui.result`); the same fields as the panel's `action_result` (`PROTOCOL.md` 6.6) plus the module id. The page morphs the control with that `id` when it is visible (as the panel does) and adds the line to the activity strip |
 | `confirm` | `{"id", "question", "module"}` | a module asks yes / no from a job thread; the page opens a modal sheet and answers with `answer_confirm(id, yes)` (no answer in 10 min = no) |
 | `settings` | `Settings` | confirmed host settings after a change |
 | `panel` | `PanelStatus` | after install / reinstall / remove |
-| `navigate` | `{"page": "deck|settings|<module id>"}` | the panel's "Open host" link and the tray |
+| `navigate` | `{"page": "deck|settings|<module id>"}` | the panel's "Open host" link, the tray and `ctx.host.show(page)` (`MODULES.md` 3). `deck` = the home page; `settings` opens the settings sheet; a module id selects that module's tab of the main state (outside `main` the tab is remembered and shown once the window widens) |
 | `update` | `UpdateStatus` | kit contract |
-| `window` | `{"focused": bool}` | window focus (pauses the scene) |
+| `window` | `{"mode": "compact|wide", "focused": bool, "ms": 0 or 300}` | window focus change (pauses the scene; `ms` 0, same `mode`) and the start of a size change (`ms` = its duration; the page animates its layout in the same time, `HOST_UI.md` 2). The page never asks for a size: the shell picks `wide` for `PremiereState.state` `connected` and `compact` otherwise. The widen starts 0.45 s after the state entered `connected` (the compact page shows "Panel connected" meanwhile; no widen when the state left `connected` again within that time); the narrow starts at once. The event is sent before the native steps start and is delivered without the pump's batching wait. `ms` is 0 (an instant change) while the window is hidden or minimized, on a show from the tray, and when Windows' animation effects are off (the page's `prefers-reduced-motion`) |
 
 ## 5. Module page model (`render_host()`)
 
-`{"title": optional, "status": {"text", "tone"} optional, "blocks": [Block]}`. A block is a dict with `type` (`kind`
-is accepted as an alias), an optional stable `id`, optional `title` and `hint`. Interactive elements inside blocks
-are the panel's node shapes (docs/PROTOCOL.md 6.1: `button`, `toggle`, `select`, `input`, `text`, `progress`),
-built with the module's helpers (`self.button(...)` etc.), so ids carry the module prefix. Using a control calls
-`module_action(<module id>, <node id>, value, row)`.
+`{"title": optional, "status": {"text", "tone"} optional, "subtitle": optional, "header_actions": [button] optional,
+"blocks": [Block]}`. `subtitle` is one mono line under the title (the Files page shows the project root there);
+`header_actions` are buttons drawn at the right of the title, normally with `variant` `icon` (the Files page's
+"Open project folder"). A block is a dict with `type` (`kind` is accepted as an alias), an optional stable `id`,
+optional `title` and `hint`. Interactive elements inside blocks are the panel's node shapes (docs/PROTOCOL.md 6.1:
+`button`, `toggle`, `select`, `input`, `text`, `progress`, including the button fields `icon`, `short`, `meta`,
+`menu`, `variant` and the progress field `cancel`), built with the module's helpers (`self.button(...)` etc.), so
+ids carry the module prefix. Using a control calls `module_action(<module id>, <node id>, value, row)`; a menu pick
+sends the menu's `id` with the picked `value`, as in the panel.
 
 | `type` | Fields | Rendered as |
 |---|---|---|
@@ -144,9 +164,25 @@ built with the module's helpers (`self.button(...)` etc.), so ids carry the modu
 | `list` | `rows: [{id, title, subtitle, meta, tone, thumb, actions: [button], toggle: {id, value, disabled} optional}]`, `empty` | rows like the panel's list, with a thumbnail when given; a row `toggle` is a switch at the right that sends its `id` with the new value and `row` = the row id |
 | `form` | `fields: [Field-like or node]`, optional `action`, optional `submit: button` | node fields (`input`, `toggle`, `select`) send their own id; setting-style fields (`{key, label, kind, value, options, hint, scope}`) send `action` with `value = {"key", "value"}`; with `submit` the form sends the submit button's id with `value = {key or id: value, ...}` |
 | `grid` | `columns` (default 4), `items: [{id, title, subtitle, thumb, badge, bar (0..1), times: [{seconds, label, bar}], actions: [button]}]`, `busy`, `empty` | thumbnail grid; a time chip sends the item's first action with `value` = the seconds (a number), `row` = item id |
-| `actions` | `items: [button]` | a row of buttons (tone `accent` = the tinted primary, at most one per page) |
+| `actions` | `items: [button]`, optional `tiles` (bool), optional `columns` (1..3, default 2 with `tiles`) | a row of buttons (tone `accent` = the tinted primary, at most one per page); with `tiles` a grid of glass tiles: icon well, `short` label and the one-line `meta` under it, `columns` per row (the Files page draws its four actions as 2 x 2 tiles) |
+| `chips` | `items: [{id, text, tone, icon}]` | a row of small status chips (a dot or icon in the tone's colour and the text); not interactive |
 | `text` | `text`, `tone`, `small` | a line of text |
-| `progress` | `value` (0..1 or null), `label` | a progress bar |
+| `progress` | `value` (0..1 or null), `label`, optional `detail` (one mono line: the current file), optional `cancel` (button node id) | a progress card: label with the count, bar, `detail`, and a Stop pill that sends `cancel` when given |
+
+List rows may carry `icon` (a symbol of the window's sprite, `ui/assets/icons.svg`; rows with a `toggle` and no
+`icon` use the symbol named like the row id with `-` for `_` when the sprite has it) and `group`; a `list` block may
+carry `actions` (buttons drawn at the right of its title) and `columns` (2: the rows are laid out in two columns
+grouped by `group`, or by the part of `subtitle` before " · "; the id `visibility` implies it). A `button` with
+`variant` `icon` is a round plate with its `icon` and the `label` as its accessible name; `ghost` is a borderless
+button. A `chips` item text that starts with a number shows the number in bold.
+
+The window's right pane is 430 px wide, so a few blocks are drawn compact there: a `table` with more than four
+columns leaves its `mono` columns out (their values become the row's tooltip); an `actions` block whose id is
+`<table id>_actions` is drawn in that table's title row (the Files page's `journal_actions`); the `list` with the id
+`last_result` is drawn as a tinted result line (state icon, text, `meta`, the row's buttons); the page `title` and
+`status` are not repeated (the tab names the module), `subtitle` and `header_actions` form the first line. A
+`result` event morphs the node with that id (`data-node`) for 2 s: its icon turns into a check or a cross with a
+mint or rose glow.
 
 Row and item buttons send `row` = the row / item id. A `button` with `confirm` asks in a small in-page sheet first.
 Unknown block types are skipped (logged with `log`). A module that is not written yet has no page: the window shows
@@ -157,11 +193,20 @@ its title, state and error only. `render_host()` is pure and called on the modul
 - `Bridge` exposes exactly the methods of section 2 as public names (`CONTRACT_METHODS`, checked by
   `tests/test_shell_bridge.py`); everything else starts with an underscore (pywebview exposes every public
   attribute of the js_api object).
-- The window is fixed at 1040 x 680 logical px, frameless, not resizable or maximizable (`shell/winutil.FixedSizeHook`),
-  DWM rounded corners and border colour = page background. The page is served by pywebview's HTTP server on a port
-  from 42301..42340 so the origin (and its `localStorage`) stays stable.
+- The window has two locked sizes, compact 420 x 560 and wide 720 x 560 logical px; it is frameless and never
+  resizable or maximizable by the user (`shell/winutil.FixedSizeHook`), DWM rounded corners and border colour =
+  page background (the theme's `--bg-mid`, retinted on a theme change). The shell changes the size itself when
+  `PremiereState.state` enters or leaves `connected`: it sends the `window` event with `ms` 300, then moves
+  `SetBounds` in steps on the UI thread over 300 ms (one step per 60 Hz frame, timed from the start, on the page's
+  curve `cubic-bezier(0.2, 0.8, 0.2, 1)`; the window keeps its centre and stays inside the monitor's work area) and
+  updates the size hook's locked size before every step, so the hook never fights the animation
+  (`shell/winutil.SizeAnimator`; the log has the physical rect at the start and the end). A new change during an
+  animation starts from the current rect. The page is served by pywebview's HTTP server on a port from
+  42301..42340 so the origin (and its `localStorage`) stays stable.
 - Close: hide to the tray while Premiere runs and `keep_running_with_premiere` is on; otherwise quit. The tray menu:
   Open, Launch Premiere Pro, Quit. The process exits with `os._exit(0)` after a clean shutdown.
 - `--fake`: an in-process fake agent (`host/fake_agent.py`) connects over the real WebSocket and answers scripts with
-  canned data; the CEP target is `<data>/fake-cep/...` unless `PREMIERE_DECK_CEP_DIR` is set, so a fake run never
-  writes Adobe's folder.
+  canned data (`create_bin_path` answers `{"node_id": "bin:<path>"}`), and a fake display (the visible panel) joins
+  it; `--fake-state not_running|waiting|connected` (default `connected`) picks the start, `fake_premiere(state)`
+  switches later. The CEP target is `<data>/fake-cep/...` unless `PREMIERE_DECK_CEP_DIR` is set, so a fake run
+  never writes Adobe's folder.

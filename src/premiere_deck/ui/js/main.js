@@ -1,22 +1,25 @@
-// Entry point: scene, material, bridge, events, rail, pages and the settings sheet.
+// Entry point: scene, material, icon sprite, bridge, events, the compact and wide layouts, the settings sheet.
+//
+// The window mode follows the shell (docs/BRIDGE_API.md 4 `window`): `compact` shows idle / waiting
+// (js/pages/compact.js), `wide` shows main (js/pages/wide.js). The page never asks for a size; on a `window`
+// event with `ms` > 0 it animates its layout in the same time as the native resize (docs/HOST_UI.md 2).
 
 import { connect, call, on, goLive, backendMode, reportError } from './api.js';
-import { store, notify, watch, sortedModules, moduleById, anyJobRunning } from './store.js';
+import { store, notify, watch, moduleById, anyJobRunning } from './store.js';
 import { initBackground, setFocused } from '../vendor/liquid_ui/js/background.js';
 import { applyTheme } from '../vendor/liquid_ui/js/theme.js';
 import { initLight, gel, Lens } from '../vendor/liquid_ui/js/glass.js';
 import { SPRINGS, springAnimate, reducedMotion } from '../vendor/liquid_ui/js/motion.js';
 import { initToasts, toast } from '../vendor/liquid_ui/js/toast.js';
 import { mountUpdateControl } from '../vendor/liquid_ui/js/update.js';
-import { icon, appGlyph, pageIcon } from './icons.js';
+import { loadSprite, ic, glyph } from './icons.js';
 import { askConfirm } from './confirm.js';
-import { h } from './ui.js';
-import { mountDeck } from './pages/deck.js';
-import { mountModulePage } from './pages/module.js';
-import { initSettings, openSettings } from './settings.js';
+import { mountCompact } from './pages/compact.js';
+import { mountWide } from './pages/wide.js';
+import { initSettings, openSettings, closeSettings } from './settings.js';
 
 const THEME_KEY = 'pd.theme';
-const PAGE_KEY = 'pd.page';
+const FAKE_KEYS = { 1: 'not_running', 2: 'waiting', 3: 'connected' };
 
 // ---- theme ------------------------------------------------------------------------------------
 
@@ -34,12 +37,12 @@ function syncTheme(settings) {
 // ---- title bar --------------------------------------------------------------------------------
 
 function initTitlebar() {
-  document.getElementById('tb-glyph').innerHTML = appGlyph(22);
+  document.getElementById('tb-glyph').innerHTML = glyph(22);
   const cluster = document.getElementById('tb-cluster');
   new Lens(cluster, 'capsule');
-  document.getElementById('btn-settings').innerHTML = icon('gear');
-  document.getElementById('win-min').innerHTML = icon('min');
-  document.getElementById('win-close').innerHTML = icon('close');
+  document.getElementById('btn-settings').innerHTML = ic('settings');
+  document.getElementById('win-min').innerHTML = ic('minimize');
+  document.getElementById('win-close').innerHTML = ic('close');
   for (const b of cluster.querySelectorAll('button')) gel(b, { amount: 0.7 });
   const win = { 'win-min': 'window_minimize', 'win-close': 'window_close' };
   for (const [id, method] of Object.entries(win)) {
@@ -50,15 +53,14 @@ function initTitlebar() {
 function entrance() {
   if (reducedMotion.matches) return;
   const parts = [
-    [document.querySelector('.tb-brand'), 0],
-    [document.getElementById('ver-pill'), 50],
-    [document.getElementById('tb-cluster'), 90],
+    [document.getElementById('tb-cluster'), 60],
+    [document.querySelector('#compact .hero-block'), 0],
   ];
   for (const [el, delay] of parts) {
-    if (!el) continue;
+    if (!el || el.offsetParent === null) continue;
     const own = !!el.__lens;
     springAnimate(el, [
-      { opacity: own ? 0 : 1, transform: 'translateY(-10px) scale(0.96)' },
+      { opacity: own ? 0 : 1, transform: 'translateY(-8px) scale(0.97)' },
       { opacity: 1, transform: 'none' },
     ], SPRINGS.bouncy, { delay, fill: 'backwards' });
     if (own) {
@@ -98,102 +100,100 @@ function initUpdate(state) {
   return ctl;
 }
 
-// ---- rail and pages ---------------------------------------------------------------------------
+// ---- layout modes -------------------------------------------------------------------------------
 
-const rail = { items: new Map() };
-let current = null; // { id, inst }
+const ui = { compact: null, wide: null, pill: null };
+let modeSeq = 0;
 
-function railItem(id) {
-  let it = rail.items.get(id);
-  if (it) return it;
-  const label = h('span', 'ri-label');
-  const sub = h('span', 'ri-sub');
-  const dot = h('i', 'ri-dot');
-  const el = h('button', 'rail-item', { type: 'button', 'data-page': id },
-    h('span', 'ri-icon', { html: icon(pageIcon(id)) }), h('span', 'ri-text', null, label, sub), dot);
-  gel(el, { amount: 0.5 });
-  el.addEventListener('click', () => showPage(id));
-  it = { el, label, sub, dot };
-  rail.items.set(id, it);
-  return it;
+function screenOf() {
+  if (store.mode === 'wide') return 'main';
+  const st = store.premiere ? store.premiere.state : 'not_running';
+  return st === 'not_running' ? 'idle' : 'waiting';
 }
 
-const RAIL_SUB = { missing: 'Not installed in this build', failed: 'Failed', import_failed: 'Could not be loaded', disabled: 'Turned off', stopped: 'Stopped' };
-
-function paintRail() {
-  const list = document.getElementById('rail-list');
-  const order = [{ id: 'deck', title: 'Deck' }, ...sortedModules()];
-  const seen = new Set();
-  let prev = null;
-  for (const m of order) {
-    seen.add(m.id);
-    const it = railItem(m.id);
-    it.label.textContent = m.title;
-    const state = m.state;
-    it.sub.textContent = RAIL_SUB[state] || '';
-    it.sub.hidden = !it.sub.textContent;
-    it.dot.className = `ri-dot ${state === 'running' ? 't-ok' : state === 'failed' || state === 'import_failed' ? 't-error' : ''}`;
-    it.dot.hidden = !state;
-    it.el.classList.toggle('is-missing', state === 'missing');
-    it.el.classList.toggle('is-current', current && current.id === m.id);
-    if (current && current.id === m.id) it.el.setAttribute('aria-current', 'page');
-    else it.el.removeAttribute('aria-current');
-    const want = prev ? prev.nextSibling : list.firstChild;
-    if (it.el !== want) list.insertBefore(it.el, want);
-    prev = it.el;
-  }
-  for (const [id, it] of Array.from(rail.items)) {
-    if (seen.has(id)) continue;
-    it.el.remove();
-    rail.items.delete(id);
-  }
+function paintScreen() {
+  document.documentElement.dataset.screen = screenOf();
 }
 
-function pageExists(id) {
-  return id === 'deck' || !!moduleById(id);
+function placePill(where) {
+  const pill = ui.pill;
+  if (where === 'titlebar') document.getElementById('tb-pill-slot').append(pill);
+  else ui.compact.paint(); // the idle hero block takes it back
 }
 
-/** Open a page; the id `settings` opens the settings sheet over the current page instead. */
-function showPage(id, { remember = true } = {}) {
-  if (id === 'settings') {
-    openSettings();
+function showCompact(animate) {
+  const root = document.documentElement;
+  root.dataset.mode = 'compact';
+  document.getElementById('wide').hidden = true;
+  document.getElementById('compact').hidden = false;
+  ui.wide.reset();
+  placePill('hero');
+  paintScreen();
+  if (animate) ui.compact.enter();
+}
+
+/**
+ * The `window` event: `wide` switches to the main layout at once and plays the pane's entrance in `ms`; `compact`
+ * plays it backwards first, then shows the compact page. `ms` 0 (a show from the tray, focus changes, reduced
+ * motion) switches at once.
+ */
+function applyMode(mode, ms) {
+  const root = document.documentElement;
+  const animate = ms > 0 && !reducedMotion.matches;
+  const seq = ++modeSeq;
+  const was = root.dataset.mode;
+  store.mode = mode;
+  if (mode === 'wide') {
+    root.dataset.mode = 'wide';
+    document.getElementById('compact').hidden = true;
+    document.getElementById('wide').hidden = false;
+    placePill('titlebar');
+    paintScreen();
+    ui.wide.enter(animate && was !== 'wide' ? ms : 0);
+    const brand = document.querySelector('.tb-brand');
+    if (animate && was !== 'wide') brand.animate([{ opacity: 0, transform: 'translateX(-8px)' }, { opacity: 1, transform: 'none' }], { duration: ms, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
     return;
   }
-  if (!pageExists(id)) id = 'deck';
-  if (current && current.id === id) return;
-  if (current) current.inst.destroy();
-  const host = document.getElementById('page');
-  host.replaceChildren();
-  host.scrollTop = 0;
-  let inst;
-  if (id === 'deck') inst = mountDeck(host, { navigate: showPage });
-  else inst = mountModulePage(host, id);
-  current = { id, inst };
-  store.page = id;
-  host.dataset.page = id;
-  if (!reducedMotion.matches) host.firstElementChild && springAnimate(host.firstElementChild, [{ opacity: 0, transform: 'translateY(10px)' }, { opacity: 1, transform: 'none' }], SPRINGS.smooth);
-  paintRail();
-  if (remember) {
-    try {
-      localStorage.setItem(PAGE_KEY, id);
-    } catch { /* ignore */ }
+  if (animate && was === 'wide') {
+    ui.wide.leave(ms).then(() => {
+      if (seq === modeSeq) showCompact(true);
+    });
+    return;
   }
+  showCompact(false);
 }
 
 // ---- events -----------------------------------------------------------------------------------
+
+function addActivity(a) {
+  const line = { at: Date.now() / 1000, module: null, tone: 'neutral', ...a };
+  store.activity = [line, ...store.activity].slice(0, 20);
+  notify('activity', store.activity);
+}
+
+function navigate(page) {
+  if (!page) return;
+  if (page === 'settings') {
+    openSettings();
+    return;
+  }
+  closeSettings();
+  if (page === 'deck') return;
+  if (moduleById(page)) ui.wide.showTab(page);
+}
 
 function wireEvents() {
   on('premiere', (p) => {
     if (!p) return;
     store.premiere = p;
     notify('premiere', p);
+    paintScreen();
   });
   on('modules', (ms) => {
     if (!Array.isArray(ms)) return;
     store.modules = ms;
     notify('modules', ms);
   });
-  watch('modules', paintRail);
   on('job', (j) => {
     if (!j) return;
     if (j.state === 'running' || j.state === 'queued') store.jobs.set(j.id, j);
@@ -216,8 +216,13 @@ function wireEvents() {
     notify('panel', p);
   });
   on('toast', (t) => t && toast(t.kind || 'info', t.message));
-  on('window', (w) => w && setFocused(!!w.focused));
-  on('navigate', (n) => n && n.page && showPage(n.page));
+  on('result', (r) => r && r.id && ui.wide.flashNode(r.module, r.id, r.outcome));
+  on('window', (w) => {
+    if (!w) return;
+    if (w.focused != null) setFocused(!!w.focused);
+    if (w.mode && (w.mode !== store.mode || (w.ms || 0) > 0)) applyMode(w.mode, w.ms || 0);
+  });
+  on('navigate', (n) => n && navigate(n.page));
   on('confirm', async (c) => {
     if (!c) return;
     const mod = c.module ? moduleById(c.module) : null;
@@ -230,9 +235,21 @@ function wireEvents() {
   });
 }
 
+/** `--fake` and the mock only: Alt+1 / Alt+2 / Alt+3 simulate Premiere not running / waiting / connected. */
+function wireFakeKeys() {
+  if (!store.fake && backendMode() !== 'mock') return;
+  addEventListener('keydown', (e) => {
+    const state = e.altKey && !e.ctrlKey && !e.shiftKey ? FAKE_KEYS[e.key] : null;
+    if (!state) return;
+    e.preventDefault();
+    call('fake_premiere', state).catch((err) => toast('error', err.message));
+  });
+}
+
 // ---- boot -------------------------------------------------------------------------------------
 
 async function boot() {
+  await loadSprite();
   initBackground(document.getElementById('scene'));
   initLight();
   initToasts();
@@ -265,17 +282,17 @@ async function boot() {
   syncTheme(state.settings);
   watch('settings', syncTheme);
 
-  initSettings({ update: initUpdate(state) });
+  const update = initUpdate(state);
+  initSettings({ update });
+  ui.pill = document.getElementById('ver-pill');
+  ui.compact = mountCompact(document.getElementById('compact'), { pill: ui.pill, update, openSettings, addActivity });
+  ui.wide = mountWide(document.getElementById('wide'));
   wireEvents();
+  wireFakeKeys();
 
-  paintRail();
-  let start = 'deck';
-  try {
-    start = localStorage.getItem(PAGE_KEY) || 'deck';
-  } catch { /* ignore */ }
-  showPage(start, { remember: false });
-
-  if (state.window) setFocused(state.window.focused !== false);
+  const win = state.window || {};
+  applyMode(win.mode === 'wide' ? 'wide' : 'compact', 0);
+  setFocused(win.focused !== false);
   goLive();
   document.body.classList.add('is-ready');
   entrance();

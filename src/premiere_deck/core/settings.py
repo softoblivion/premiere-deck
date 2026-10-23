@@ -19,8 +19,10 @@ from .paths import atomic_write_json, read_json
 
 log = logging.getLogger("premiere_deck.core.settings")
 
-THEMES = ("dusk", "nova", "frost", "bloom")
-DEFAULT_THEME = "nova"
+# Project themes (docs/HOST_UI.md 6, src/premiere_deck/ui/themes.json). The 1.x kit names (dusk, nova, frost, bloom)
+# and any other stored value fall back to the default on load.
+THEMES = ("black", "sky")
+DEFAULT_THEME = "black"
 MAX_RECENT = 12
 PROJECT_FILE = "project.json"
 
@@ -31,6 +33,7 @@ DEFAULTS: dict[str, Any] = {
     "auto_download_updates": True,
     "debug_mode_written": [],
     "recent_projects": [],
+    "recent_opened": {},  # {path: ISO 8601 UTC of the last open through Deck}
     "modules": {},
     "modules_enabled": {},
 }
@@ -151,7 +154,16 @@ class Settings:
             recent = [p for p in self._data.get("recent_projects", []) if isinstance(p, str)]
             recent = [p for p in recent if p.lower() != path.lower()]
             recent.insert(0, path)
-            self._data["recent_projects"] = recent[:MAX_RECENT]
+            recent = recent[:MAX_RECENT]
+            self._data["recent_projects"] = recent
+            from datetime import datetime, timezone
+
+            opened = self._data.get("recent_opened")
+            opened = dict(opened) if isinstance(opened, dict) else {}
+            opened = {k: v for k, v in opened.items() if isinstance(k, str) and isinstance(v, str)
+                      and k.lower() != path.lower() and any(k.lower() == p.lower() for p in recent)}
+            opened[path] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            self._data["recent_opened"] = opened
         self._changed()
 
     # -- modules

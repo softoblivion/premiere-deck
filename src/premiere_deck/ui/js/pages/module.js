@@ -1,11 +1,13 @@
-// Generic module page: header (title, status, enabled switch), the page model of module_page(id)
-// drawn by js/blocks.js, and a "Settings" card built from module_settings(id).
+// One module tab of the main state (docs/HOST_UI.md 3.3): the page model of module_page(id) drawn by js/blocks.js
+// inside the right pane, the page's `subtitle` (one mono line, the Files root) with its `header_actions`, a
+// notice for a module that is not running or missing, and a "Settings" card built from module_settings(id).
+// The tab names the module, so the page title is not repeated.
 
-import { Switch } from '../../vendor/liquid_ui/js/controls.js';
 import { call, on } from '../api.js';
 import { store, watch, moduleById } from '../store.js';
-import { createBlocks, makeAct, buildField, Keyed } from '../blocks.js';
-import { h, toneClass, failToast, throttle } from '../ui.js';
+import { createBlocks, makeAct, buildField, buttonEl, Keyed } from '../blocks.js';
+import { ic } from '../icons.js';
+import { h, failToast, throttle, flash } from '../ui.js';
 
 const STATE_LABEL = {
   running: 'Running',
@@ -15,84 +17,66 @@ const STATE_LABEL = {
   missing: 'Not installed in this build',
   import_failed: 'Could not be loaded',
 };
-const STATE_TONE = { running: 'ok', stopped: 'neutral', disabled: 'neutral', failed: 'error', missing: 'neutral', import_failed: 'error' };
 
-export function mountModulePage(host, id) {
+/**
+ * @param {HTMLElement} host  the scroller of the pane
+ * @param {string} id  module id
+ * @param {{setHeadHint?: (text: string) => void}} o
+ */
+export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
   let alive = true;
   let info = moduleById(id) || { id, title: id, description: '', state: 'missing', enabled: false, error: null, status: null, has_page: false, has_settings: false };
   let seq = 0;
   let setSeq = 0;
-  const controls = [];
 
-  const titleEl = h('h1', 'mp-title');
-  const descEl = h('p', 'mp-desc');
-  const statusEl = h('span', 'mp-status');
-  const stateEl = h('span', 'mp-state');
-  const sw = new Switch({ label: 'Module enabled', checked: !!info.enabled, onChange: (v) => setEnabled(v) });
-  controls.push(sw);
-  const head = h('header', 'mp-head', null,
-    h('div', 'mp-head-main', null, titleEl, descEl),
-    h('div', 'mp-head-side', null, h('div', 'mp-badges', null, statusEl, stateEl), h('label', 'mp-switch', null, h('span', '', { text: 'Enabled' }), sw.el)));
+  const rootRow = h('div', 'root-row', { hidden: true });
   const notice = h('div', 'mp-notice', { hidden: true });
   const blocksEl = h('div', 'blocks');
   const settingsBody = h('div', 'mp-set-body');
-  const settingsSec = h('section', 'mp-settings', { hidden: true }, h('h3', 'blk-h', { text: 'Settings' }), settingsBody);
-  const root = h('div', 'mp', null, head, notice, blocksEl, settingsSec);
+  const settingsSec = h('section', 'blk mp-settings', { hidden: true }, h('div', 'blk-head', null, h('h3', 'blk-h', { text: 'Settings' })), settingsBody);
+  const root = h('div', 'mp', { 'data-module': id }, rootRow, notice, blocksEl, settingsSec);
   host.append(root);
 
   const act = makeAct(id);
-  const blocks = createBlocks(blocksEl, { moduleId: id, act });
+  const ctx = { moduleId: id, act, setHeadHint };
+  const blocks = createBlocks(blocksEl, ctx);
   const settingsKeyed = new Keyed(settingsBody);
-
-  // ---- header and notice --------------------------------------------------------------------
-
-  let pageTitle = null;
-  let pageStatus = null;
+  const headControls = [];
   let hasPage = false;
+  let headSig = '';
 
-  function paintHead() {
-    titleEl.textContent = pageTitle || info.title || id;
-    descEl.textContent = info.description || '';
-    descEl.hidden = !info.description;
-    const st = pageStatus || info.status;
-    statusEl.hidden = !st || !st.text;
-    if (st && st.text) {
-      statusEl.className = `mp-status ${toneClass(st.tone)}`;
-      statusEl.replaceChildren(h('i', 'dot'), document.createTextNode(st.text));
-    }
-    stateEl.className = `mp-state ${toneClass(STATE_TONE[info.state])}`;
-    stateEl.textContent = STATE_LABEL[info.state] || info.state;
-    sw.set(!!info.enabled);
-    sw.setDisabled(info.state === 'missing' || info.state === 'import_failed');
-    root.classList.toggle('is-missing', info.state === 'missing');
-    paintNotice();
+  // ---- subtitle line and notice -------------------------------------------------------------
+
+  function paintRoot(page) {
+    const sub = page && page.subtitle ? String(page.subtitle) : '';
+    const acts = (page && Array.isArray(page.header_actions)) ? page.header_actions : [];
+    const sig = JSON.stringify([sub, acts]);
+    if (sig === headSig) return;
+    headSig = sig;
+    rootRow.replaceChildren();
+    rootRow.hidden = !sub && !acts.length;
+    if (rootRow.hidden) return;
+    rootRow.append(
+      h('span', 'root-ic', { html: ic('folder') }),
+      h('span', 'path', { text: sub, title: sub }),
+      ...acts.map((a) => buttonEl({ variant: 'icon', ...a }, ctx)));
   }
 
   function paintNotice() {
     const lines = [];
     if (info.state === 'missing') lines.push('Not installed in this build.');
     else if (info.state === 'import_failed') lines.push('This module is in the build but could not be loaded.');
-    else if (info.state === 'disabled' || (!info.enabled && info.state !== 'running')) lines.push('This module is turned off.');
+    else if (info.state === 'disabled' || (!info.enabled && info.state !== 'running')) lines.push('This module is turned off. Turn it on in Settings, Modules.');
     else if (info.state === 'failed') lines.push('This module stopped with an error.');
     else if (!hasPage) lines.push('This module has no page yet.');
     notice.replaceChildren();
+    if (lines.length || info.error) {
+      notice.append(h('div', 'mp-notice-head', null, h('b', '', { text: info.title || id }), h('span', 'mp-state', { text: STATE_LABEL[info.state] || info.state })));
+    }
     if (info.error) notice.append(h('p', 't-error', { text: info.error }));
     for (const l of lines) notice.append(h('p', '', { text: l }));
     notice.hidden = !notice.children.length;
-  }
-
-  async function setEnabled(v) {
-    try {
-      const r = await call('set_module_enabled', id, v);
-      if (r && alive) {
-        info = r;
-        paintHead();
-        refresh();
-      }
-    } catch (err) {
-      failToast(err);
-      sw.set(!!info.enabled);
-    }
+    root.classList.toggle('is-missing', info.state === 'missing');
   }
 
   // ---- page model ----------------------------------------------------------------------------
@@ -105,14 +89,13 @@ export function mountModulePage(host, id) {
       if (r && r.module) info = r.module;
       const page = r && r.page;
       hasPage = !!(page && Array.isArray(page.blocks));
-      pageTitle = page && page.title ? page.title : null;
-      pageStatus = page && page.status ? page.status : null;
-      paintHead();
+      paintRoot(hasPage ? page : null);
+      paintNotice();
       blocks.update(hasPage ? page.blocks : []);
     } catch (err) {
       if (!alive || my !== seq) return;
       hasPage = false;
-      paintHead();
+      paintNotice();
       notice.append(h('p', 't-error', { text: err.message }));
       notice.hidden = false;
     }
@@ -150,7 +133,8 @@ export function mountModulePage(host, id) {
       const label = h('div', 'fm-label', null,
         h('span', '', null, spec.label, f.scope === 'project' ? h('em', 'scope-tag', { text: 'Project' }) : null),
         note ? h('small', unavailable ? 't-warn' : '', { text: note }) : null);
-      box.append(h('div', `fm-row${unavailable ? ' is-off' : ''}`, null, label, h('div', `fm-ctl${kind === 'text' || kind === 'number' ? ' fm-ctl-wide' : ''}`, null, field.el)));
+      const wide = kind === 'text' || kind === 'number';
+      box.append(h('div', `fm-row${unavailable ? ' is-off' : ''}${wide ? ' fm-row-wide' : ''}`, null, label, h('div', `fm-ctl${wide ? ' fm-ctl-wide' : ''}`, null, field.el)));
     }
     return { el: box, destroy: () => sctl.forEach((c) => c.destroy && c.destroy()) };
   }
@@ -191,10 +175,7 @@ export function mountModulePage(host, id) {
   const offs = [
     on('modules', () => {
       const m = moduleById(id);
-      if (m) {
-        info = m;
-        paintHead();
-      }
+      if (m) info = m;
       refreshThrottled();
     }),
     watch('premiere', (p) => {
@@ -206,18 +187,25 @@ export function mountModulePage(host, id) {
     }),
   ];
 
-  paintHead();
+  paintNotice();
   refresh();
   refreshSettings();
 
   return {
+    id,
+    /** The outcome of an action on its control (a `result` event of this module). */
+    flashNode(nodeId, outcome) {
+      const el = Array.from(root.querySelectorAll('[data-node]')).find((n) => n.dataset.node === nodeId);
+      if (el) flash(el, outcome, ic);
+    },
+    refresh: () => refreshThrottled(),
     destroy() {
       alive = false;
       refreshThrottled.cancel();
       offs.forEach((o) => o && o());
       blocks.destroy();
       settingsKeyed.destroy();
-      controls.forEach((c) => c.destroy && c.destroy());
+      headControls.forEach((c) => c.destroy && c.destroy());
       root.remove();
     },
   };

@@ -38,7 +38,10 @@ panel's connect fails and it retries).
 ```
 
 The panel reads it with `window.cep.fs.readFile` from `csInterface.getSystemPath(SystemPath.EXTENSION)`. The
-agent connects at start and then retries every 3 s while Premiere runs (backing off to 15 s after a minute). When
+agent connects at start and then retries every 3 s while Premiere runs (backing off to 15 s after a minute). Both
+clients read `deck.json` again before every attempt and every 0.5 s while they wait for the next one, and connect at
+once when its port or token changed, so a host restarted while Premiere runs (the old token gets close `4001`) is
+joined within about a second of writing its file. When
 no connection succeeds within 5 s of Premiere's start, `autostart_host` is true and `host_exe` exists, the agent
 starts `host_exe --from-premiere` once per Premiere session (`cep.process.createProcess`).
 
@@ -47,7 +50,8 @@ the user.
 
 ## 3. Handshake
 
-Protocol version: `1`. The client speaks first:
+Protocol version: `1` (2.0 only adds optional fields and message types and removes a message the host no longer
+sends, none of which breaks an older client, so the version stays). The client speaks first:
 
 ```json
 {"type": "hello", "role": "agent", "panel_version": "1.0.0", "protocol": 1,
@@ -63,13 +67,18 @@ The host answers:
 
 or, when the panel version differs from the host's: `"update": {"action": "reload"}` (files were replaced; the
 panel calls `location.reload()` right away; the host sends it only when the versions differ and the files were
-actually replaced, and the panel reloads at most once per 30 s anyway; with the dev junction, where the panel's
+actually replaced, and the panel reloads at most once per 30 s anyway; a client that is already connected when the files change gets a `reload` message instead (section 4); with the dev junction, where the panel's
 `VERSION` comes from the source folder, the host sends `"update": null`) or `"update": {"action": "restart_premiere"}` (the manifest changed;
 the panel shows the one-line notice "Restart Premiere Pro to finish the Premiere Deck update" and keeps working
 on the old version). A protocol mismatch the host cannot serve: `{"type": "bye", "reason": "protocol"}` and close
 `4002`; the panel shows "Update Premiere Deck" with the host version.
 
-After `welcome` the agent is ready for `script` messages and the display for `ui` messages.
+After `welcome` the agent is ready for `script` messages and the display for `ui` messages. To a display the host
+sends `theme` (6.5) right after `welcome`, before the first `ui`.
+
+The host never asks the agent to open the visible panel: the user opens it once from Window > Extensions and
+Premiere keeps it in the workspace (`PANEL.md` 4). The 1.x message `open_display` is gone; the host never sends it,
+and a 2.x agent ignores it like any unknown type.
 
 ## 4. Messages host -> agent
 
@@ -77,8 +86,7 @@ After `welcome` the agent is ready for `script` messages and the display for `ui
 |---|---|---|
 | `script` | `id` (string), `name` (string, for logs), `code` (string, ExtendScript), `args` (JSON value), `timeout_ms` (int, default 30000) | run `code` in Premiere (section 7); exactly one `script.result` with the same `id` follows |
 | `subscribe` | `events` (string[]) | the agent registers `app.bind` handlers for these Premiere events (section 8) and forwards them; called once after `welcome` and again when the module set changes |
-| `open_display` | | `csInterface.requestOpenExtension("com.softoblivion.premieredeck.panel", "")` |
-| `reload` | | `location.reload()` (after a file-level panel update) |
+| `reload` | | `location.reload()` (after a file-level panel update; the host sends it to the agent and to every display, because a visible panel keeps its old files until its page is reloaded) |
 
 ## 5. Messages agent -> host
 
@@ -98,28 +106,47 @@ scroll). Trees are small (a few hundred nodes at most).
 
 ```json
 {"type": "ui", "revision": 42, "title": "Premiere Deck", "status": {"text": "Connected · Spring.prproj", "tone": "ok"},
- "sections": [ {"id": "files", "title": "Files", "collapsed": false, "status": {"text": "Watching · 3 filed today", "tone": "ok"},
+ "sections": [ {"id": "files", "title": "Files", "icon": "folder", "status": {"text": "Watching · 3 filed today", "tone": "ok"},
                 "items": [ ...nodes ] } ],
- "footer": {"text": "Premiere Deck 1.0.0", "link": {"label": "Open host", "action": "host.open"}}}
+ "footer": {"text": "Premiere Deck 2.0.0", "link": {"label": "Open host", "action": "host.open"}}}
 ```
 
+Sections are the panel's tabs: one section per running module, in the module's `order`; the tab shows the
+section's `icon` (a symbol name of the panel's icon sprite, `PANEL.md` 1) and `title`, and the selected tab fills
+the panel (one screen per tab, no long scroll). The section's `status` is drawn at the top of its tab. The 1.x
+section field `collapsed` is ignored (collapsing belongs to groups).
+
 Node kinds (every node has `kind`; interactive nodes have a unique `id`; `disabled` and `hint` are optional
-everywhere; `tone` is one of `neutral`, `ok`, `warn`, `error`, `accent`):
+everywhere; `tone` is one of `neutral`, `ok`, `warn`, `error`, `accent`). New fields of 2.0 are optional; a node
+without them renders as in 1.x:
 
 | kind | Fields | Rendered as |
 |---|---|---|
-| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action) | a button; `busy` shows a spinner and blocks clicks |
+| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action); 2.0: `icon` (symbol name of the panel sprite or null), `short` (tile label, at most 16 characters; `label` stays the full name and heads the tooltip), `meta` (one line under the tile label, or null), `menu` (below), `variant` (`"icon"` or absent) | a button; `busy` shows a spinner and blocks clicks. Inside a `tiles` group: an icon tile (icon over `short`, `meta` under it). `variant` `icon`: a small round button with the icon only, anywhere (the full `label` is its tooltip) |
 | `toggle` | `id`, `label`, `value` (bool), `hint`, `disabled` | switch; sends `action` with `value` |
 | `select` | `id`, `label`, `value`, `options` (`[{"value","label"}]`), `disabled` | drop-down; sends `action` with `value` |
 | `input` | `id`, `label`, `value`, `placeholder`, `submit_label` (optional button text), `disabled` | text field; sends `action` with `value` on Enter or the submit button |
-| `text` | `text`, `tone`, `small` (bool) | a line of text |
-| `progress` | `value` (0..1 or null for indeterminate), `label` | progress bar |
+| `text` | `text`, `tone`, `small` (bool); 2.0: `chip` (bool) | a line of text; with `chip` a small status chip (a dot in the tone's colour and the text); consecutive chips inside a `row` sit side by side |
+| `progress` | `value` (0..1 or null for indeterminate), `label`; 2.0: `detail` (one line, the current item, or null), `cancel` (a button node id or null) | progress bar; with `detail` a line under the bar; with `cancel` a "Stop" pill that sends `action` with that id |
 | `list` | `id`, `rows` (`[{"id","title","subtitle","tone","thumb" (data URL or null),"bar" (0..1 or null),"actions":[button nodes]}]`), `empty` (text when no rows) | a list with per-row buttons; a row's button sends its own `id` with `row` = the row id; a numeric `bar` is drawn as a thin bar under the subtitle (the fraction of its track that is filled; `null` or absent draws none) |
 | `row` | `items` (nodes) | nodes side by side |
-| `group` | `title` (string or null), `items` (nodes), `columns` (1 or 2, default 1) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 the display lays consecutive buttons out in two columns (a node that is not a button takes the full width). Groups do not nest |
+| `group` | `title` (string or null), `items` (nodes), `columns` (1 to 3; default 1, or 3 with `tiles`); 2.0: `id` (string, unique in the tree), `collapsible` (bool), `tiles` (bool) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 or 3 the display lays consecutive buttons out in that many columns (a node that is not a button takes the full width). With `tiles` the buttons are icon tiles. With `collapsible` the caption is the collapse control (chevron; the number of items while collapsed); the display remembers the collapsed state per group `id` in `localStorage`, expanded by default. Under the group the display keeps its result line (6.6). Groups do not nest |
 | `divider` | | a thin rule |
 
-Action ids are `<module>.<action>` (`files.collect`, `actions.adjustment_layer`); `host.*` ids belong to the
+`menu` of a button: `{"id": <node id>, "value": <current value>, "options": [{"value", "label"}], "badge": <short
+text>}` or absent. The tile shows `badge` (the current choice, "9:16", "H.264") as a small badge; a click on the
+badge opens a small menu of `options`; a pick sends `action` with the menu `id` and the picked `value`, exactly what a
+`select` node with that id sends. A click on the tile outside the badge sends the button's own `id`.
+
+Tooltips: every node's `hint` is drawn by the display as its own tooltip (`PANEL.md` 2): for a button the full
+`label` in bold over the `hint` line. No node becomes a `title` attribute.
+
+Validation (`host/protocol.py`, `validate_tree`): node ids, group ids and menu ids share one id space and are unique in
+the tree; a `short` longer than 16 characters, a `variant` other than `icon`, a `menu` without options and a
+`columns` outside 1 to 3 are refused; a `collapsible` group needs an `id`. Modules build the nodes through the
+helpers of `MODULES.md` 4, which add the module prefix to every id.
+
+Action ids are `<module>.<action>` (`files.sort`, `actions.adjustment_layer`); `host.*` ids belong to the
 host (`host.open`, `host.settings`). The display never interprets ids.
 
 ### 6.2 `display` -> host
@@ -133,13 +160,38 @@ host (`host.open`, `host.settings`). The display never interprets ids.
 ### 6.3 `toast` (host -> display)
 
 `{"type": "toast", "tone": "ok", "text": "Filed pленка.mp4 into Overlays", "ms": 3500}`. Transient line at the
-bottom of the panel. At most one visible; a new one replaces the old.
+bottom of the panel. At most one visible; a new one replaces the old. Since 2.0 the toast carries cross-cutting
+notices only (automatic filing, host notices); the outcome of a pressed control is an `action_result` (6.6).
 
 ### 6.4 Paging
 
 A `script.result` whose `result` would exceed 6 MB is returned by the agent in pages: `{"type": "script.result",
 "id", "ok": true, "page": 1, "pages": 3, "chunk": "<JSON text fragment>"}`; the host concatenates the chunks in
 order and parses once. Used by the snapshot of very large projects.
+
+### 6.5 `theme` (host -> display)
+
+`{"type": "theme", "name": "black"}`, `name` one of `black` (Crystal Black) and `sky` (Crystal Sky), the host
+setting `theme` (`BRIDGE_API.md` 3.3). Sent right after `welcome` and on every change of the setting, to every
+display. The display sets `data-theme` on its root element (`PANEL.md` 3); an unknown name is treated as `black`
+(the host sends `black` for a setting value it does not know). The window calls `Hub.notify_theme()` after a theme
+change; a display that connects later gets the current theme right after `welcome`.
+
+### 6.6 `action_result` (host -> display)
+
+```json
+{"type": "action_result", "id": "actions.adjustment_layer", "outcome": "ok",
+ "text": "Adjustment layer added · V3", "detail": null, "at": 1761000000000}
+```
+
+The outcome of one action: `id` = the button node id the result belongs to (for a menu pick, the button that
+carries the menu), `outcome` one of `ok`, `warn`, `error`, `neutral`, `text` one line, `detail` the one-line
+explanation (string or null), `at` epoch ms. The display morphs that tile for 2 s (check or cross, `PANEL.md` 2)
+and keeps the line as the result line of the group that holds the button (or of the section when the button is in
+no group) until the next result of that group; a line with `detail` opens it on click. Modules send it through
+`ctx.ui.result(...)` (`MODULES.md` 3); the host also records it in the window's activity feed (`BRIDGE_API.md`
+3.5). A result for an id that is not in the current tree changes no tile and no result line; it is still recorded in the
+activity feed.
 
 ## 7. Scripts
 

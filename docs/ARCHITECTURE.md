@@ -10,26 +10,31 @@ A Windows desktop application (one portable `PremiereDeck.exe`, the host) plus a
 Pro (a CEP extension the host installs and updates itself). Together they remove routine from editing:
 
 1. The host launches Premiere (with a project or without); the panel connects to the host by itself as soon as
-   Premiere is up, whichever side started first.
+   Premiere is up, whichever side started first. The host window has three states that follow Premiere: idle
+   (Premiere not running; compact window with Launch and Recent projects), waiting (Premiere runs, the visible
+   panel is not connected yet; compact) and main (the panel is connected; the window widens to the module tabs).
+   The host never opens the panel: the user opens it once from Premiere's Window > Extensions menu and Premiere
+   keeps it in the workspace.
 2. **Files**: project media stays sorted the same way on disk and in the project panel. Media imported from
    outside the project folder is copied into the project's layout, relinked to the copy and filed in the matching
-   bin; files dropped into the layout on disk are imported into the matching bin; a project item moved between
-   bins moves its file; "Collect project" fixes an existing project; "Pack for sharing" guarantees that a copied
-   project folder opens elsewhere without offline media. Originals are never moved or deleted.
-3. **Quick actions**: buttons in the panel for operations editors do many times a day that take several steps in
-   Premiere's own interface (adjustment layer over the selection, remove all gaps, save a numbered version,
-   social-format copy of a sequence, export frame or sequence into the layout, selection and track helpers).
-4. **AI search**: a local model indexes the frames of the project's footage; "find frames with a car" returns
-   clips and times; a result opens in the Source Monitor or is inserted at the playhead. Nothing leaves the
-   machine; the model is downloaded once when the module is enabled.
-5. Every function is a module behind one contract (`MODULES.md`), so later modules (captions, silence removal,
+   bin (video as camera footage, stock or generated; audio as voice, music or effects); files dropped into the
+   layout on disk are imported into the matching bin; a project item moved between bins moves its file; "Sort
+   project" files an existing project's media inside the folder; "Sync all media" / "Sync used media" copy media
+   from outside into the project's `Media` folder; "Make ZIP" packs a project folder that opens elsewhere without
+   offline media. Originals are never moved or deleted.
+3. **Quick actions**: icon tiles in the panel for operations editors do many times a day that take several steps
+   in Premiere's own interface (adjustment layer over the selection, duplicate a sequence as the next version,
+   save a numbered version, social-format copy of a sequence, export frame or sequence into the layout, selection
+   and track helpers).
+4. Every function is a module behind one contract (`MODULES.md`), so later modules (captions, silence removal,
    punch-in zooms) add code to the host only; the panel never changes for a new module.
 
 Design principles (decisions `docs/decisions/0001-host-owns-logic.md`):
 
 - The host owns all logic and state; the panel is a thin client that renders what the host sends, runs the
   ExtendScript the host sends and forwards Premiere events. A new module needs no panel change.
-- Local only: no accounts, no telemetry, no cloud calls except GitHub Releases (self-update) and model downloads.
+- Local only: no accounts, no telemetry, no cloud calls except GitHub Releases (self-update) and the one-time
+  ffmpeg download.
 - Safe by default on the user's media: copy, never move or delete without an explicit confirmation; every
   operation is journaled and reversible from the journal.
 - English-only product (global rule 2026-10-21): every user-facing string, in the host and in the panel.
@@ -38,14 +43,15 @@ Design principles (decisions `docs/decisions/0001-host-owns-logic.md`):
 
 | Layer | Choice | Why |
 |---|---|---|
-| Host window | pywebview 6.2.1 (`edgechromium`, WebView2), fixed-size window, Liquid UI kit vendored as `src/premiere_deck/ui/vendor/liquid_ui` | The workspace default (`_workspace\RECIPES.md` section 4); same family as Media Forge and Media Saver. |
-| Host runtime | Python 3.14 | pywebview, pythonnet, PyInstaller, websockets, watchdog, numpy, onnxruntime-directml and tokenizers ship 3.14 wheels (checked 2026-10-21). |
+| Host window | pywebview 6.2.1 (`edgechromium`, WebView2), fixed-size window with two locked sizes (`HOST_UI.md`), a project-owned copy of the Liquid UI kit in `src/premiere_deck/ui/vendor/liquid_ui` (edited in place since 2026-10-22, never synced with `_shared\liquid_ui`) | The workspace default (`_workspace\RECIPES.md` section 4); same family as Media Forge and Media Saver; the copy diverges in design (themes, font, crystal glass) on the user's decision. |
+| Themes and font | Two themes, Crystal Black (`black`, dark) and Crystal Sky (`sky`, light); one source `src/premiere_deck/ui/themes.json`, rendered by `build/gen_themes.py` into the kit copy's `css/themes.css` and the token block of `panel/css/panel.css`; text font Sora (SIL OFL, latin variable woff2, bundled in the kit copy and the panel), Geist Mono for numbers | One set of token values for the host and the kit-free panel; a unit test keeps both generated blocks equal to the JSON. |
+| Audio classification | YAMNet (AudioSet, Apache-2.0) as an ONNX model bundled in the exe, `onnxruntime` on the CPU execution provider, `numpy` (`FILES.md` 3.8) | Speech / music / effects from the first 20 s of a file in about a second, offline, no GPU, no download. Video is classified from metadata and names only. |
+| Host runtime | Python 3.14 | pywebview, pythonnet, PyInstaller, websockets and watchdog ship 3.14 wheels (checked 2026-10-21). |
 | Host <-> panel transport | WebSocket on `127.0.0.1`, library `websockets` (asyncio) in a background thread; JSON messages (`PROTOCOL.md`) | CEF inside Premiere speaks WebSocket natively; one persistent connection per panel instance, push both ways, no polling files. |
 | Panel | CEP 11/12 extension (CSXS manifest 7.0, Premiere 14.0 and newer): HTML / CSS / plain JS (ES2015, no build step), `CSInterface.js`, ExtendScript through `evalScript` | The only platform with full project and timeline scripting today; UXP lacks captions and parts of the timeline API (2026). Thin by design so a UXP port replaces only this layer. |
 | Premiere scripting | ExtendScript (ES3) snippets shipped by the host at runtime, one `.jsx` file per operation under `src/premiere_deck/premiere/jsx/` and the modules' own `jsx/` folders, plus a small shared library (`lib.jsx`, `json2.js`) | Scripts live with the Python code that calls them and are replaceable without touching the panel. |
-| Media probing | `ffprobe.exe` / `ffmpeg.exe` (data `bin\` first, then PATH, else downloaded once; `RECIPES.md` section 3) | Streams, duration, alpha, frame extraction for the AI index. |
+| Media probing | `ffprobe.exe` / `ffmpeg.exe` (data `bin\` first, then PATH, else downloaded once; `RECIPES.md` section 3) | Streams, duration, alpha. |
 | File watching | `watchdog` 6 | Disk-side changes of the project folder. |
-| AI search | CLIP ViT-B/32 as ONNX (vision and text encoders), `onnxruntime-directml` (any Windows GPU, CPU fallback), `tokenizers` for the CLIP BPE | Small (432 MB of model files per `models.json`, downloaded on enabling), no CUDA toolkit, runs on NVIDIA, AMD and Intel GPUs alike. SigLIP is the planned upgrade (`AI_SEARCH.md` 7). |
 | Self-update | vendored `selfupdate` (`src/premiere_deck/vendor/selfupdate`), GitHub Releases of `softoblivion/premiere-deck`, assets `PremiereDeck.exe` + `SHA256SUMS` | The workspace's shared updater; the panel updates with the exe (section 6). |
 | Packaging | PyInstaller one-file, windowed; the panel folder bundled as data | One exe to download. |
 
@@ -62,7 +68,6 @@ premiere-deck/
   docs/HOST_UI.md           the host window: screens, states, copy
   docs/FILES.md             Files module
   docs/QUICK_ACTIONS.md     Quick actions module
-  docs/AI_SEARCH.md         AI search module
   docs/BUILD.md             toolchain, dev run, tests, build, signing the panel, release
   docs/releases/vX.Y.Z.md   release notes
   docs/decisions/           project decision records
@@ -86,18 +91,19 @@ premiere-deck/
   src/premiere_deck/premiere/model.py    Snapshot, ProjectItem, Sequence, Selection dataclasses
   src/premiere_deck/premiere/jsx/        lib.jsx, json2.js, one .jsx per facade operation
   src/premiere_deck/modules/base.py      Module base class, ModuleContext, FakeHost for tests (integrator-owned)
-  src/premiere_deck/modules/files/       Files module (module.py, layout.py, classify.py, sync.py, journal.py, jsx/)
+  src/premiere_deck/modules/files/       Files module (module.py, layout.py, classify.py, media_class.py, sync.py, journal.py, layouts/)
+  src/premiere_deck/modules/files/models/ yamnet.onnx, yamnet_class_map.csv, LICENSE-yamnet.txt (bundled in the exe, FILES.md 3.8)
   src/premiere_deck/modules/quick_actions/ Quick actions module (module.py, actions/*.py, jsx/)
-  src/premiere_deck/modules/ai_search/   AI search module (module.py, index.py, embed.py, models.py, jsx/)
-  src/premiere_deck/panel/               the CEP extension as shipped: CSXS/manifest.xml, index.html, css/, js/, host.jsx, CSInterface.js, VERSION
+  src/premiere_deck/panel/               the CEP extension as shipped: CSXS/manifest.xml, index.html, css/, js/, icons.svg, fonts/, host.jsx, CSInterface.js, VERSION
   src/premiere_deck/shell/main.py        entry: single instance, window, lifecycle, server start
   src/premiere_deck/shell/bridge.py      pywebview js_api for the host window, event pump
   src/premiere_deck/shell/winutil.py     DWM corners, fixed-size window, Explorer, mutex
   src/premiere_deck/ui/                  host window page: index.html, css/, js/ (incl. mock.js), assets/
-  src/premiere_deck/ui/vendor/liquid_ui/ vendored design kit (synced by _tools\vendor-sync.ps1)
+  src/premiere_deck/ui/themes.json       the two themes: name, label, hue, accent and every token (source of the generated CSS)
+  src/premiere_deck/ui/vendor/liquid_ui/ project-owned copy of the design kit (edited here, never synced); fonts/ holds Sora and Geist Mono
   src/premiere_deck/vendor/selfupdate/   vendored updater (synced by _tools\vendor-sync.ps1)
-  tests/                     unittest suite, mirrors src (test_core_*, test_host_*, test_premiere_*, test_modules_*, test_panel_*)
-  build/                     entry.py, PremiereDeck.spec, build.ps1, sign_panel.ps1, icon
+  tests/                     unittest suite, mirrors src (test_core_*, test_host_*, test_premiere_*, test_modules_*, test_panel_*, test_themes.py)
+  build/                     entry.py, PremiereDeck.spec, build.ps1, sign_panel.ps1, gen_themes.py (themes.json -> kit themes.css + panel token block), icon
   scripts/run_dev.bat        run from source; scripts/panel_dev.ps1 links the panel folder for live editing
 ```
 
@@ -105,21 +111,21 @@ Not tracked: `release/`, `build/work`, `build/dist`, `.venv/`, `premiere-deck_da
 
 ## 4. Module table
 
-Owner = the session that may write there during the current task (`_workspace\PARALLEL.md`). Shared files
-(contracts, this file, `__init__.py`, `protocol.py`, `modules/base.py`, `premiere/model.py`) belong to the
-integrator; a worker that needs a change there asks.
+Owner = the session that may write there during the current task (`_workspace\PARALLEL.md`); one writer per file.
+Shared files (contracts, this file, `__init__.py`, `protocol.py`, `modules/base.py`, `premiere/model.py`,
+`core/media.py`) belong to the integrator; a worker that needs a change there asks, unless its row below hands it
+a named part for this task. Current task: the 2.0 redesign. Order: W2 and W4 in parallel, then W3 and W5 in
+parallel, then W6; a file named in two rows (`shell/bridge.py`, `host/protocol.py`, `panel/css/panel.css`) has
+one writer at a time, in that order, each for its named part only.
 
-| Module | Path | Owning doc | Owner |
+| Piece | Path (paths relative to `src/premiere_deck/` unless they start with `tests/`, `build/` or `docs/`) | Owning doc | Owner |
 |---|---|---|---|
-| Core | `src/premiere_deck/core/**`, `tests/test_core_*` | `BUILD.md` (toolchain), `FILES.md` 4 (probe fields) | host worker |
-| Host (server, launcher, panel install, registry, hub) | `src/premiere_deck/host/**` except `protocol.py`, `tests/test_host_*` | `PROTOCOL.md`, `PANEL.md` 4 | host worker |
-| Shell, host window, build | `src/premiere_deck/shell/**`, `src/premiere_deck/ui/**` (except `vendor/`), `build/`, `scripts/`, `pyproject.toml`, `requirements*.txt`, `tests/test_shell_*` | `HOST_UI.md`, `BUILD.md` | host worker |
-| Premiere facade | `src/premiere_deck/premiere/**` except `model.py`, `tests/test_premiere_*` | `PREMIERE_API.md` | panel worker |
-| Panel | `src/premiere_deck/panel/**`, `tests/test_panel_*` | `PANEL.md` | panel worker |
-| Files | `src/premiere_deck/modules/files/**`, `tests/test_modules_files*` | `FILES.md` | files worker |
-| Quick actions | `src/premiere_deck/modules/quick_actions/**`, `tests/test_modules_quick*` | `QUICK_ACTIONS.md` | actions worker |
-| AI search | `src/premiere_deck/modules/ai_search/**`, `tests/test_modules_ai*` | `AI_SEARCH.md` | search worker |
-| Contracts | `docs/**`, `README.md`, `src/premiere_deck/__init__.py`, `host/protocol.py`, `modules/base.py`, `premiere/model.py` | this file | integrator |
+| Launch flow and panel window | `host/**` (including `host/protocol.py` for the removal of `open_display` only), `shell/bridge.py` (the `PremiereState` fields and `panel_check_update`), `panel/CSXS/manifest.xml`, `panel/js/agent.js`, `panel/js/common.js`, `docs/PANEL.md` 4 and the live record 5.1, `tests/test_host_*`, `tests/test_shell_bridge.py` | `PROTOCOL.md`, `BRIDGE_API.md` 2-3, `PANEL.md` 4 | W2 launch-flow worker |
+| Files | `modules/files/**` (including `models/` with the YAMNet file), `core/media.py`, `core/probe.py`, `tests/test_modules_files*`, `tests/test_core_probe_tools.py`, the details of `docs/FILES.md`, and the `onnxruntime` / `numpy` entries of `requirements*.txt`, `pyproject.toml` and `build/PremiereDeck.spec` | `FILES.md` | W4 files worker |
+| Panel and quick actions | `panel/**` except the files of W2 and the token block of `panel/css/panel.css`, `host/protocol.py` (the node fields and messages of `PROTOCOL.md` 6), `modules/base.py` (`ctx.ui.result`, the node helpers, `ctx.host.show`), `modules/quick_actions/**`, `tests/panel/**`, `tests/test_host_protocol.py`, `tests/test_modules_quick_actions.py`, `tests/test_modules_base.py` | `PANEL.md` 1-3, `PROTOCOL.md` 6, `MODULES.md` 3-4, `QUICK_ACTIONS.md` | W3 panel worker |
+| Host window | `shell/main.py`, `shell/winutil.py`, `shell/bridge.py` (the `window` event and the size animation), `ui/**` except `vendor/`, `tests/test_shell_*` except `tests/test_shell_bridge.py` while W2 runs | `HOST_UI.md`, `BRIDGE_API.md` 4-6 | W5 host-window worker |
+| Themes and font | `ui/vendor/liquid_ui/**`, `ui/themes.json`, `build/gen_themes.py`, the generated token block of `panel/css/panel.css`, the colour literals of `ui/css/app.css`, `tests/test_themes.py` | `HOST_UI.md` 7, `PANEL.md` 3 | W6 themes worker |
+| Integration | `docs/**` except the parts named above, `README.md`, `__init__.py`, `premiere/**`, `core/**` except the W4 files, `build/` and `scripts/` except the entries named above, the remaining tests; merging, the full test run, the build, the 2.0.0 release | this file, `BUILD.md` | integrator |
 
 ## 5. Data flow
 
@@ -128,8 +134,8 @@ integrator; a worker that needs a change there asks.
  +-----------------------------------------+               +----------------------------------+
  | shell: window (Liquid UI) <-> bridge    |               | CEP extension (PANEL.md)         |
  | host.hub: HostServices                  |  WebSocket    |  headless "agent":               |
- |   registry -> modules (files, actions,  |<------------->|   evalScript, app.bind events,   |
- |              ai_search, ...)            |  127.0.0.1    |   project polling                |
+ |   registry -> modules (files, actions)  |<------------->|   evalScript, app.bind events,   |
+ |   (later modules plug in here)          |  127.0.0.1    |   project polling                |
  |   premiere.api -> jsx over the agent    |<------------->|  visible "display":              |
  |   server: discovery file, clients       |               |   renders the UI tree, sends     |
  | core: paths, settings, probe, jobs,     |               |   actions                        |
@@ -145,8 +151,9 @@ integrator; a worker that needs a change there asks.
    `VERSION` differs from the host's (`PANEL.md` 4), then shows the window.
 2. Premiere up (launched by the host or by the user): the headless extension starts on `applicationActivate`,
    reads `deck.json`, connects as `agent`, sends `hello`; if no host answers within 5 s and `deck.json` allows
-   it, the agent starts the host exe. The visible panel connects as `display` when opened; the host asks the
-   agent to open it on the first connection of a session (`requestOpenExtension`).
+   it, the agent starts the host exe. The visible panel connects as `display` when the user has it open (Premiere
+   restores it with the workspace); the host never asks the agent to open it. The window widens to its main state
+   when the first display connects.
 3. Session: the host asks for a project snapshot, starts the modules' project hooks (Files: watcher on the
    project root), and pushes the UI tree to the display. Premiere events arrive from the agent, go through the
    registry to the modules; module actions from the display go to the module that owns the action id; the module
@@ -164,7 +171,6 @@ integrator; a worker that needs a change there asks.
 - root = `%PREMIERE_DECK_HOME%` if set (tests set it to a scratch folder), else `<app dir>\premiere-deck_data`.
 - `settings.json`: host settings (`HOST_UI.md` 6).
 - `bin/`: `ffmpeg.exe`, `ffprobe.exe` when not taken from PATH, `versions.json`.
-- `models/`: AI model files and `models.json` (source URL, size, SHA-256).
 - `panel/`: the signed panel folder staged for installation (copied from the bundle on first run and on update).
 - `logs/host.log` (rotating 1 MB x 5), `logs/jobs/<id>.log`.
 - `webview/`: WebView2 profile.
@@ -181,8 +187,14 @@ Two locations outside the data folder, both dictated by Adobe and recorded here 
   (`PANEL.md` 4.3), with the user's confirmation.
 
 Per project, inside the user's project folder: `<root>\.premiere-deck\` (hidden) with `project.json` (layout id,
-rules overrides, module settings of this project), `journal.jsonl` (Files operations) and `index\` (AI search
-embeddings). It travels with the project when the folder is copied, which is the point.
+rules overrides, module settings of this project) and `journal.jsonl` (Files operations). It travels with the
+project when the folder is copied, which is the point. Folders `index\` left there by versions before 2.0 are
+unused and can be deleted by hand.
+
+At every start the host deletes `<data>\models\` and `<data>\cache\search\` when they exist (data of a removed
+feature; `AppPaths.remove_retired_data()`, called from `Hub.start()`). The data folder has no `models\` folder in
+2.0: the audio model of the Files classifier ships inside the exe (`modules/files/models/`, read from the
+PyInstaller bundle) and is never downloaded or copied out.
 
 ## 7. Version
 

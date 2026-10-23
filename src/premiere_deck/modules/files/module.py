@@ -1,12 +1,16 @@
-"""Files module (docs/FILES.md): media sorted the same way on disk and in the project panel, Collect, Pack, Undo.
+"""Files module (docs/FILES.md): media sorted the same way on disk and in the project panel; Sort project, Sync all
+media, Sync used media, Make ZIP, Undo.
 
-Threads: hooks and job callbacks run on the host's module thread; copies, probes and the Collect plan run as jobs
-(copies with priority `high`); the disk watcher settles changes on its own thread and hops onto the module thread
-by submitting a tiny job whose `on_done` applies the change (the job runner dispatches callbacks onto the module
-thread). Premiere is only called from the module thread. Shared state is guarded by one re-entrant lock.
+Threads: hooks and job callbacks run on the host's module thread; probes, the classifier, copies, moves, the Sort
+plan, Sync and ZIP run as jobs (priority `high`); a job reaches the module thread for each finished file through
+`ctx.post` (relink and bin move), and its `on_done` reports the result after those posts (the module thread is one
+FIFO queue). The disk watcher settles changes on its own thread and hops onto the module thread by submitting a tiny
+job whose `on_done` applies the change. Premiere is only called from the module thread. Shared state is guarded by
+one re-entrant lock.
 
-Invariants (docs/FILES.md 1): originals are never moved, renamed or deleted; the module only deletes files it
-created itself (a journaled copy whose content hash still matches) and only inside the project root.
+Invariants (docs/FILES.md 1): files outside the root are never moved, renamed or deleted; inside the root files are
+moved between layout folders only on Sort or a bin move, journaled and undoable; the module only deletes files it
+created itself (a journaled copy whose content hash still matches) and only inside the root.
 """
 
 from __future__ import annotations
@@ -19,30 +23,46 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
-from premiere_deck.core.media import MediaInfo, kind_from_extension
+from premiere_deck.core.media import MediaInfo, is_media_extension, kind_from_extension
 from premiere_deck.modules.base import ActionResult, Module, SettingField
 from premiere_deck.premiere.model import KIND_CLIP, KIND_FILE, PremiereError, ProjectInfo, ProjectItem, Snapshot
 
 from . import journal as J
-from .classify import classify, parse_overrides
+from .classify import Decision, classify, parse_overrides
 from .layout import (
-    CUSTOM_LAYOUT_FILE, DECK_DIR, DEFAULT_LAYOUT_ID, Layout, LayoutError, Mapper, detect_root, is_excluded,
-    is_inside, load_layout_file, norm, norm_bin, parse_layout, same_path, shipped_layouts,
+    CUSTOM_LAYOUT_FILE, DECK_DIR, DEFAULT_LAYOUT_ID, Layout, LayoutError, Mapper, detect_root, is_inside, is_under,
+    load_layout_file, masks_folder, norm, norm_bin, parse_layout, same_path, shipped_layouts,
 )
+from .media_class import MediaClassifier
 from .sync import (
-    CollectPlan, CopyCancelled, DiskWatcher, PlanEntry, PackReport, Suppression, build_pack_report,
-    copy_file, file_size, fmt_size, free_zip_path, make_zip, resolve_target, safe_hash,
+    CopyCancelled, DiskWatcher, PlanEntry, Suppression, ZipReport, build_zip_report, copy_file, failure_reason,
+    file_size, fmt_size, free_bytes, free_zip_path, make_zip, move_file, pack_files, plural, resolve_target,
+    safe_hash, write_check,
 )
 
 HOST_DEFAULTS = {"toast_filed": True, "copy_buffer_mb": 16, "stable_seconds": 2, "default_layout": DEFAULT_LAYOUT_ID}
 INT_RANGES = {"copy_buffer_mb": (1, 256), "stable_seconds": (1, 60)}
 PROJECT_DEFAULTS = {"enabled": False, "layout": DEFAULT_LAYOUT_ID, "overrides": [], "enforce_bins": True,
-                    "mirror_bins": True, "import_exports": False, "watch": True, "pack_zip": False}
-PROJECT_BOOLS = ("enforce_bins", "mirror_bins", "import_exports", "watch", "pack_zip")
+                    "mirror_bins": True, "import_exports": False, "watch": True}
+PROJECT_BOOLS = ("enforce_bins", "mirror_bins", "import_exports", "watch")
 
-OP_LABELS = {J.OP_FILED: "Filed", J.OP_COLLECTED: "Collected", J.OP_BINNED: "Moved to bin", J.OP_IMPORTED: "Imported",
+LONG_KINDS = ("sort", "sync_all", "sync_used", "zip")  # at most one of these runs at a time (docs/FILES.md 3)
+STOPPED_WORD = {"sort": "Sort", "sync_all": "Sync", "sync_used": "Sync", "zip": "ZIP"}
+REMOVED_ACTIONS = {"collect", "collect_run", "collect_discard", "pack", "cancel"}  # 1.x ids, answered with nothing
+NO_SETUP_NEEDED = {"setup", "locate", "remove", "open_folder"}
+NO_WRITE_ACCESS = "No write access to the project folder"
+
+OP_LABELS = {J.OP_FILED: "Filed", J.OP_SORTED: "Sorted", J.OP_SYNCED: "Synced", J.OP_ZIPPED: "Made ZIP",
+             J.OP_COLLECTED: "Collected", J.OP_BINNED: "Moved to bin", J.OP_IMPORTED: "Imported",
              J.OP_RENAMED: "Renamed", J.OP_MOVED_DISK: "Moved on disk", J.OP_MOVED_BIN: "Moved with bin",
-             J.OP_REMOVED: "Removed", "setup": "Set up"}
+             J.OP_REMOVED: "Removed", J.OP_SETUP: "Set up", "packed": "Packed"}
+
+HINTS = {
+    "sort": "Moves the media inside the project folder into the layout folders and bins.",
+    "sync_all": "Copies every file from outside the project folder into Media.",
+    "sync_used": "Copies the files used in sequences from outside the project folder into Media.",
+    "zip": "Writes the project folder as a ZIP archive beside it.",
+}
 
 
 def ago(ts: Optional[float], now: Optional[float] = None) -> str:
@@ -62,12 +82,17 @@ def _folder_name(path: Optional[str]) -> str:
     return os.path.basename(os.path.dirname(path)) if path else ""
 
 
+def _top(folder: Optional[str]) -> str:
+    return (folder or "").split("/")[0].casefold()
+
+
 @dataclass
 class _Tracked:
     job: Any
-    kind: str  # filing | moving | plan | collect | pack | sync
+    kind: str  # filing | moving | sort | sync_all | sync_used | zip
     label: str
     value: Optional[float] = None
+    detail: Optional[str] = None
 
 
 @dataclass
@@ -76,7 +101,7 @@ class _Task:
     name: str
     source: str
     bin_from: str
-    folder: Optional[str] = None  # decided by the plan; None = classify in the job
+    folder: Optional[str] = None  # decided already; None = classify in the job
 
 
 @dataclass
@@ -91,6 +116,19 @@ class _Copied:
 
 
 @dataclass
+class _Run:
+    """Counters of one Sort or Sync job, updated on the module thread by the per-file posts."""
+
+    planned: int = 0
+    done: int = 0
+    bytes: int = 0
+    failures: list = field(default_factory=list)  # (name, reason)
+    offline: list = field(default_factory=list)  # names
+    nothing_text: str = ""
+    error: Optional[tuple[str, Optional[str]]] = None  # (text, detail) of a refusal inside the job
+
+
+@dataclass
 class _State:
     """Per open project; replaced on every project_opened so late job callbacks of a closed project are ignored."""
 
@@ -99,14 +137,23 @@ class _State:
     layout: Layout
     mapper: Mapper
     journal: J.Journal
+    masks: Optional[str] = None
     layout_error: str = ""
     items: dict = field(default_factory=dict)  # node_id -> ProjectItem (last snapshot)
     index: dict = field(default_factory=dict)  # norm media path -> set(node ids)
     baseline_ready: bool = False
     offline: list = field(default_factory=list)
-    external: list = field(default_factory=list)  # media outside the root or loose in it
-    plan: Optional[CollectPlan] = None
-    pack_report: Optional[PackReport] = None
+    external: list = field(default_factory=list)  # media outside the root or loose in it (the intercept's scope)
+    outside: list = field(default_factory=list)  # media outside the root (Sync)
+    inside_count: int = 0
+    sort_estimate: int = 0
+    used_count: Optional[int] = None  # used external items, None before the first count
+    used_at: float = 0.0
+    used_timer: Optional[threading.Timer] = None
+    zip_report: Optional[ZipReport] = None
+    last_result: Optional[dict] = None  # {"button", "outcome", "text", "detail", "at"}
+    results: dict = field(default_factory=dict)  # button -> last result
+    write_ok: Optional[bool] = None  # the intercept's write check of this project session
     watcher: Optional[DiskWatcher] = None
     watcher_error: str = ""
     premiere_error: str = ""
@@ -118,6 +165,7 @@ class _State:
 class FilesModule(Module):
     id = "files"
     title = "Files"
+    icon = "folder"
     description = "Keeps project media sorted on disk and in bins."
     order = 10
     events = ["project.opened", "project.closed", "project.items_added", "project.changed"]
@@ -127,10 +175,11 @@ class FilesModule(Module):
     WATCH_DEBOUNCE = 1.5
     SYNC_DELAY = 0.3  # quiet window after the last Premiere event before the project is scanned once
     SYNC_MAX_WAIT = 2.0  # a burst that never goes quiet is scanned at most this long after its first event
+    USED_INTERVAL = 10.0  # the used-in-sequences count is recomputed at most this often
     SUPPRESS_TTL = 15.0
     TOAST_MERGE_SECONDS = 2.0
     UNDO_LIMIT = 50
-    RECENT_COUNT = 8
+    JOURNAL_PREVIEW = 3
     HOST_JOURNAL_COUNT = 200
 
     def __init__(self, ctx) -> None:
@@ -142,7 +191,9 @@ class FilesModule(Module):
         self._toast_at = 0.0
         self._toast_count = 0
         self._journal_filter = {"op": "", "query": ""}
+        self._journal_all = False
         self._layouts: Optional[dict[str, Layout]] = None
+        self._classifier = MediaClassifier(lambda args: self.ctx.tools.ffmpeg_pipe(args))
 
     # ------------------------------------------------------------------------------------------------- settings
 
@@ -205,8 +256,6 @@ class FilesModule(Module):
                          hint="Files rendered into Exports are imported automatically."),
             SettingField("watch", "Watch folder", "bool", True, scope="project",
                          hint="Files added to the project folder on disk are imported."),
-            SettingField("pack_zip", "Pack as zip", "bool", False, scope="project",
-                         hint="Pack for sharing also writes a zip archive beside the project folder."),
         ]
 
     # ------------------------------------------------------------------------------------------------ lifecycle
@@ -232,13 +281,18 @@ class FilesModule(Module):
             layout, error = self._choose_layout(root, base)
             if layout.project_dir != base.project_dir:
                 root = detect_root(project.path, layout)
-            state = _State(project=project, root=root, layout=layout, mapper=Mapper(root, layout),
-                           journal=J.Journal(os.path.join(root, DECK_DIR, "journal.jsonl")), layout_error=error)
+            masks = masks_folder(project.path)
+            state = _State(project=project, root=root, layout=layout, mapper=Mapper(root, layout, masks),
+                           journal=J.Journal(os.path.join(root, DECK_DIR, "journal.jsonl")), masks=masks,
+                           layout_error=error)
             self._state = state
-            self._take_snapshot(state)
+            snap = self._take_snapshot(state)
             if self._enabled():
+                self._cleanup_journal(state)
                 self._recover(state)
                 self._start_watcher(state)
+                if snap is not None:
+                    self._refresh_used(state, force=True)
         self.ctx.ui.invalidate()
 
     def project_closed(self) -> None:
@@ -248,6 +302,9 @@ class FilesModule(Module):
             self._jobs.clear()
             if state is not None:
                 self._cancel_sync(state)
+                timer, state.used_timer = state.used_timer, None
+                if timer is not None:
+                    timer.cancel()
         if state is not None and state.watcher is not None:
             state.watcher.stop()
         for tracked in jobs:
@@ -317,8 +374,12 @@ class FilesModule(Module):
     def _enabled(self) -> bool:
         return self._state is not None and self._proj("enabled") is True
 
-    def _overrides(self):
-        return parse_overrides(self._proj("overrides"))
+    def _overrides(self, state: Optional[_State] = None):
+        state = state or self._state
+        return parse_overrides(self._proj("overrides"), state.layout.media_dir if state else None)
+
+    def _excluded(self, state: _State, path: str, *, check_hidden: bool = False) -> bool:
+        return state.mapper.excluded(path, check_hidden=check_hidden)
 
     # ------------------------------------------------------------------------------------------------ snapshot
 
@@ -344,7 +405,8 @@ class FilesModule(Module):
         self._refresh_derived(state)
 
     def _refresh_derived(self, state: _State) -> None:
-        offline, external = [], []
+        offline, external, outside = [], [], []
+        inside = estimate = 0
         for item in state.items.values():
             if not self._is_media(item):
                 continue
@@ -352,12 +414,23 @@ class FilesModule(Module):
             if item.is_offline or not exists:
                 offline.append(item)
                 continue
-            if is_excluded(item.media_path, state.root, check_hidden=False):
+            if self._excluded(state, item.media_path):
                 continue
-            if not is_inside(item.media_path, state.root) or not state.mapper.in_layout(item.media_path):
+            if not is_inside(item.media_path, state.root):
                 external.append(item)
+                outside.append(item)
+                continue
+            inside += 1
+            if not state.mapper.in_layout(item.media_path):
+                external.append(item)
+            folder = state.mapper.deepest_layout_folder(item.media_path)
+            if folder is None or state.layout.in_media_dir(folder):
+                estimate += 1
         state.offline = sorted(offline, key=lambda i: i.name.casefold())
         state.external = external
+        state.outside = outside
+        state.inside_count = inside
+        state.sort_estimate = estimate
 
     @staticmethod
     def _is_media(item: ProjectItem) -> bool:
@@ -383,6 +456,66 @@ class FilesModule(Module):
     def _referenced(self, state: _State, path: str, ignore: Optional[str] = None) -> bool:
         return bool(state.index.get(norm(path), set()) - ({ignore} if ignore else set()))
 
+    # used in sequences (docs/FILES.md 3.5) -----------------------------------------------------------------------
+
+    def _used_ids(self) -> set[str]:
+        """Node ids of project items used in at least one sequence (module thread; Premiere calls)."""
+        used: set[str] = set()
+        for sequence in self.ctx.premiere.sequences():
+            for track_item in self.ctx.premiere.track_items(sequence.sequence_id):
+                if track_item.node_id:
+                    used.add(track_item.node_id)
+        return used
+
+    def _refresh_used(self, state: _State, *, force: bool = False) -> None:
+        """Recount the used external items, at most once per USED_INTERVAL; a skipped recount is scheduled."""
+        now = time.monotonic()
+        wait = state.used_at + self.USED_INTERVAL - now
+        if not force and state.used_at and wait > 0:
+            if state.used_timer is None:
+                def fire() -> None:
+                    try:
+                        self.ctx.post(lambda: self._used_due(state))
+                    except Exception:  # noqa: BLE001
+                        self.log.exception("could not post the used count")
+
+                timer = threading.Timer(wait, fire)
+                timer.daemon = True
+                state.used_timer = timer
+                timer.start()
+            return
+        state.used_at = now
+        try:
+            used = self._used_ids()
+        except PremiereError as exc:
+            self.log.info("used count skipped: %s", exc.message)
+            return
+        state.used_count = sum(1 for item in state.outside if item.node_id in used)
+
+    def _used_due(self, state: _State) -> None:
+        with self._lock:
+            if self._state is not state:
+                return
+            state.used_timer = None
+            self._refresh_used(state, force=True)
+        self.ctx.ui.invalidate()
+
+    # ------------------------------------------------------------------------------------------------ results
+
+    def _result(self, button: str, outcome: str, text: str, detail: Optional[str] = None) -> None:
+        """One result per pressed control (docs/MODULES.md 4) through `ctx.ui.result`; remembered for the host
+        page's last-result row. A host without `ui.result` gets a toast instead."""
+        record = {"button": button, "outcome": outcome, "text": text, "detail": detail, "at": time.time()}
+        state = self._state
+        if state is not None:
+            state.last_result = record
+            state.results[button] = record
+        sender = getattr(self.ctx.ui, "result", None)
+        if callable(sender):
+            sender(button, outcome, text, detail)
+        else:
+            self.ctx.ui.toast(outcome, text if not detail else f"{text} · {detail}")
+
     # ------------------------------------------------------------------------------------------------ Premiere -> disk
 
     def _sync_from_premiere(self) -> None:
@@ -397,23 +530,29 @@ class FilesModule(Module):
                 self.ctx.ui.invalidate()
                 return
             added: list[ProjectItem] = []
+            changed = len(snap.items) != len(before)
             for item in snap.items:
                 old = before.get(item.node_id)
                 if old is None:
+                    changed = True
                     if self._is_media(item):
                         if self._suppress.consume(("import", norm(item.media_path))):
                             continue
                         added.append(item)
                     continue
                 if norm_bin(old.tree_path) != norm_bin(item.tree_path):
+                    changed = True
                     if self._suppress.consume(("bin", item.node_id, norm_bin(item.tree_path))):
                         continue
                     if self._is_media(item) and self._proj("mirror_bins"):
                         self._mirror_bin_move(state, old, item)
                 elif old.media_path != item.media_path and item.media_path:
+                    changed = True
                     self._suppress.consume(("media", item.node_id, norm(item.media_path)))
             if added:
                 self._intercept(state, added)
+            if changed:
+                self._refresh_used(state)
         self.ctx.ui.invalidate()
 
     def _intercept(self, state: _State, items: list[ProjectItem]) -> None:
@@ -421,7 +560,7 @@ class FilesModule(Module):
         tasks: list[_Task] = []
         for item in items:
             path = item.media_path
-            if not path or is_excluded(path, state.root, check_hidden=False):
+            if not path or self._excluded(state, path):
                 continue
             if not os.path.isfile(path):
                 continue  # offline: listed, not fixed
@@ -430,9 +569,18 @@ class FilesModule(Module):
                     self._enforce_bin(state, item)
                 continue
             tasks.append(_Task(node_id=item.node_id, name=item.name, source=path, bin_from=item.tree_path))
-        if tasks:
-            title = f"Filing {tasks[0].name}" if len(tasks) == 1 else f"Filing {len(tasks)} files"
-            self._submit_copies(state, tasks, J.OP_FILED, title, kind="filing")
+        if not tasks:
+            return
+        if state.write_ok is None:
+            reason = write_check(state.root)
+            state.write_ok = reason is None
+            if reason is not None:
+                self.log.warning("the intercept stops for this session: %s", reason)
+                self.ctx.ui.toast("error", NO_WRITE_ACCESS)
+        if not state.write_ok:
+            return
+        title = f"Filing {tasks[0].name}" if len(tasks) == 1 else f"Filing {len(tasks)} files"
+        self._submit_copies(state, tasks, J.OP_FILED, title, kind="filing")
 
     def _enforce_bin(self, state: _State, item: ProjectItem) -> None:
         folder = state.mapper.layout_folder_of(item.media_path)
@@ -441,20 +589,25 @@ class FilesModule(Module):
         target_bin = state.mapper.bin_for_folder(folder)
         if norm_bin(item.tree_path) == norm_bin(target_bin):
             return
-        entry = state.journal.append(J.OP_BINNED, node_id=item.node_id, name=item.name, **{"from": item.media_path},
-                                     to=item.media_path, bin_from=item.tree_path, bin_to=target_bin, copied=False)
-        self._suppress.add(("bin", item.node_id, norm_bin(target_bin)))
-        try:
-            self.ctx.premiere.move_to_bin([item.node_id], target_bin)
-        except PremiereError as exc:
-            self._suppress.discard(("bin", item.node_id, norm_bin(target_bin)))
-            state.journal.mark_failed(entry["id"], exc.message)
-            return
-        self._patch(state, item.node_id, tree_path=target_bin)
-        state.journal.mark_done(entry["id"])
-        self._emit(J.OP_BINNED, f"Moved {item.name} to the {target_bin} bin")
+        self._bin_move(state, item.node_id, item.name, item.media_path, item.tree_path, target_bin)
 
-    # copies -------------------------------------------------------------------------------------------------------
+    def _bin_move(self, state: _State, node: str, name: str, path: str, bin_from: str, target_bin: str) -> bool:
+        """Journal `binned` and move one item to a bin without any disk change (module thread)."""
+        entry = state.journal.append(J.OP_BINNED, node_id=node, name=name, **{"from": path}, to=path,
+                                     bin_from=bin_from, bin_to=target_bin, copied=False)
+        self._suppress.add(("bin", node, norm_bin(target_bin)))
+        try:
+            self.ctx.premiere.move_to_bin([node], target_bin)
+        except PremiereError as exc:
+            self._suppress.discard(("bin", node, norm_bin(target_bin)))
+            state.journal.mark_failed(entry["id"], exc.message)
+            return False
+        self._patch(state, node, tree_path=target_bin)
+        state.journal.mark_done(entry["id"])
+        self._emit(J.OP_BINNED, f"Moved {name} to the {target_bin} bin")
+        return True
+
+    # classification -----------------------------------------------------------------------------------------------
 
     def _probe(self, path: str) -> MediaInfo:
         try:
@@ -464,13 +617,20 @@ class FilesModule(Module):
             return MediaInfo(path=path, kind=kind_from_extension(path), ext=Path(path).suffix.lower().lstrip("."),
                              size=file_size(path), probe_error=str(exc))
 
+    def _decide(self, state: _State, path: str, overrides=None) -> Decision:
+        """Probe, overrides, rules; the classifier of docs/FILES.md 3.8 runs when a rule needs it (job thread)."""
+        overrides = self._overrides(state) if overrides is None else overrides
+        return classify(self._probe(path), state.layout, overrides, path, enrich=self._classifier.enrich)
+
+    # copies (intercept) -------------------------------------------------------------------------------------------
+
     def _copy_one(self, state: _State, job, task: _Task, op: str, on_bytes) -> _Copied:
         """Job thread: classify, resolve the target, journal `pending`, copy. Premiere is not touched here."""
         if not os.path.isfile(task.source):
-            return _Copied(task, error="The source file is missing")
+            return _Copied(task, error="source not found")
         folder = task.folder
         if folder is None:
-            folder = classify(self._probe(task.source), state.layout, self._overrides(), task.source).folder
+            folder = self._decide(state, task.source).folder
         target_dir = state.mapper.abs_folder(folder)
         target, reuse, source_hash = resolve_target(task.source, target_dir)
         if source_hash is None:
@@ -489,25 +649,25 @@ class FilesModule(Module):
                 return _Copied(task, entry=None, cancelled=True)
             except OSError as exc:
                 self._suppress.discard(("disk", norm(target)))
-                state.journal.mark_failed(entry["id"], str(exc))
-                self.log.warning("copy of %s failed: %s", task.source, exc)
-                return _Copied(task, error=str(exc))
+                reason = failure_reason(exc, target=target, source=task.source)
+                state.journal.mark_failed(entry["id"], reason)
+                self.log.warning("copy of %s failed (%s): %s", task.source, reason, exc)
+                return _Copied(task, error=reason)
         return _Copied(task, entry=entry, target=target, folder=folder, reuse=reuse)
 
-    def _submit_copies(self, state: _State, tasks: list[_Task], op: str, title: str, *, kind: str,
-                       after: Optional[Callable[[list[_Copied], bool], None]] = None) -> None:
+    def _submit_copies(self, state: _State, tasks: list[_Task], op: str, title: str, *, kind: str) -> None:
         results: list[_Copied] = []
         finished = {"done": False}
 
         def work(job):
             total = sum(file_size(t.source) for t in tasks) or 1
             done = [0]
+            current = [""]
 
             def on_bytes(count: int) -> None:
                 done[0] += count
                 job.progress(done[0] / total, f"Copying {current[0]}")
 
-            current = [""]
             for index, task in enumerate(tasks):
                 if getattr(job, "cancelled", False):
                     break
@@ -521,21 +681,11 @@ class FilesModule(Module):
         def finish(job, _value=None):
             finished["done"] = True
             self._untrack(job)
-            cancelled = bool(getattr(job, "cancelled", False)) or any(r.cancelled for r in results)
             with self._lock:
                 if self._state is not state:
                     self.log.info("%s finished after the project closed; the journal resumes it", title)
                     return
-                filed = self._apply_copies(state, results, op)
-            if op == J.OP_COLLECTED:
-                state.plan = None
-                count = len(filed)
-                if cancelled:
-                    self.ctx.ui.toast("warn", f"Collect stopped · {count} of {len(tasks)} filed")
-                elif count:
-                    self.ctx.ui.toast("ok", f"Collected {count} file{'s' if count != 1 else ''}")
-            if after is not None:
-                after(results, cancelled)
+                self._apply_copies(state, results, op)
             self.ctx.ui.invalidate()
 
         job = self.ctx.jobs.submit(work, title=title, priority="high", on_progress=self._on_progress,
@@ -546,41 +696,22 @@ class FilesModule(Module):
     def _apply_copies(self, state: _State, results: list[_Copied], op: str) -> list[tuple[str, str]]:
         """Module thread: relink, move to bin, journal done; roll back a copy whose relink fails."""
         filed: list[tuple[str, str]] = []
-        errors: list[str] = []
+        errors: list[tuple[str, str]] = []
         for result in results:
             entry = result.entry
             if entry is None:
                 if result.error:
-                    errors.append(result.task.name)
+                    errors.append((result.task.name, result.error))
                 continue
             node = result.task.node_id
             source = result.task.source
-            self._suppress.add(("media", node, norm(result.target)))
-            try:
-                online = bool(self.ctx.premiere.relink(node, result.target))
-            except PremiereError as exc:
-                self.log.warning("relink of %s failed: %s", result.task.name, exc.message)
-                online = False
-            if not online:
-                self._suppress.discard(("media", node, norm(result.target)))
+            if not self._relink(state, node, result.target, old=source):
                 if entry.get("copied"):
                     self._delete_own_copy(state, result.target, entry_hash=entry.get("hash"), check_journal=False)
                 state.journal.mark_failed(entry["id"], "relink failed")
                 self.ctx.ui.toast("error", f"Could not relink {result.task.name}")
                 continue
-            self._index_set(state, node, source, result.target)
-            self._patch(state, node, media_path=result.target, is_offline=False)
-            bin_to = entry.get("bin_to") or ""
-            if norm_bin(bin_to) != norm_bin(result.task.bin_from):
-                self._suppress.add(("bin", node, norm_bin(bin_to)))
-                try:
-                    self.ctx.premiere.move_to_bin([node], bin_to)
-                except PremiereError as exc:
-                    self._suppress.discard(("bin", node, norm_bin(bin_to)))
-                    self.log.warning("move to bin %s failed: %s", bin_to, exc.message)
-                    bin_to = result.task.bin_from
-                else:
-                    self._patch(state, node, tree_path=bin_to)
+            bin_to = self._to_bin(state, node, entry.get("bin_to") or "", result.task.bin_from)
             state.journal.mark_done(entry["id"], bin_to=bin_to)
             filed.append((result.task.name, result.folder))
         if filed:
@@ -589,10 +720,41 @@ class FilesModule(Module):
         if op == J.OP_FILED:
             self._toast_filed(filed)
         if errors:
-            text = f"Could not copy {errors[0]}" if len(errors) == 1 else f"Could not copy {len(errors)} files"
+            name, reason = errors[0]
+            text = f"Could not copy {name} · {reason}" if len(errors) == 1 else \
+                f"Could not copy {len(errors)} files · {reason}"
             self.ctx.ui.toast("error", text)
         self._refresh_derived(state)
         return filed
+
+    def _relink(self, state: _State, node: str, path: str, *, old: Optional[str] = None) -> bool:
+        """Relink one item (module thread) with suppression; patches the snapshot and the index on success."""
+        self._suppress.add(("media", node, norm(path)))
+        try:
+            online = bool(self.ctx.premiere.relink(node, path))
+        except PremiereError as exc:
+            self.log.warning("relink of %s failed: %s", node, exc.message)
+            online = False
+        if not online:
+            self._suppress.discard(("media", node, norm(path)))
+            return False
+        self._index_set(state, node, old, path)
+        self._patch(state, node, media_path=path, is_offline=False)
+        return True
+
+    def _to_bin(self, state: _State, node: str, bin_to: str, bin_from: str) -> str:
+        """Move an item to `bin_to` unless it is there; returns the bin it ends in."""
+        if norm_bin(bin_to) == norm_bin(bin_from):
+            return bin_to
+        self._suppress.add(("bin", node, norm_bin(bin_to)))
+        try:
+            self.ctx.premiere.move_to_bin([node], bin_to)
+        except PremiereError as exc:
+            self._suppress.discard(("bin", node, norm_bin(bin_to)))
+            self.log.warning("move to bin %s failed: %s", bin_to, exc.message)
+            return bin_from
+        self._patch(state, node, tree_path=bin_to)
+        return bin_to
 
     def _emit(self, op: str, text: str, *, tone: str = "ok", **extra) -> None:
         """`journal.appended` for the host window; `text` and `tone` feed its activity list (BRIDGE_API.md 3.5)."""
@@ -634,6 +796,19 @@ class FilesModule(Module):
         state.index.pop(norm(path), None)
         return True
 
+    def _move_back(self, target: str, original: str) -> bool:
+        """Rename a file the module moved back to where it was (relink failure, undo, recovery)."""
+        if not os.path.isfile(target) or os.path.exists(original):
+            return False
+        self._suppress.add(("disk", norm(original)))
+        self._suppress.add(("disk", norm(target)))
+        try:
+            move_file(target, original)
+        except OSError as exc:
+            self.log.warning("could not move %s back: %s", target, exc)
+            return False
+        return True
+
     # bin moves (docs/FILES.md 3.3) ------------------------------------------------------------------------------
 
     def _mirror_bin_move(self, state: _State, before: ProjectItem, after: ProjectItem) -> None:
@@ -647,51 +822,58 @@ class FilesModule(Module):
         if current is not None and current.casefold() == folder.casefold():
             return
         node = after.node_id
+        shared = self._referenced(state, path, ignore=node)  # another item keeps the file: copy instead of move
         result: dict = {}
         finished = {"done": False}
 
         def work(job):
             target, reuse, file_hash = resolve_target(path, state.mapper.abs_folder(folder))
             file_hash = file_hash or safe_hash(path)
+            copied, moved = shared and not reuse, not shared and not reuse
             entry = state.journal.append(J.OP_MOVED_BIN, node_id=node, name=after.name, **{"from": path}, to=target,
                                          bin_from=before.tree_path, bin_to=after.tree_path, hash=file_hash,
-                                         copied=not reuse)
-            result["entry"] = entry
-            if not reuse:
-                self._suppress.add(("disk", norm(target)))
-                try:
+                                         copied=copied, moved=moved, size=file_size(path))
+            result.update(entry=entry, target=target)
+            try:
+                if copied:
+                    self._suppress.add(("disk", norm(target)))
                     copy_file(path, target, buffer_bytes=self._host("copy_buffer_mb") << 20,
                               cancelled=lambda: bool(getattr(job, "cancelled", False)))
-                except (CopyCancelled, OSError) as exc:
-                    self._suppress.discard(("disk", norm(target)))
-                    state.journal.mark_failed(entry["id"], "cancelled" if isinstance(exc, CopyCancelled) else str(exc))
-                    result["failed"] = True
-            result["target"] = target
+                elif moved:
+                    self._suppress.add(("disk", norm(target)))
+                    self._suppress.add(("disk", norm(path)))
+                    move_file(path, target)
+            except (CopyCancelled, OSError) as exc:
+                self._suppress.discard(("disk", norm(target)))
+                reason = failure_reason(exc, target=target, source=path)
+                state.journal.mark_failed(entry["id"], reason)
+                result["failed"] = reason
             return result
 
         def finish(job, _value=None):
             finished["done"] = True
             self._untrack(job)
             with self._lock:
-                if self._state is not state or "entry" not in result or result.get("failed"):
+                if self._state is not state or "entry" not in result:
+                    self.ctx.ui.invalidate()
+                    return
+                if result.get("failed"):
+                    self.ctx.ui.toast("error", f"Could not move {after.name} · {result['failed']}")
                     self.ctx.ui.invalidate()
                     return
                 entry, target = result["entry"], result["target"]
-                self._suppress.add(("media", node, norm(target)))
-                try:
-                    online = bool(self.ctx.premiere.relink(node, target))
-                except PremiereError:
-                    online = False
-                if not online:
-                    if entry.get("copied"):
+                if not self._relink(state, node, target, old=path):
+                    if entry.get("moved"):
+                        self._move_back(target, path)
+                    elif entry.get("copied"):
                         self._delete_own_copy(state, target, entry_hash=entry.get("hash"), check_journal=False)
                     state.journal.mark_failed(entry["id"], "relink failed")
                     self.ctx.ui.toast("error", f"Could not relink {after.name}")
                     self.ctx.ui.invalidate()
                     return
-                self._index_set(state, node, path, target)
-                self._patch(state, node, media_path=target, is_offline=False)
-                deleted = self._delete_own_copy(state, path, ignore_node=None)
+                deleted = False
+                if not entry.get("moved") and not entry.get("copied"):
+                    deleted = self._delete_own_copy(state, path)  # an equal file was reused: drop our old copy
                 state.journal.mark_done(entry["id"], deleted_from=deleted)
                 self._emit(J.OP_MOVED_BIN, f"Moved {after.name} to {folder} with its bin")
                 self._refresh_derived(state)
@@ -706,17 +888,23 @@ class FilesModule(Module):
     # ------------------------------------------------------------------------------------------------ disk -> Premiere
 
     def _watch_ignored(self, state: _State, path: str) -> bool:
-        if is_excluded(path, state.root):
+        """docs/FILES.md 3.2: exclusions of 1.5 (with the `<stem> Masks` folder) and the exports folder."""
+        if state.mapper.excluded(path):
             return True
         if state.mapper.is_exports(path) and not self._proj("import_exports"):
             return True
         return False
+
+    def _watch_accepts(self, state: _State, path: str) -> bool:
+        """Only files with an extension of the media tables are imported (docs/FILES.md 3.2)."""
+        return is_media_extension(path)
 
     def _start_watcher(self, state: _State) -> None:
         if state.watcher is not None or not self._proj("watch") or not os.path.isdir(state.root):
             return
         watcher = DiskWatcher(state.root, lambda change: self._on_disk_change(state, change),
                               ignored=lambda path: self._watch_ignored(state, path),
+                              accept_file=lambda path: self._watch_accepts(state, path),
                               debounce=self.WATCH_DEBOUNCE, stable=float(self._host("stable_seconds")))
         try:
             watcher.start()
@@ -731,10 +919,19 @@ class FilesModule(Module):
         if watcher is not None:
             watcher.stop()
 
+    def _set_watch(self, state: _State, on: bool) -> None:
+        self._set_proj("watch", on)
+        if on:
+            self._start_watcher(state)
+        else:
+            self._stop_watcher(state)
+
     def _on_disk_change(self, state: _State, change: dict) -> None:
         """Watcher thread: drop our own changes, then hop onto the module thread through a job callback."""
         path = change["path"]
         if change["type"] in ("created", "deleted", "moved") and self._suppress.consume(("disk", norm(path))):
+            if change["type"] == "moved" and change.get("src"):
+                self._suppress.consume(("disk", norm(change["src"])))
             return
         if self._state is not state:
             return
@@ -763,8 +960,10 @@ class FilesModule(Module):
     def _disk_created(self, state: _State, path: str) -> None:
         if state.index.get(norm(path)) or not os.path.isfile(path):
             return
+        if self._watch_ignored(state, path) or not self._watch_accepts(state, path):
+            return  # never imported, never journaled (docs/FILES.md 3.2)
         folder = state.mapper.layout_folder_of(path)
-        if folder is None or self._watch_ignored(state, path):
+        if folder is None:
             return
         bin_path = state.mapper.bin_for_folder(folder)
         name = os.path.basename(path)
@@ -786,6 +985,7 @@ class FilesModule(Module):
             state.items[item.node_id] = item
         state.journal.mark_done(entry["id"], node_id=created[0].node_id, node_ids=[i.node_id for i in created])
         self._emit(J.OP_IMPORTED, f"Imported {name} into {bin_path or 'the root bin'}")
+        self._refresh_derived(state)
 
     def _disk_moved(self, state: _State, src: str, dest: str) -> None:
         nodes = sorted(state.index.get(norm(src), set()))
@@ -813,18 +1013,10 @@ class FilesModule(Module):
             entry = state.journal.append(op, node_id=node, name=new_name or name, **{"from": src}, to=dest,
                                          bin_from=bin_from, bin_to=bin_to, name_from=name, name_to=new_name,
                                          copied=False)
-            self._suppress.add(("media", node, norm(dest)))
-            try:
-                online = bool(self.ctx.premiere.relink(node, dest))
-            except PremiereError as exc:
-                online = False
-                self.log.warning("relink after a disk move failed: %s", exc.message)
-            if not online:
+            if not self._relink(state, node, dest, old=src):
                 state.journal.mark_failed(entry["id"], "relink failed")
                 self.ctx.ui.toast("error", f"Could not relink {name}")
                 continue
-            self._index_set(state, node, src, dest)
-            self._patch(state, node, media_path=dest, is_offline=False)
             if new_name:
                 self.ctx.premiere.rename_item(node, new_name)
                 self._patch(state, node, name=new_name)
@@ -850,8 +1042,28 @@ class FilesModule(Module):
 
     # ------------------------------------------------------------------------------------------------ recovery
 
+    def _cleanup_journal(self, state: _State) -> None:
+        """docs/FILES.md 3.2: drop the `failed` entries of files the watcher must never have touched (excluded by
+        1.5 or not a media extension: the mask files a 1.x watcher tried to import); one rewrite, or none."""
+        drop = []
+        for entry in state.journal.entries():
+            if entry.get("status") != J.FAILED or entry.get("op") in (J.OP_ZIPPED, J.OP_SETUP):
+                continue
+            path = entry.get("to") or entry.get("from")
+            if not path or not isinstance(path, str):
+                continue
+            if not is_media_extension(path) or (is_inside(path, state.root) and self._excluded(state, path)):
+                drop.append(entry["id"])
+        if drop:
+            try:
+                count = state.journal.drop(drop)
+            except OSError as exc:
+                self.log.warning("journal clean-up skipped: %s", exc)
+                return
+            self.log.info("dropped %d failed journal entries of ignored files", count)
+
     def _recover(self, state: _State) -> None:
-        """docs/FILES.md 1.3: resume or roll back entries an interrupted run left `pending`."""
+        """docs/FILES.md 1.3, 5.2: resume or roll back entries an interrupted run left `pending`."""
         for entry in state.journal.pending():
             try:
                 self._recover_entry(state, entry)
@@ -861,18 +1073,25 @@ class FilesModule(Module):
                 state.journal.mark_failed(entry["id"], f"recovery failed: {exc}")
 
     def _recover_entry(self, state: _State, entry: dict) -> None:
-        op, node, target = entry.get("op"), entry.get("node_id"), entry.get("to")
+        op, node, target, source = entry.get("op"), entry.get("node_id"), entry.get("to"), entry.get("from")
+        if op == J.OP_ZIPPED:
+            if target and os.path.exists(target + ".part"):
+                os.remove(target + ".part")  # our own partial archive beside the root
+            state.journal.mark_failed(entry["id"], "interrupted")
+            return
         if target and is_inside(target, state.root) and os.path.exists(target + ".part"):
             os.remove(target + ".part")
         item = state.items.get(node) if node else None
-        if op in (J.OP_FILED, J.OP_COLLECTED, J.OP_MOVED_BIN):
+        if op in J.FILE_OPS:
             if item is not None and same_path(item.media_path, target):
                 state.journal.mark_done(entry["id"], recovered=True, deleted_from=False)
                 return
-            if item is not None and target and os.path.isfile(target) and same_path(item.media_path, entry.get("from")):
+            moved = bool(entry.get("moved"))
+            complete = target and os.path.isfile(target) and (not moved or not os.path.exists(source or ""))
+            if item is not None and complete and same_path(item.media_path, source):
                 self._suppress.add(("media", node, norm(target)))
                 if self.ctx.premiere.relink(node, target):
-                    self._index_set(state, node, entry.get("from"), target)
+                    self._index_set(state, node, source, target)
                     self._patch(state, node, media_path=target, is_offline=False)
                     bin_to = entry.get("bin_to") or ""
                     if op != J.OP_MOVED_BIN and norm_bin(bin_to) != norm_bin(item.tree_path):
@@ -881,7 +1100,9 @@ class FilesModule(Module):
                         self._patch(state, node, tree_path=bin_to)
                     state.journal.mark_done(entry["id"], resumed=True, deleted_from=False)
                     return
-            if entry.get("copied") and target:
+            if moved and target and source:
+                self._move_back(target, source)
+            elif entry.get("copied") and target:
                 self._delete_own_copy(state, target, entry_hash=entry.get("hash"), check_journal=False)
             state.journal.mark_failed(entry["id"], "interrupted; rolled back")
             return
@@ -901,9 +1122,9 @@ class FilesModule(Module):
 
     # ------------------------------------------------------------------------------------------------ jobs
 
-    def _track(self, job, kind: str, label: str) -> None:
+    def _track(self, job, kind: str, label: str, detail: Optional[str] = None) -> None:
         with self._lock:
-            self._jobs[job.id] = _Tracked(job=job, kind=kind, label=label)
+            self._jobs[job.id] = _Tracked(job=job, kind=kind, label=label, detail=detail)
         self.ctx.ui.invalidate()
 
     def _untrack(self, job) -> None:
@@ -917,178 +1138,413 @@ class FilesModule(Module):
                 tracked.value, tracked.label = value, label or tracked.label
         self.ctx.ui.invalidate()
 
+    def _progress(self, job, value: Optional[float], label: str, detail: Optional[str]) -> None:
+        """Job thread: the progress of a long action with its current file (docs/FILES.md 3.4 to 3.6)."""
+        with self._lock:
+            tracked = self._jobs.get(getattr(job, "id", ""))
+            if tracked is not None:
+                tracked.detail = detail
+        job.progress(value, label)
+
     def _busy(self, *kinds: str) -> bool:
         return any(t.kind in kinds for t in self._jobs.values())
 
-    # ------------------------------------------------------------------------------------------------ collect, pack
+    def _long_running(self) -> Optional[str]:
+        return next((t.kind for t in self._jobs.values() if t.kind in LONG_KINDS), None)
 
-    def _start_plan(self, state: _State, after: Optional[Callable[[CollectPlan], None]] = None) -> None:
-        items = list(state.external)
-        missing = [{"node_id": i.node_id, "name": i.name, "path": i.media_path} for i in state.offline]
-        overrides = self._overrides()
+    def _run_long(self, state: _State, kind: str, title: str, work: Callable, finish: Callable) -> None:
+        """Submit one of Sort / Sync / ZIP; `finish(job, value, error)` runs on the module thread."""
         finished = {"done": False}
 
-        def work(job):
-            plan = CollectPlan(missing=list(missing))
-            reserved: dict = {}
-            for index, item in enumerate(items):
-                if getattr(job, "cancelled", False):
-                    break
-                job.progress(index / max(1, len(items)), f"Checking {item.name}")
-                path = item.media_path
-                if not os.path.isfile(path):
-                    plan.missing.append({"node_id": item.node_id, "name": item.name, "path": path})
-                    continue
-                decision = classify(self._probe(path), state.layout, overrides, path)
-                target, reuse, file_hash = resolve_target(path, state.mapper.abs_folder(decision.folder),
-                                                          reserved=reserved)
-                file_hash = file_hash or safe_hash(path)
-                reserved[norm(target)] = file_hash
-                plan.entries.append(PlanEntry(node_id=item.node_id, name=item.name, source=path,
-                                              folder=decision.folder, target=target, size=file_size(path),
-                                              reuse=reuse, bin_from=item.tree_path, hash=file_hash,
-                                              reason=decision.reason))
-            return plan
-
-        def done(job, plan):
+        def done(job, value):
             finished["done"] = True
             self._untrack(job)
             with self._lock:
                 if self._state is not state:
                     return
-                if getattr(job, "cancelled", False):
-                    state.plan = None
-                    self.ctx.ui.invalidate()
-                    return
-                state.plan = plan
-            if after is not None:
-                after(plan)
+                finish(job, value, None)
             self.ctx.ui.invalidate()
 
         def failed(job, exc):
             finished["done"] = True
             self._untrack(job)
-            if not getattr(job, "cancelled", False):
-                self.log.warning("collect plan failed: %s", exc)
-                self.ctx.ui.toast("error", "Could not plan the collect")
-            self.ctx.ui.invalidate()
-
-        job = self.ctx.jobs.submit(work, title="Planning collect", priority="normal", on_progress=self._on_progress,
-                                   on_done=done, on_error=failed)
-        if not finished["done"]:
-            self._track(job, "plan", "Checking media")
-
-    def _run_plan(self, state: _State, plan: CollectPlan,
-                  after: Optional[Callable[[list[_Copied], bool], None]] = None) -> None:
-        tasks = [_Task(node_id=e.node_id, name=e.name, source=e.source, bin_from=e.bin_from, folder=e.folder)
-                 for e in plan.entries]
-        if not tasks:
-            state.plan = None
-            if after is not None:
-                after([], False)
-            return
-        self._submit_copies(state, tasks, J.OP_COLLECTED, f"Collecting {len(tasks)} files", kind="collect",
-                            after=after)
-
-    def _pack(self, state: _State) -> None:
-        def verify(*_args) -> None:
             with self._lock:
                 if self._state is not state:
                     return
-                self._take_snapshot(state)
-                self._pack_job(state)
+                self.log.warning("%s failed: %s", title, exc)
+                finish(job, None, exc)
+            self.ctx.ui.invalidate()
 
-        if state.external:
-            self._start_plan(state, after=lambda plan: self._run_plan(
-                state, plan, after=lambda results, cancelled: None if cancelled else verify()))
-        else:
-            verify()
+        job = self.ctx.jobs.submit(work, title=title, priority="high", on_progress=self._on_progress,
+                                   on_done=done, on_error=failed)
+        if not finished["done"]:
+            self._track(job, kind, title)
 
-    def _pack_job(self, state: _State) -> None:
-        items = [i for i in state.items.values() if self._is_media(i)]
-        want_zip = self._proj("pack_zip")
-        project_name = os.path.basename(state.project.path)
-        finished = {"done": False}
-
-        def work(job):
-            report = build_pack_report(project_name, state.root, items, lambda p: is_inside(p, state.root))
-            report_path = os.path.join(state.root, DECK_DIR, "pack-report.txt")
-            os.makedirs(os.path.dirname(report_path), exist_ok=True)
-            if want_zip:
-                report.archive = free_zip_path(state.root)
-            _write_text(report_path, report.text())
-            if want_zip:
-                try:
-                    make_zip(state.root, report.archive, buffer_bytes=self._host("copy_buffer_mb") << 20,
-                             on_bytes=lambda done, total: job.progress(done / total, "Writing archive"),
-                             cancelled=lambda: bool(getattr(job, "cancelled", False)))
-                except (CopyCancelled, OSError) as exc:
-                    report.archive = None
-                    _write_text(report_path, report.text())
-                    if isinstance(exc, CopyCancelled):
-                        return report
-                    raise
-            return report
-
-        def done(job, report):
-            finished["done"] = True
-            self._untrack(job)
+    def _post(self, state: _State, fn: Callable[[], None]) -> None:
+        """Job thread -> module thread for one finished file; dropped when the project was closed meanwhile (the
+        journal entry stays pending and is recovered on the next open)."""
+        def run() -> None:
             with self._lock:
                 if self._state is state:
-                    state.pack_report = report
-            self.ctx.ui.toast("ok" if report.ok else "warn", report.line())
-            self._emit("pack", report.line(), tone="ok" if report.ok else "warn")
-            self.ctx.ui.invalidate()
+                    fn()
+        self.ctx.post(run)
 
-        def failed(job, exc):
-            finished["done"] = True
-            self._untrack(job)
-            self.log.warning("pack failed: %s", exc)
-            self.ctx.ui.toast("error", "Could not pack the project")
-            self.ctx.ui.invalidate()
+    # ------------------------------------------------------------------------------------------------ Sort (3.4)
 
-        job = self.ctx.jobs.submit(work, title="Packing project", priority="normal", on_progress=self._on_progress,
-                                   on_done=done, on_error=failed)
-        if not finished["done"]:
-            self._track(job, "pack", "Checking media")
+    def _user_placed(self, state: _State) -> set[str]:
+        """Files the user put where they are: `to` of a done, not undone `moved_bin` / `moved_disk` entry."""
+        entries = state.journal.entries()
+        undone = {e["undo_of"] for e in entries if e.get("undo_of")}
+        return {norm(e["to"]) for e in entries
+                if e.get("op") in (J.OP_MOVED_BIN, J.OP_MOVED_DISK) and e.get("status") == J.DONE
+                and not e.get("undo_of") and e["id"] not in undone and e.get("to")}
 
-    # ------------------------------------------------------------------------------------------------ undo
+    def _act_sort(self, state: _State, value, row) -> None:
+        if self._long_running():
+            return self._result("sort", "neutral", "Another action is running")
+        if self._take_snapshot(state) is None:
+            return self._result("sort", "error", "Premiere Pro did not answer", state.premiere_error or None)
+        reason = write_check(state.root)
+        if reason:
+            return self._result("sort", "error", NO_WRITE_ACCESS, reason)
+        mapper, layout = state.mapper, state.layout
+        candidates = [item for item in state.items.values() if self._is_media(item) and not item.is_offline
+                      and os.path.isfile(item.media_path) and is_inside(item.media_path, state.root)
+                      and not self._excluded(state, item.media_path)]
+        refs = {path: len(nodes) for path, nodes in state.index.items()}
+        placed = self._user_placed(state)
+        overrides = self._overrides(state)
+        run = _Run()
 
-    def _undo(self, state: _State, entry_id: Optional[str]) -> ActionResult:
+        def work(job):
+            planned: list[PlanEntry] = []
+            for index, item in enumerate(candidates, start=1):
+                if getattr(job, "cancelled", False):
+                    return planned
+                path = item.media_path
+                self._progress(job, None, f"Checking media {index} / {len(candidates)}", item.name)
+                key = norm(path)
+                if key in placed:
+                    continue
+                target = self._decide(state, path, overrides).folder
+                here = mapper.rel_folder(path) or ""
+                if is_under(here, target):
+                    folder = mapper.layout_folder_of(path) or target
+                    if norm_bin(item.tree_path) != norm_bin(mapper.bin_for_folder(folder)):
+                        planned.append(PlanEntry(node_id=item.node_id, name=item.name, source=path, folder=folder,
+                                                 target=path, size=0, reuse=True, bin_from=item.tree_path,
+                                                 bin_only=True))
+                    continue
+                deepest = mapper.deepest_layout_folder(path)
+                if deepest is not None and not layout.in_media_dir(deepest) and _top(deepest) == _top(target):
+                    continue  # already in the target's top-level folder (Audio/SFX vs Audio/Music)
+                planned.append(PlanEntry(node_id=item.node_id, name=item.name, source=path, folder=target,
+                                         target="", size=file_size(path), reuse=False, bin_from=item.tree_path,
+                                         copy=refs.get(key, 0) > 1))
+            run.planned = len(planned)
+            for index, entry in enumerate(planned, start=1):
+                if getattr(job, "cancelled", False):
+                    break
+                self._progress(job, (index - 1) / max(1, len(planned)), f"Sorting project {index} / {len(planned)}",
+                               f"{entry.name} > {entry.folder}")
+                if entry.bin_only:
+                    self._post(state, lambda e=entry: self._apply_bin_only(state, e, run))
+                    continue
+                self._sort_one(state, job, entry, run)
+            return planned
+
+        def finish(job, planned, error):
+            cancelled = bool(getattr(job, "cancelled", False))
+            if error is not None:
+                return self._result("sort", "error", "Sort failed", str(error))
+            n, k = run.planned, run.done
+            if cancelled:
+                return self._result("sort", "neutral", f"Sort stopped · {k} of {n} filed")
+            if not n:
+                return self._result("sort", "neutral", "Nothing to sort")
+            if run.failures:
+                name, why = run.failures[0]
+                return self._result("sort", "warn", f"Sorted {k} of {n} files · {len(run.failures)} failed",
+                                    f"{name}: {why}")
+            self._emit(J.OP_SORTED, f"Sorted {plural(k, 'file')}", count=k)
+            self._result("sort", "ok", f"Sorted {plural(k, 'file')} · {fmt_size(run.bytes)}")
+
+        self._run_long(state, "sort", "Sorting project", work, finish)
+
+    def _sort_one(self, state: _State, job, entry: PlanEntry, run: _Run) -> None:
+        """Job thread: journal `sorted` pending, move (or copy a shared file), then post the relink."""
+        source = entry.source
+        if not os.path.isfile(source):
+            self._post(state, lambda: run.failures.append((entry.name, "source not found")))
+            return
+        target, reuse, file_hash = resolve_target(source, state.mapper.abs_folder(entry.folder))
+        file_hash = file_hash or safe_hash(source)
+        copied, moved = entry.copy and not reuse, not entry.copy and not reuse
+        record = state.journal.append(J.OP_SORTED, node_id=entry.node_id, name=entry.name, **{"from": source},
+                                      to=target, bin_from=entry.bin_from,
+                                      bin_to=state.mapper.bin_for_folder(entry.folder), hash=file_hash,
+                                      size=entry.size, copied=copied, moved=moved)
+        try:
+            if copied:
+                self._suppress.add(("disk", norm(target)))
+                copy_file(source, target, buffer_bytes=self._host("copy_buffer_mb") << 20,
+                          cancelled=lambda: bool(getattr(job, "cancelled", False)))
+            elif moved:
+                self._suppress.add(("disk", norm(target)))
+                self._suppress.add(("disk", norm(source)))
+                move_file(source, target)
+        except (CopyCancelled, OSError) as exc:
+            self._suppress.discard(("disk", norm(target)))
+            reason = failure_reason(exc, target=target, source=source)
+            state.journal.mark_failed(record["id"], reason)
+            if not isinstance(exc, CopyCancelled):
+                self.log.warning("sort of %s failed (%s): %s", source, reason, exc)
+                self._post(state, lambda: run.failures.append((entry.name, reason)))
+            return
+        done_entry = replace(entry, size=0 if reuse else entry.size)
+        self._post(state, lambda: self._apply_moved(state, record, done_entry, target, run))
+
+    def _apply_moved(self, state: _State, record: dict, entry: PlanEntry, target: str, run: _Run) -> None:
+        """Module thread: relink to the moved / copied / reused file, bin move, journal done; a failed relink moves
+        the file back (or deletes the copy) and journals `failed`."""
+        node, source = entry.node_id, entry.source
+        if not self._relink(state, node, target, old=source):
+            if record.get("moved"):
+                self._move_back(target, source)
+            elif record.get("copied"):
+                self._delete_own_copy(state, target, entry_hash=record.get("hash"), check_journal=False)
+            state.journal.mark_failed(record["id"], "relink failed")
+            run.failures.append((entry.name, "relink failed"))
+            return
+        bin_to = self._to_bin(state, node, record.get("bin_to") or "", entry.bin_from)
+        state.journal.mark_done(record["id"], bin_to=bin_to)
+        run.done += 1
+        run.bytes += entry.size
+        self._refresh_derived(state)
+
+    def _apply_bin_only(self, state: _State, entry: PlanEntry, run: _Run) -> None:
+        bin_to = state.mapper.bin_for_folder(entry.folder)
+        if self._bin_move(state, entry.node_id, entry.name, entry.source, entry.bin_from, bin_to):
+            run.done += 1
+        else:
+            run.failures.append((entry.name, "bin move failed"))
+
+    # ------------------------------------------------------------------------------------------------ Sync (3.5)
+
+    def _act_sync_all(self, state: _State, value, row) -> None:
+        self._start_sync(state, used_only=False)
+
+    def _act_sync_used(self, state: _State, value, row) -> None:
+        self._start_sync(state, used_only=True)
+
+    def _start_sync(self, state: _State, *, used_only: bool) -> None:
+        button = "sync_used" if used_only else "sync_all"
+        if self._long_running():
+            return self._result(button, "neutral", "Another action is running")
+        if self._take_snapshot(state) is None:
+            return self._result(button, "error", "Premiere Pro did not answer", state.premiere_error or None)
+        items = list(state.outside)
+        offline = [item for item in state.offline if not is_inside(item.media_path or "", state.root)]
+        if used_only:
+            try:
+                used = self._used_ids()
+            except PremiereError as exc:
+                return self._result(button, "error", "Premiere Pro did not answer", exc.message)
+            items = [item for item in items if item.node_id in used]
+            offline = [item for item in offline if item.node_id in used]
+            state.used_count, state.used_at = len(items), time.monotonic()
+        if not items and not offline:
+            return self._result(button, "neutral", "No used media outside the project folder" if used_only
+                                else "Nothing outside the project folder")
+        reason = write_check(state.root)
+        if reason:
+            return self._result(button, "error", NO_WRITE_ACCESS, reason)
+        media_dir = state.mapper.abs_folder(state.layout.media_dir)
+        media_bin = state.mapper.bin_for_folder(state.layout.media_dir)
+        run = _Run(offline=[item.name for item in offline])
+
+        def work(job):
+            planned: list[PlanEntry] = []
+            reserved: dict = {}
+            for item in items:
+                target, reuse, file_hash = resolve_target(item.media_path, media_dir, reserved=reserved)
+                file_hash = file_hash or safe_hash(item.media_path)
+                reserved[norm(target)] = file_hash
+                planned.append(PlanEntry(node_id=item.node_id, name=item.name, source=item.media_path,
+                                         folder=state.layout.media_dir, target=target,
+                                         size=file_size(item.media_path), reuse=reuse, bin_from=item.tree_path,
+                                         hash=file_hash))
+            needed = sum(entry.size for entry in planned if not entry.reuse)
+            free = free_bytes(state.root)
+            if free is not None and needed > free:
+                run.error = ("Not enough free space · needs " + fmt_size(needed), None)
+                return planned
+            run.planned = len(planned)
+            for index, entry in enumerate(planned, start=1):
+                if getattr(job, "cancelled", False):
+                    break
+                self._progress(job, (index - 1) / max(1, len(planned)), f"Syncing media {index} / {len(planned)}",
+                               entry.name)
+                self._sync_one(state, job, entry, media_dir, media_bin, run)
+            return planned
+
+        def finish(job, planned, error):
+            if error is not None:
+                return self._result(button, "error", "Sync failed", str(error))
+            if run.error is not None:
+                return self._result(button, "error", *run.error)
+            n, k = run.planned, run.done
+            if getattr(job, "cancelled", False):
+                return self._result(button, "neutral", f"Sync stopped · {k} of {n} copied")
+            if run.failures or run.offline:
+                parts = [f"Synced {k} of {n} files"] if n else ["Nothing to copy"]
+                if run.failures:
+                    parts.append(f"{len(run.failures)} failed")
+                if run.offline:
+                    parts.append(f"{len(run.offline)} offline")
+                if run.failures:
+                    name, why = run.failures[0]
+                    detail = f"{name}: {why}"
+                else:
+                    detail = "Offline: " + ", ".join(run.offline[:5]) + (" and more" if len(run.offline) > 5 else "")
+                return self._result(button, "warn", " · ".join(parts), detail)
+            self._emit(J.OP_SYNCED, f"Synced {plural(k, 'file')} into {state.layout.media_dir}", count=k)
+            self._result(button, "ok", f"Synced {plural(k, 'file')} into {state.layout.media_dir} · "
+                                       f"{fmt_size(run.bytes)}")
+
+        self._run_long(state, button, "Syncing media", work, finish)
+
+    def _sync_one(self, state: _State, job, entry: PlanEntry, media_dir: str, media_bin: str, run: _Run) -> None:
+        source = entry.source
+        if not os.path.isfile(source):
+            self._post(state, lambda: run.failures.append((entry.name, "source not found")))
+            return
+        target, reuse, file_hash = resolve_target(source, media_dir)
+        file_hash = file_hash or entry.hash or safe_hash(source)
+        record = state.journal.append(J.OP_SYNCED, node_id=entry.node_id, name=entry.name, **{"from": source},
+                                      to=target, bin_from=entry.bin_from, bin_to=media_bin, hash=file_hash,
+                                      size=entry.size, copied=not reuse)
+        if not reuse:
+            self._suppress.add(("disk", norm(target)))
+            try:
+                copy_file(source, target, buffer_bytes=self._host("copy_buffer_mb") << 20,
+                          cancelled=lambda: bool(getattr(job, "cancelled", False)))
+            except (CopyCancelled, OSError) as exc:
+                self._suppress.discard(("disk", norm(target)))
+                reason = failure_reason(exc, target=target, source=source)
+                state.journal.mark_failed(record["id"], reason)
+                if not isinstance(exc, CopyCancelled):
+                    self.log.warning("sync of %s failed (%s): %s", source, reason, exc)
+                    self._post(state, lambda: run.failures.append((entry.name, reason)))
+                return
+        moved_entry = replace(entry, size=0 if reuse else entry.size)
+        self._post(state, lambda: self._apply_moved(state, record, moved_entry, target, run))
+
+    # ------------------------------------------------------------------------------------------------ ZIP (3.6)
+
+    def _act_zip(self, state: _State, value, row) -> None:
+        if self._long_running():
+            return self._result("zip", "neutral", "Another action is running")
+        if self._take_snapshot(state) is None:
+            return self._result("zip", "error", "Premiere Pro did not answer", state.premiere_error or None)
+        if state.outside:
+            return self._result("zip", "warn", f"Sync all media first · {plural(len(state.outside), 'file')} "
+                                               "outside the folder")
+        reason = write_check(state.root)
+        if reason:
+            return self._result("zip", "error", NO_WRITE_ACCESS, reason)
+        items = [item for item in state.items.values() if self._is_media(item)]
+        project_name = os.path.basename(state.project.path)
+        progress = {"k": 0, "n": 0}
+        outcome: dict = {}
+
+        def work(job):
+            report = build_zip_report(project_name, state.root, items, lambda p: is_inside(p, state.root))
+            report_path = os.path.join(state.root, DECK_DIR, "pack-report.txt")
+            report.archive = free_zip_path(state.root)
+            entry = state.journal.append(J.OP_ZIPPED, name=os.path.basename(report.archive), to=report.archive,
+                                         offline=[o["name"] for o in report.offline], copied=False)
+            outcome["entry"] = entry
+            _write_text(report_path, report.text())
+            files = pack_files(state.root)
+
+            def on_file(k: int, n: int, name: str) -> None:
+                progress.update(k=k, n=n)
+                self._progress(job, (k - 1) / max(1, n), f"Making ZIP {k} / {n}", name)
+
+            try:
+                make_zip(state.root, report.archive, files=files, on_file=on_file,
+                         buffer_bytes=self._host("copy_buffer_mb") << 20,
+                         cancelled=lambda: bool(getattr(job, "cancelled", False)))
+            except (CopyCancelled, OSError) as exc:
+                archive, report.archive = report.archive, None
+                _write_text(report_path, report.text())
+                why = failure_reason(exc, target=archive)
+                state.journal.mark_failed(entry["id"], why)
+                outcome["error"] = why
+                return report
+            report.files = len(files)
+            report.archive_bytes = file_size(report.archive)
+            state.journal.mark_done(entry["id"], size=report.archive_bytes)
+            return report
+
+        def finish(job, report, error):
+            if error is not None:
+                return self._result("zip", "error", "Could not write the ZIP", str(error))
+            if outcome.get("error") == "cancelled" or (getattr(job, "cancelled", False) and "error" in outcome):
+                return self._result("zip", "neutral", f"ZIP stopped · {progress['k']} of {progress['n']} files")
+            if outcome.get("error"):
+                return self._result("zip", "error", f"Could not write the ZIP · {outcome['error']}")
+            state.zip_report = report
+            self._emit(J.OP_ZIPPED, report.line(), tone="ok" if report.ok else "warn")
+            self._result("zip", "ok" if report.ok else "warn", report.line(), report.archive)
+
+        self._run_long(state, "zip", "Making ZIP", work, finish)
+
+    def _act_stop(self, state: _State, value, row) -> None:
+        jobs = list(self._jobs.values())
+        if not jobs:
+            return self._result("stop", "neutral", "Nothing to stop")
+        for tracked in jobs:
+            tracked.job.cancel()
+        return None  # each stopped job reports "<Sort | Sync | ZIP> stopped · ..." itself
+
+    # ------------------------------------------------------------------------------------------------ undo (3.7)
+
+    def _undo(self, state: _State, entry_id: Optional[str], button: str) -> None:
         candidates = state.journal.undoable(self.UNDO_LIMIT)
         if not candidates and not entry_id:
-            return ActionResult(toast=("neutral", "Nothing to undo"))
+            return self._result(button, "neutral", "Nothing to undo")
         entry = candidates[0] if not entry_id else next((e for e in candidates if e["id"] == entry_id), None)
         if entry is None:
-            return ActionResult(toast=("warn", "This change can no longer be undone"))
+            return self._result(button, "warn", "Cannot undo · this change can no longer be undone")
         try:
             message = self._reverse(state, entry)
         except PremiereError as exc:
             self.log.warning("undo failed: %s", exc.message)
-            return ActionResult(toast=("error", "Undo failed in Premiere Pro"))
+            return self._result(button, "error", "Undo failed in Premiere Pro", exc.message)
+        except OSError as exc:
+            self.log.warning("undo failed: %s", exc)
+            return self._result(button, "error", "Undo failed", failure_reason(exc))
         if message:
-            return ActionResult(toast=("warn", message))
+            return self._result(button, "warn", f"Cannot undo · {message}")
         self._emit("undo", f"Undone: {self._describe(entry).lower()}")
         self._refresh_derived(state)
-        return ActionResult(toast=("ok", f"Undone: {OP_LABELS.get(entry['op'], entry['op']).lower()} {entry.get('name', '')}"))
+        self._result(button, "ok", f"Undone · {OP_LABELS.get(entry['op'], entry['op']).lower()} "
+                                   f"{entry.get('name', '')}".rstrip())
 
     def _reverse(self, state: _State, entry: dict) -> Optional[str]:
-        """Reverses one entry (docs/FILES.md 3.6). Returns a sentence when it cannot be undone, else None."""
+        """Reverses one entry (docs/FILES.md 3.7). Returns a reason when it cannot be undone, else None."""
         op, node = entry["op"], entry.get("node_id")
         original, current = entry.get("from"), entry.get("to")
         bin_from, bin_to = entry.get("bin_from"), entry.get("bin_to")
         pr = self.ctx.premiere
         extra: dict = {}
         if op != J.OP_IMPORTED and (not node or pr.item(node) is None):
-            return "The item is no longer in the project"
+            return "the item is no longer in the project"
 
         def relink_to(path: str) -> bool:
-            self._suppress.add(("media", node, norm(path)))
-            if not pr.relink(node, path):
-                return False
-            self._index_set(state, node, current, path)
-            self._patch(state, node, media_path=path, is_offline=False)
-            return True
+            return self._relink(state, node, path, old=current)
 
         def move_back() -> None:
             if bin_from is not None and norm_bin(bin_from) != norm_bin(bin_to):
@@ -1096,23 +1552,46 @@ class FilesModule(Module):
                 pr.move_to_bin([node], bin_from)
                 self._patch(state, node, tree_path=bin_from)
 
-        if op in (J.OP_FILED, J.OP_COLLECTED):
+        def undo_copy() -> Optional[str]:
             if not original or not os.path.isfile(original):
-                return f"The original file is no longer at {original}"
+                return f"the original file is no longer at {original}"
             if not relink_to(original):
-                return f"Could not relink {entry.get('name', '')}"
+                return f"could not relink {entry.get('name', '')}"
             move_back()
             extra["deleted"] = bool(entry.get("copied")) and self._delete_own_copy(state, current)
+            return None
+
+        def undo_move() -> Optional[str]:
+            if not current or not os.path.isfile(current):
+                return f"the file is no longer at {current}"
+            if not original or os.path.exists(original):
+                return f"{original} is taken by another file"
+            if not self._move_back(current, original):
+                return f"could not move {entry.get('name', '')} back"
+            if not relink_to(original):
+                self._suppress.add(("disk", norm(current)))
+                move_file(original, current)  # keep the item online at the moved file
+                return f"could not relink {entry.get('name', '')}"
+            move_back()
+            extra["moved_back"] = True
+            return None
+
+        if op in (J.OP_FILED, J.OP_COLLECTED, J.OP_SYNCED):
+            message = undo_copy()
+        elif op == J.OP_SORTED:
+            message = undo_move() if entry.get("moved") else undo_copy()
         elif op == J.OP_BINNED:
             move_back()
+            message = None
         elif op == J.OP_IMPORTED:
             ids = entry.get("node_ids") or ([node] if node else [])
             if not ids:
-                return "The imported item is not known"
+                return "the imported item is not known"
             pr.remove_items(ids)
             for item_id in ids:
                 self._index_set(state, item_id, current, None)
                 state.items.pop(item_id, None)
+            message = None
         elif op == J.OP_RENAMED:
             relinked = bool(original and os.path.isfile(original) and relink_to(original))
             renamed = False
@@ -1120,31 +1599,43 @@ class FilesModule(Module):
                 pr.rename_item(node, entry["name_from"])
                 self._patch(state, node, name=entry["name_from"])
                 renamed = True
-            if not relinked and not renamed:
-                return "The old file name no longer exists on disk"
+            message = None if (relinked or renamed) else "the old file name no longer exists on disk"
         elif op == J.OP_MOVED_DISK:
-            if original and os.path.isfile(original):
-                if not relink_to(original):
-                    return f"Could not relink {entry.get('name', '')}"
-            move_back()
+            message = None
+            if original and os.path.isfile(original) and not relink_to(original):
+                message = f"could not relink {entry.get('name', '')}"
+            if message is None:
+                move_back()
         elif op == J.OP_MOVED_BIN:
-            recreated = False
-            if not original or not os.path.isfile(original):
-                if not entry.get("deleted_from") or not current or not os.path.isfile(current):
-                    return f"The previous file is no longer at {original}"
-                self._suppress.add(("disk", norm(original)))
-                copy_file(current, original, buffer_bytes=self._host("copy_buffer_mb") << 20)
-                recreated = True
-            if not relink_to(original):
-                return f"Could not relink {entry.get('name', '')}"
-            move_back()
-            extra["recreated"] = recreated
-            extra["deleted"] = bool(entry.get("copied")) and self._delete_own_copy(state, current)
+            if entry.get("moved"):
+                message = undo_move()
+            else:
+                message = self._undo_moved_bin_copy(state, entry, relink_to, move_back, extra)
         else:
-            return "This change cannot be undone"
+            return "this change cannot be undone"
+        if message:
+            return message
         state.journal.append(op, status=J.UNDONE, undo_of=entry["id"], node_id=node, name=entry.get("name"),
                              **{"from": current}, to=original, bin_from=bin_to, bin_to=bin_from,
                              hash=entry.get("hash"), copied=False, **extra)
+        return None
+
+    def _undo_moved_bin_copy(self, state: _State, entry: dict, relink_to, move_back, extra: dict) -> Optional[str]:
+        """A `moved_bin` entry that copied (a shared file, or any 1.x entry): relink to the previous file,
+        recreating a copy the 1.x module deleted, then drop the copy when nothing else uses it."""
+        original, current = entry.get("from"), entry.get("to")
+        recreated = False
+        if not original or not os.path.isfile(original):
+            if not entry.get("deleted_from") or not current or not os.path.isfile(current):
+                return f"the previous file is no longer at {original}"
+            self._suppress.add(("disk", norm(original)))
+            copy_file(current, original, buffer_bytes=self._host("copy_buffer_mb") << 20)
+            recreated = True
+        if not relink_to(original):
+            return f"could not relink {entry.get('name', '')}"
+        move_back()
+        extra["recreated"] = recreated
+        extra["deleted"] = bool(entry.get("copied")) and self._delete_own_copy(state, current)
         return None
 
     # ------------------------------------------------------------------------------------------------ actions
@@ -1160,20 +1651,28 @@ class FilesModule(Module):
                 if self._state is None:
                     return ActionResult(toast=("neutral", "Open a project in Premiere Pro first"), rerender=False)
                 return handler(self._state, value, row)
+        if local in REMOVED_ACTIONS:
+            self.log.info("ignored the removed action %s", action_id)
+            return ActionResult(rerender=False)
         handler = getattr(self, f"_act_{local}", None)
         if handler is None:
             return super().on_action(action_id, value, row)
         with self._lock:
             if self._state is None:
-                return ActionResult(toast=("neutral", "Open a project in Premiere Pro first"), rerender=False)
+                self._result(local, "neutral", "Open a project in Premiere Pro first")
+                return ActionResult(rerender=False)
             state = self._state
-            if local != "setup" and local not in ("locate", "remove") and not self._enabled():
-                return ActionResult(toast=("neutral", "Set up this project first"))
+            if local not in NO_SETUP_NEEDED and not self._enabled():
+                self._result(local, "warn", "Set up this project first")
+                return None
             return handler(state, value, row)
 
-    def _act_setup(self, state: _State, value, row) -> ActionResult:
+    def _act_setup(self, state: _State, value, row) -> None:
         if self._enabled():
-            return ActionResult(toast=("neutral", "This project is already set up"))
+            return self._result("setup", "neutral", "This project is already set up")
+        reason = write_check(state.root)
+        if reason:
+            return self._result("setup", "error", NO_WRITE_ACCESS, reason)
         created = 0
         for folder in state.layout.all_folders():
             path = state.mapper.abs_folder(folder)
@@ -1194,11 +1693,15 @@ class FilesModule(Module):
                 bins += 1
         except PremiereError as exc:
             self.log.warning("bins not created: %s", exc.message)
-        state.journal.append("setup", status=J.DONE, name=os.path.basename(state.root), to=state.root,
+        except Exception:  # noqa: BLE001 - a malformed answer; bins are also created when a file first needs one
+            self.log.exception("bins not created")
+        state.journal.append(J.OP_SETUP, status=J.DONE, name=os.path.basename(state.root), to=state.root,
                              folders_created=created, bins=bins, layout=state.layout.id)
+        state.write_ok = True
         self._start_watcher(state)
         self._refresh_derived(state)
-        return ActionResult(toast=("ok", f"Project set up · {len(state.layout.folders)} folders"))
+        self._refresh_used(state, force=True)
+        self._result("setup", "ok", f"Project set up · {len(state.layout.folders)} folders")
 
     def _mark_root(self, state: _State) -> None:
         """When the Files root is the parent of the project file's folder (project file in `Project/` beside layout
@@ -1217,63 +1720,28 @@ class FilesModule(Module):
         except OSError as exc:
             self.log.warning("root marker not written: %s", exc)
 
-    def _act_collect(self, state: _State, value, row) -> ActionResult:
-        if self._busy("plan", "collect", "pack"):
-            return ActionResult(toast=("neutral", "Collect is already running"))
-        if not state.external and not state.offline:
-            return ActionResult(toast=("neutral", "Nothing to collect"))
-        self._start_plan(state)
-        return None
+    def _act_open_folder(self, state: _State, value, row) -> None:
+        self.ctx.host.open_path(state.root)
+        self._result("open_folder", "ok", f"Opened {os.path.basename(state.root)}")
 
-    def _act_collect_run(self, state: _State, value, row) -> ActionResult:
-        if self._busy("collect", "pack"):
-            return ActionResult(toast=("neutral", "Collect is already running"))
-        if state.plan is None:
-            self._start_plan(state, after=lambda plan: self._run_plan(state, plan))
-            return None
-        if not state.plan.entries:
-            state.plan = None
-            return ActionResult(toast=("neutral", "Nothing to collect"))
-        self._run_plan(state, state.plan)
-        return None
-
-    def _act_collect_discard(self, state: _State, value, row) -> ActionResult:
-        state.plan = None
-        return None
-
-    def _act_cancel(self, state: _State, value, row) -> ActionResult:
-        jobs = list(self._jobs.values())
-        for tracked in jobs:
-            tracked.job.cancel()
-        return ActionResult(toast=("neutral", "Stopping") if jobs else None)
-
-    def _act_pack(self, state: _State, value, row) -> ActionResult:
-        if isinstance(value, dict) and isinstance(value.get("pack_zip"), bool):  # the Pack form's submit
-            self._set_proj("pack_zip", value["pack_zip"])
-        if self._busy("plan", "collect", "pack"):
-            return ActionResult(toast=("neutral", "Collect or pack is already running"))
-        self._pack(state)
-        return None
-
-    def _act_undo_last(self, state: _State, value, row) -> ActionResult:
-        return self._undo(state, None)
-
-    def _act_undo(self, state: _State, value, row) -> ActionResult:
-        return self._undo(state, row or (value if isinstance(value, str) else None))
-
-    def _act_watch(self, state: _State, value, row) -> ActionResult:
-        on = bool(value) if value is not None else not self._proj("watch")
-        self._set_proj("watch", on)
-        if on:
-            self._start_watcher(state)
+    def _act_journal(self, state: _State, value, row) -> None:
+        show = getattr(self.ctx.host, "show", None)
+        if callable(show):
+            show(self.id)
         else:
-            self._stop_watcher(state)
-        return ActionResult(toast=("neutral", "Watching the project folder" if on else "Watching paused"))
+            self.log.info("the host has no window to show the journal in")
+        self._result("journal", "ok", "Journal opened in the host window")
 
-    def _act_locate(self, state: _State, value, row) -> ActionResult:
+    def _act_undo_last(self, state: _State, value, row) -> None:
+        self._undo(state, None, "undo_last")
+
+    def _act_undo(self, state: _State, value, row) -> None:
+        self._undo(state, row or (value if isinstance(value, str) else None), "undo")
+
+    def _act_locate(self, state: _State, value, row) -> Optional[ActionResult]:
         item = state.items.get(row or "")
         if item is None or not item.media_path:
-            return ActionResult(toast=("warn", "No path is known for this item"))
+            return self._result("locate", "warn", "No path is known for this item")
         path = item.media_path
         while path and not os.path.exists(path):
             parent = os.path.dirname(path)
@@ -1282,26 +1750,27 @@ class FilesModule(Module):
                 break
             path = parent
         if not path:
-            return ActionResult(toast=("warn", "The folder of this item no longer exists"))
+            return self._result("locate", "warn", "The folder of this item no longer exists")
         self.ctx.host.reveal(path)
+        self._result("locate", "ok", f"Showing {os.path.basename(path.rstrip(os.sep)) or path}")
         return ActionResult(rerender=False)
 
-    def _act_remove(self, state: _State, value, row) -> ActionResult:
+    def _act_remove(self, state: _State, value, row) -> None:
         item = state.items.get(row or "")
         if item is None:
-            return ActionResult(toast=("warn", "The item is no longer in the project"))
+            return self._result("remove", "warn", "The item is no longer in the project")
         entry = state.journal.append(J.OP_REMOVED, node_id=item.node_id, name=item.name,
                                      **{"from": item.media_path}, bin_from=item.tree_path, copied=False)
         try:
             self.ctx.premiere.remove_items([item.node_id])
         except PremiereError as exc:
             state.journal.mark_failed(entry["id"], exc.message)
-            return ActionResult(toast=("error", f"Could not remove {item.name}"))
+            return self._result("remove", "error", f"Could not remove {item.name}", exc.message)
         state.journal.mark_done(entry["id"])
         state.items.pop(item.node_id, None)
         self._index_set(state, item.node_id, item.media_path, None)
         self._refresh_derived(state)
-        return ActionResult(toast=("ok", f"Removed {item.name} from the project"))
+        self._result("remove", "ok", f"Removed {item.name} from the project")
 
     # host window controls ("files.host:<name>") --------------------------------------------------------------
 
@@ -1311,16 +1780,16 @@ class FilesModule(Module):
         if scope == "project" and key == "watch" and isinstance(value, bool):
             with self._lock:
                 state = self._state
-            if state is not None:
-                self._act_watch(state, value, None)
+                if state is not None:
+                    self._set_watch(state, value)
 
-    def _host_project_setting(self, state: _State, value, row) -> ActionResult:
+    def _host_project_setting(self, state: _State, value, row) -> Optional[ActionResult]:
         changes = _pairs(value)
         applied = []
         for key, new in changes.items():
             if key in PROJECT_BOOLS and isinstance(new, bool):
                 if key == "watch":
-                    self._act_watch(state, new, None)
+                    self._set_watch(state, new)
                 else:
                     self._set_proj(key, new)
                 applied.append(key)
@@ -1328,7 +1797,7 @@ class FilesModule(Module):
             return ActionResult(toast=("warn", "Unknown project setting"), rerender=False)
         return None
 
-    def _host_layout_select(self, state: _State, value, row) -> ActionResult:
+    def _host_layout_select(self, state: _State, value, row) -> Optional[ActionResult]:
         choice = value.get("value") if isinstance(value, dict) else value
         if choice != "custom" and choice not in self._shipped():
             return ActionResult(toast=("warn", "Unknown layout"), rerender=False)
@@ -1366,17 +1835,21 @@ class FilesModule(Module):
         if not isinstance(raw, list):
             return ActionResult(toast=("warn", "Overrides are a list"), rerender=False)
         clean = [{k: v for k, v in (("source", o.source), ("name", o.name), ("to", o.to)) if v}
-                 for o in parse_overrides(raw)]
+                 for o in parse_overrides(raw, state.layout.media_dir)]
         self._set_proj("overrides", clean)
         dropped = len(raw) - len(clean)
         text = "Overrides saved" + (f" · {dropped} invalid skipped" if dropped else "")
         return ActionResult(toast=("ok" if not dropped else "warn", text))
 
-    def _host_journal_op(self, state: _State, value, row) -> ActionResult:
+    def _host_journal_op(self, state: _State, value, row) -> Optional[ActionResult]:
         return self._host_journal_filter(state, {"op": value}, row)
 
-    def _host_journal_query(self, state: _State, value, row) -> ActionResult:
+    def _host_journal_query(self, state: _State, value, row) -> Optional[ActionResult]:
         return self._host_journal_filter(state, {"query": value}, row)
+
+    def _host_journal_all(self, state: _State, value, row) -> None:
+        self._journal_all = bool(value) if isinstance(value, bool) else not self._journal_all
+        return None
 
     def _host_override_add(self, state: _State, value, row) -> ActionResult:
         pairs = _pairs(value)
@@ -1385,14 +1858,14 @@ class FilesModule(Module):
             return ActionResult(toast=("warn", "Enter a source folder or a name pattern"), rerender=False)
         is_folder = any(ch in match for ch in "\\/:") and not any(ch in match for ch in "*?")
         entry = {"source" if is_folder else "name": match, "to": pairs.get("to")}
-        if not parse_overrides([entry]):
+        if not parse_overrides([entry], state.layout.media_dir):
             return ActionResult(toast=("warn", "That override is not valid"), rerender=False)
         current = [o for o in self._proj("overrides") if isinstance(o, dict)]
         return self._host_overrides_save(state, current + [entry], row)
 
     def _host_override_remove(self, state: _State, value, row) -> ActionResult:
         current = [{k: v for k, v in (("source", o.source), ("name", o.name), ("to", o.to)) if v}
-                   for o in parse_overrides(self._proj("overrides"))]
+                   for o in parse_overrides(self._proj("overrides"), state.layout.media_dir)]
         try:
             index = int(row if row is not None else value)
             current.pop(index)
@@ -1401,7 +1874,7 @@ class FilesModule(Module):
         self._set_proj("overrides", current)
         return ActionResult(toast=("ok", "Override removed"))
 
-    def _host_journal_filter(self, state: _State, value, row) -> ActionResult:
+    def _host_journal_filter(self, state: _State, value, row) -> None:
         pairs = _pairs(value)
         op = pairs.get("op", self._journal_filter["op"])
         query = pairs.get("query", self._journal_filter["query"])
@@ -1420,10 +1893,62 @@ class FilesModule(Module):
         base = shipped.get(self._host("default_layout")) or shipped[DEFAULT_LAYOUT_ID]
         layout, error = self._choose_layout(state.root, base)
         state.layout, state.layout_error = layout, error
-        state.mapper = Mapper(state.root, layout)
+        state.mapper = Mapper(state.root, layout, state.masks)
         self._refresh_derived(state)
 
     # ------------------------------------------------------------------------------------------------ rendering
+
+    def _node(self, node: dict, **extra) -> dict:
+        """A node with the 2.0 fields of docs/PROTOCOL.md 6.1 (only the given, non-None ones)."""
+        short = extra.get("short")
+        if short is not None and len(short) > 16:
+            raise ValueError(f"short label {short!r} is longer than 16 characters")
+        node.update({key: value for key, value in extra.items() if value is not None})
+        return node
+
+    def _group(self, local_id: str, title: Optional[str], items: list, *, columns: int = 1, tiles: bool = False,
+               collapsible: bool = False) -> dict:
+        return self._node(self.group(title, items, columns=columns), id=self._id(local_id), tiles=tiles,
+                          collapsible=collapsible)
+
+    def _chip(self, text: str, tone: str) -> dict:
+        return self._node(self.text(text, tone=tone, small=True), chip=True)
+
+    def _chip_values(self, state: _State) -> list[tuple[str, str, str]]:
+        outside, offline = len(state.outside), len(state.offline)
+        return [("inside", f"{state.inside_count} in the root", "neutral"),
+                ("outside", f"{outside} outside", "warn" if outside else "neutral"),
+                ("offline", f"{offline} offline", "error" if offline else "neutral")]
+
+    def _tiles(self, state: _State) -> list:
+        running = self._long_running()
+        estimate = state.sort_estimate
+        outside = len(state.outside)
+        sort_meta = f"{plural(estimate, 'item')} to file" if estimate else "Nothing to file"
+        sort_confirm = (f"Move {plural(estimate, 'file')} into the layout folders? Every move is journaled and can "
+                        "be undone." if estimate else
+                        "Sort the media of the project folder into the layout folders? Every move is journaled and "
+                        "can be undone.")
+        used_meta = "Used in sequences" if state.used_count is None else f"{state.used_count} in sequences"
+
+        def tile(local: str, label: str, short: str, icon: str, meta: str, confirm: Optional[str]) -> dict:
+            return self._node(self.button(local, label, busy=running == local,
+                                          disabled=running is not None and running != local,
+                                          confirm=confirm, hint=HINTS[local]),
+                              icon=icon, short=short, meta=meta)
+
+        return [
+            tile("sort", "Sort project", "Sort project", "sort", sort_meta, sort_confirm),
+            tile("sync_all", "Sync all media", "Sync all media", "sync-all", f"{outside} outside the root",
+                 f"Copy {plural(outside, 'file')} from outside the project folder into Media?" if outside else None),
+            tile("sync_used", "Sync used media", "Sync used media", "sync-used", used_meta,
+                 "Copy the files used in sequences from outside the project folder into Media?"),
+            tile("zip", "Make ZIP", "Make ZIP", "zip", "Checks offline first", None),
+        ]
+
+    def _open_folder_button(self) -> dict:
+        return self._node(self.button("open_folder", "Open project folder", hint="Opens the project folder in Explorer."),
+                          variant="icon", icon="open-folder")
 
     def section_status(self) -> Optional[dict]:
         state = self._state
@@ -1431,7 +1956,7 @@ class FilesModule(Module):
             return self.status("No project", "neutral")
         if not self._enabled():
             return self.status("Set up this project", "warn")
-        busy = next((t for t in self._jobs.values() if t.kind in ("filing", "collect", "moving", "pack")), None)
+        busy = next(iter(self._jobs.values()), None)
         if busy is not None:
             return self.status(busy.label, "accent")
         if state.watcher_error:
@@ -1457,63 +1982,32 @@ class FilesModule(Module):
                 nodes.append(self.button("setup", "Set up project", tone="accent",
                                          hint="Creates the layout folders and the matching bins."))
                 if state.external:
-                    nodes.append(self.text(f"{len(state.external)} items are outside the project folder.", small=True))
+                    nodes.append(self.text(f"{plural(len(state.external), 'item')} outside the project folder.",
+                                           small=True))
                 nodes.extend(self._offline_nodes(state))
                 return nodes
+            nodes.append(self.row([self.text(state.project.name or os.path.basename(state.project.path)),
+                                   self._open_folder_button()]))
+            nodes.append(self.text(state.root, small=True))
+            nodes.append(self.row([self._chip(text, tone) for _, text, tone in self._chip_values(state)]))
+            nodes.append(self._group("actions", None, self._tiles(state), columns=2, tiles=True))
             nodes.extend(self._job_nodes())
-            nodes.extend(self._collect_nodes(state))
-            pack_busy = self._busy("pack")
-            nodes.append(self.button("pack", "Pack for sharing", busy=pack_busy,
-                                     disabled=self._busy("plan", "collect") and not pack_busy,
-                                     confirm=self._pack_question(state),
-                                     hint="Collects what is outside, checks every clip and writes a report."))
-            if state.pack_report is not None:
-                nodes.append(self.text(state.pack_report.line(), tone="ok" if state.pack_report.ok else "warn",
-                                       small=True))
+            entries = state.journal.entries()
             undoable = state.journal.undoable(self.UNDO_LIMIT)
             last = undoable[0] if undoable else None
-            nodes.append(self.button("undo_last", "Undo last", disabled=last is None,
-                                     hint=self._describe(last) if last else "Nothing to undo."))
-            nodes.append(self.toggle("watch", "Watch folder", self._proj("watch"),
-                                     hint=state.watcher_error or "Imports files added to the project folder."))
-            nodes.append(self.text("Recent", small=True))
-            nodes.append(self.list_("recent", [self._recent_row(e) for e in state.journal.recent(self.RECENT_COUNT)],
-                                    empty="No changes yet."))
+            nodes.append(self.row([
+                self._node(self.button("journal", f"Journal · {_entries(len(entries))}",
+                                       hint="Opens the journal in the host window."), icon="journal"),
+                self._node(self.button("undo_last", "Undo last", disabled=last is None,
+                                       hint=self._describe(last) if last else "Nothing to undo."),
+                           variant="icon", icon="undo"),
+            ]))
             nodes.extend(self._offline_nodes(state))
             return nodes
 
     def _job_nodes(self) -> list:
-        visible = [t for t in self._jobs.values() if t.kind != "sync"]
-        if not visible:
-            return []
-        nodes = [self.progress(t.value, t.label) for t in visible[:3]]
-        nodes.append(self.button("cancel", "Stop", tone="warn", hint="Finished files stay filed."))
-        return nodes
-
-    def _collect_nodes(self, state: _State) -> list:
-        count = len(state.external)
-        plan = state.plan
-        if plan is not None and (plan.entries or plan.missing):
-            nodes = [self.text(f"{plan.summary()} · Run", small=True)]
-            if plan.missing:
-                nodes.append(self.text(f"{len(plan.missing)} offline items are listed, not collected.", tone="warn",
-                                       small=True))
-            nodes.append(self.row([
-                self.button("collect_run", "Run", tone="accent", disabled=not plan.entries or self._busy("collect"),
-                            confirm=f"Copy {plan.summary()} into the project folder?"),
-                self.button("collect_discard", "Discard"),
-            ]))
-            return nodes
-        label = f"Collect project · {count} external" if count else "Collect project"
-        return [self.button("collect", label, busy=self._busy("plan"), disabled=self._busy("collect"),
-                            hint="Lists media outside the project folder before copying it.")]
-
-    @staticmethod
-    def _pack_question(state: _State) -> Optional[str]:
-        count = len(state.external)
-        if not count:
-            return None
-        return f"Copy {count} file{'s' if count != 1 else ''} from outside into the project folder, then pack?"
+        return [self._node(self.progress(t.value, t.label), detail=t.detail, cancel=self._id("stop"))
+                for t in list(self._jobs.values())[:3]]
 
     def _offline_nodes(self, state: _State) -> list:
         if not state.offline:
@@ -1525,49 +2019,12 @@ class FilesModule(Module):
                                                self.row_action("remove", "Remove", tone="warn",
                                                                confirm=f"Remove {item.name} from the project? "
                                                                        "The file on disk is not touched.")]))
-        return [self.text(f"Offline · {len(state.offline)}", tone="warn", small=True),
-                self.list_("offline", rows, empty="")]
+        return [self._group("offline", "Offline", [self.list_("offline_list", rows, empty="")], collapsible=True)]
 
     def _describe(self, entry: dict) -> str:
         return f"{OP_LABELS.get(entry.get('op'), entry.get('op'))} {entry.get('name', '')}".strip()
 
-    def _recent_row(self, entry: dict) -> dict:
-        op = entry.get("op")
-        status = entry.get("status")
-        when = ago(entry.get("at"))
-        state = self._state
-        if status == J.UNDONE:
-            subtitle = f"Undone · {OP_LABELS.get(op, op).lower()}"
-            tone = "neutral"
-        elif status == J.FAILED:
-            subtitle = f"Failed · {entry.get('error', OP_LABELS.get(op, op))}"
-            tone = "error"
-        elif op in (J.OP_FILED, J.OP_COLLECTED, J.OP_MOVED_DISK, J.OP_MOVED_BIN):
-            dest = entry.get("bin_to") or _folder_name(entry.get("to"))
-            src = entry.get("bin_from") if op == J.OP_MOVED_BIN else _folder_name(entry.get("from"))
-            subtitle = f"{src or 'Root'} → {dest or 'Root'}"
-            tone = "neutral"
-        elif op == J.OP_BINNED:
-            subtitle = f"{entry.get('bin_from') or 'Root'} → {entry.get('bin_to') or 'Root'}"
-            tone = "neutral"
-        elif op == J.OP_IMPORTED:
-            subtitle = f"Imported into {entry.get('bin_to') or 'Root'}"
-            tone = "neutral"
-        elif op == J.OP_RENAMED:
-            subtitle = f"Renamed from {entry.get('name_from') or os.path.basename(entry.get('from') or '')}"
-            tone = "neutral"
-        elif op == "setup":
-            subtitle = "Layout folders created"
-            tone = "neutral"
-        else:
-            subtitle = OP_LABELS.get(op, str(op))
-            tone = "neutral"
-        if status == J.PENDING:
-            subtitle = "In progress · " + subtitle
-        title = entry.get("name") or (os.path.basename(state.root) if state else "")
-        return self.list_row(entry["id"], str(title), subtitle=f"{subtitle} · {when}" if when else subtitle, tone=tone)
-
-    # host window page (docs/FILES.md 7, HOST_UI.md 4.2; block shapes of docs/BRIDGE_API.md 5) ------------------
+    # host window page (docs/FILES.md 7; block shapes of docs/BRIDGE_API.md 5) ------------------------------------
 
     def render_host(self) -> Optional[dict]:
         with self._lock:
@@ -1582,109 +2039,79 @@ class FilesModule(Module):
                 ]}
             enabled = self._enabled()
             status = self.section_status() or self.status("", "neutral")
-            day_start = time.time() - 24 * 3600
-            entries = state.journal.entries()
-            filed_today = sum(1 for e in entries if e.get("op") in (J.OP_FILED, J.OP_COLLECTED, J.OP_IMPORTED)
-                              and e.get("status") == J.DONE and (e.get("at") or 0) >= day_start)
-            blocks: list = [
-                {"type": "cards", "id": "status", "items": [
-                    {"id": "state", "title": "Status", "value": status["text"], "detail": state.root,
-                     "tone": status["tone"], "progress": None, "actions": []},
-                    {"id": "filed", "title": "Filed today", "value": str(filed_today), "detail": "Last 24 hours",
-                     "tone": "neutral", "progress": None, "actions": []},
-                    {"id": "external", "title": "Outside the folder", "value": str(len(state.external)),
-                     "detail": "Collect copies them in", "tone": "warn" if state.external else "ok",
-                     "progress": None, "actions": []},
-                    {"id": "offline", "title": "Offline", "value": str(len(state.offline)),
-                     "detail": "Media not found", "tone": "warn" if state.offline else "ok", "progress": None,
-                     "actions": []},
-                ]},
-                {"type": "actions", "id": "main", "items": self._host_buttons(state, enabled)},
-            ]
-            blocks.extend({"type": "progress", "id": f"job_{t.job.id}", "value": t.value, "label": t.label}
+            chips = {"type": "chips", "id": "status_chips",
+                     "items": [{"id": cid, "text": text, "tone": tone, "icon": None}
+                               for cid, text, tone in self._chip_values(state)]}
+            page = {"title": self.title, "status": status, "subtitle": state.root,
+                    "header_actions": [self._open_folder_button()]}
+            if not enabled:
+                blocks: list = [
+                    {"type": "actions", "id": "setup_actions", "items": [
+                        self.button("setup", "Set up project", tone="accent",
+                                    hint="Creates the layout folders and the matching bins.")]},
+                    chips,
+                ]
+                if state.layout_error:
+                    blocks.append({"type": "text", "id": "layout_error", "text": state.layout_error, "tone": "warn",
+                                   "small": True})
+                blocks.extend(self._layout_blocks(state.layout, state=state))
+                page["blocks"] = blocks
+                return page
+            blocks = [chips, {"type": "actions", "id": "main", "tiles": True, "columns": 2,
+                              "items": self._tiles(state)}]
+            blocks.extend(self._node({"type": "progress", "id": f"job_{t.job.id}", "value": t.value,
+                                      "label": t.label}, detail=t.detail, cancel=self._id("stop"))
                           for t in list(self._jobs.values())[:3])
+            undoable = state.journal.undoable(self.UNDO_LIMIT)
+            if state.last_result is not None:
+                last = state.last_result
+                blocks.append({"type": "list", "id": "last_result", "rows": [{
+                    "id": "last", "title": last["text"], "subtitle": last.get("detail") or "",
+                    "meta": ago(last["at"]), "tone": last["outcome"], "thumb": None,
+                    "actions": [self.button("undo_last", "Undo last",
+                                            hint=self._describe(undoable[0]))] if undoable else []}],
+                    "empty": ""})
+            blocks.extend(self._journal_blocks(state, state.journal.entries(), undoable))
             if state.layout_error:
                 blocks.append({"type": "text", "id": "layout_error", "text": state.layout_error, "tone": "warn",
                                "small": True})
-            if enabled:
-                blocks.extend(self._journal_blocks(state, entries))
-                blocks.extend(self._plan_blocks(state))
-                pack_fields = [{"key": "pack_zip", "label": "Write a zip archive", "kind": "bool",
-                                "value": self._proj("pack_zip"), "hint": "The archive is written beside the project "
-                                                                          "folder.", "scope": "project"}]
-                blocks.append({"type": "form", "id": "pack_options", "title": "Pack for sharing",
-                               "hint": state.pack_report.line() if state.pack_report else None,
-                               "action": self._id("host:project_setting"), "fields": pack_fields,
-                               "submit": self.button("pack", "Pack now", busy=self._busy("pack"),
-                                                     disabled=self._busy("plan", "collect"),
-                                                     confirm=self._pack_question(state))})
-                # The project settings are drawn once by the host window's Settings card (docs/MODULES.md 5).
             blocks.extend(self._layout_blocks(state.layout, state=state))
-            return {"title": self.title, "status": status, "blocks": blocks}
+            page["blocks"] = blocks
+            return page
 
-    def _host_buttons(self, state: _State, enabled: bool) -> list:
-        if not enabled:
-            return [self.button("setup", "Set up project", tone="accent",
-                                hint="Creates the layout folders and the matching bins."),
-                    self.button("host:reveal", "Show folder")]
-        undoable = state.journal.undoable(self.UNDO_LIMIT)
-        return [
-            self.button("collect", "Plan collect", busy=self._busy("plan"), disabled=self._busy("collect")),
-            self.button("undo_last", "Undo last", disabled=not undoable,
-                        hint=self._describe(undoable[0]) if undoable else "Nothing to undo."),
-            self.button("watch", "Pause watching" if self._proj("watch") else "Resume watching"),
-            self.button("cancel", "Stop", tone="warn", disabled=not self._jobs),
-            self.button("host:reveal", "Show folder"),
-        ]
-
-    def _journal_blocks(self, state: _State, entries: list[dict]) -> list:
-        undoable = {e["id"] for e in state.journal.undoable(self.UNDO_LIMIT)}
+    def _journal_blocks(self, state: _State, entries: list[dict], undoable: list[dict]) -> list:
+        undo_ids = {e["id"] for e in undoable}
         flt = self._journal_filter
-        shown = J.filter_entries(reversed(entries), flt["op"], flt["query"])[:self.HOST_JOURNAL_COUNT]
+        if self._journal_all:
+            shown = J.filter_entries(reversed(entries), flt["op"], flt["query"])[:self.HOST_JOURNAL_COUNT]
+        else:
+            shown = list(reversed(entries))[:self.JOURNAL_PREVIEW]
         rows = []
         for entry in shown:
             status = entry.get("status")
             tone = {"failed": "error", "pending": "accent", "undone": "neutral"}.get(status, "ok")
+            text = status if status != J.FAILED or not entry.get("error") else f"failed · {entry['error']}"
             rows.append({"id": entry["id"], "tone": tone,
                          "at": ago(entry.get("at")), "op": OP_LABELS.get(entry.get("op"), entry.get("op")),
                          "name": entry.get("name") or "",
                          "from": entry.get("from") or entry.get("bin_from") or "",
                          "to": entry.get("to") or entry.get("bin_to") or "",
-                         "status": {"text": status, "tone": tone},
-                         "actions": [self.button("undo", "Undo")] if entry["id"] in undoable else []})
-        op_options = [{"value": "", "label": "All changes"}] + \
-            [{"value": op, "label": label} for op, label in OP_LABELS.items()]
-        return [{"type": "table", "id": "journal", "title": "Journal",
+                         "status": {"text": text, "tone": tone},
+                         "actions": [self.button("undo", "Undo")] if entry["id"] in undo_ids else []})
+        table = {"type": "table", "id": "journal", "title": "Journal",
                  "columns": [{"key": "at", "label": "When"}, {"key": "op", "label": "Change"},
                              {"key": "name", "label": "Name"}, {"key": "from", "label": "From", "mono": True},
                              {"key": "to", "label": "To", "mono": True}, {"key": "status", "label": "Status"}],
-                 "rows": rows, "empty": "No changes yet.",
-                 "filters": [self.select("host:journal_op", "Change", flt["op"], op_options)],
-                 "search": self.input("host:journal_query", "Search", flt["query"], placeholder="File name")}]
-
-    def _plan_blocks(self, state: _State) -> list:
-        plan = state.plan
-        if plan is None:
-            return [{"type": "list", "id": "collect_plan", "title": "Collect plan", "rows": [],
-                     "empty": f"{len(state.external)} items are outside the project folder. "
-                              "Plan collect lists them with their target folders."}]
-        groups = [{"id": g["folder"], "folder": g["folder"], "count": str(g["count"]), "size": fmt_size(g["bytes"]),
-                   "actions": []} for g in plan.groups()]
-        rows = [{"id": e.node_id, "title": e.name, "subtitle": f"→ {e.folder}" + (" · already there" if e.reuse else ""),
-                 "meta": fmt_size(e.size), "tone": "neutral", "thumb": None, "actions": []} for e in plan.entries]
-        rows += [{"id": "missing:" + m["node_id"], "title": m["name"], "subtitle": f"Offline · {m['path'] or 'no path'}",
-                  "meta": "", "tone": "warn", "thumb": None, "actions": []} for m in plan.missing]
-        return [
-            {"type": "table", "id": "collect_totals", "title": f"Collect plan · {plan.summary()}",
-             "columns": [{"key": "folder", "label": "Folder"}, {"key": "count", "label": "Files", "align": "right"},
-                         {"key": "size", "label": "Size", "align": "right"}],
-             "rows": groups, "empty": "Nothing to collect."},
-            {"type": "list", "id": "collect_plan", "title": "Files", "rows": rows, "empty": "Nothing to collect."},
-            {"type": "actions", "id": "collect_actions", "items": [
-                self.button("collect_run", "Run", tone="accent", disabled=not plan.entries, busy=self._busy("collect"),
-                            confirm=f"Copy {plan.summary()} into the project folder?"),
-                self.button("collect_discard", "Discard")]},
-        ]
+                 "rows": rows, "empty": "No changes yet."}
+        if self._journal_all:
+            op_options = [{"value": "", "label": "All changes"}] + \
+                [{"value": op, "label": label} for op, label in OP_LABELS.items()]
+            table["filters"] = [self.select("host:journal_op", "Change", flt["op"], op_options)]
+            table["search"] = self.input("host:journal_query", "Search", flt["query"], placeholder="File name")
+        toggle = {"type": "actions", "id": "journal_actions", "items": [
+            self.button("host:journal_all", "Show fewer" if self._journal_all else "Show all",
+                        hint=f"{_entries(len(entries))} in the journal.")]}
+        return [table, toggle]
 
     def _layout_blocks(self, layout: Layout, *, state: Optional[_State]) -> list:
         options = [{"value": lid, "label": item.name} for lid, item in self._shipped().items()]
@@ -1697,12 +2124,14 @@ class FilesModule(Module):
         if editable:
             fields.append(self.input("host:layout_save", "Layout JSON", json.dumps(layout.to_json()),
                                      placeholder="{\"folders\": [...], \"rules\": [...]}", submit_label="Save layout"))
+        roles = {layout.project_dir.casefold(): "Project file", layout.media_dir.casefold(): "Sync target",
+                 layout.exports_dir.casefold(): "Renders"}
         blocks = [
             {"type": "form", "id": "layout", "title": "Layout", "action": self._id("host:layout_select"),
              "hint": "Rules and folders apply to this project; saving makes the layout custom.",
              "fields": fields},
             {"type": "list", "id": "layout_folders", "title": "Folders",
-             "rows": [{"id": f, "title": f, "subtitle": "Project file" if f == layout.project_dir else "",
+             "rows": [{"id": f, "title": f, "subtitle": roles.get(f.casefold(), ""),
                        "meta": "", "tone": "neutral", "thumb": None, "actions": []} for f in layout.folders],
              "empty": ""},
             {"type": "table", "id": "layout_rules", "title": "Rules", "hint": "First match wins.",
@@ -1711,8 +2140,9 @@ class FilesModule(Module):
              "rows": rules, "empty": ""},
         ]
         if editable:
-            overrides = parse_overrides(self._proj("overrides"))
-            folder_options = [{"value": f, "label": f} for f in layout.all_folders()]
+            overrides = parse_overrides(self._proj("overrides"), layout.media_dir)
+            folder_options = [{"value": f, "label": f} for f in layout.all_folders()
+                              if not is_under(f, layout.media_dir)]
             blocks.append({"type": "table", "id": "overrides", "title": "Overrides",
                            "hint": "Checked before the rules: a source folder or a file name pattern.",
                            "columns": [{"key": "match", "label": "Source folder or name", "mono": True},
@@ -1744,11 +2174,18 @@ def _describe_match(match: dict) -> str:
             parts.append(f"up to {value:g} s")
         elif key == "min_duration":
             parts.append(f"from {value:g} s")
+        elif key in ("source", "audio_class"):
+            values = value if isinstance(value, list) else [value]
+            parts.append(("source " if key == "source" else "sounds like ") + " or ".join(values))
         elif isinstance(value, bool):
             parts.append(key.replace("_", " ") if value else "no " + key.replace("_", " ").replace("has ", ""))
         else:
             parts.append(str(value))
     return " · ".join(parts)
+
+
+def _entries(count: int) -> str:
+    return f"{count} {'entry' if count == 1 else 'entries'}"
 
 
 def _pairs(value: Any) -> dict:

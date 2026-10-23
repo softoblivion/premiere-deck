@@ -41,8 +41,9 @@ class TreeValidation(unittest.TestCase):
             P.validate_tree(self.tree([P.node_group("A", [P.node_button("a.one", "One")]), P.node_button("a.one", "Two")]))
         with self.assertRaises(P.ProtocolError):  # no nesting
             P.validate_tree(self.tree([P.node_group("A", [P.node_group("B", [])])]))
-        with self.assertRaises(P.ProtocolError):  # columns 1 or 2
-            P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "columns": 3}]))
+        with self.assertRaises(P.ProtocolError):  # columns 1 to 3
+            P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "columns": 4}]))
+        P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "columns": 3}]))
         with self.assertRaises(P.ProtocolError):  # title is a string or null
             P.validate_tree(self.tree([{"kind": "group", "title": 5, "items": []}]))
 
@@ -69,7 +70,114 @@ class TreeValidation(unittest.TestCase):
                 P.validate_tree(self.tree([P.node_list("a.l", [row])]))
 
 
+class Fields20(unittest.TestCase):
+    """The 2.0 node fields (docs/PROTOCOL.md 6.1)."""
+
+    def tree(self, items, **section):
+        return {"type": P.T_UI, "revision": 1, "title": "Deck", "status": None,
+                "sections": [P.section("actions", "Actions", items, **section)], "footer": None}
+
+    def test_button_fields(self):
+        menu = P.menu("a.social.format", "9x16", [{"value": "9x16", "label": "9:16"}, {"value": "1x1", "label": "1:1"}],
+                      "9:16")
+        node = P.node_button("a.social", "Social copy", hint="Copies", icon="social-copy", short="Social copy",
+                             meta="Checks offline first", menu=menu, variant="icon")
+        self.assertEqual((node["icon"], node["short"], node["meta"], node["variant"], node["menu"]),
+                         ("social-copy", "Social copy", "Checks offline first", "icon", menu))
+        P.validate_tree(self.tree([node]))
+        plain = P.node_button("a.plain", "Plain")
+        self.assertFalse({"icon", "short", "meta", "menu", "variant"} & set(plain), "absent fields are not sent")
+
+    def test_short_label_is_at_most_16_characters(self):
+        P.node_button("a.x", "X", short="1234567890123456")
+        with self.assertRaises(P.ProtocolError):
+            P.node_button("a.x", "X", short="12345678901234567")
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "button", "id": "a.x", "label": "X", "short": "x" * 17}]))
+        with self.assertRaises(P.ProtocolError):
+            P.node_button("a.x", "X", variant="round")
+
+    def test_button_fields_are_validated(self):
+        bad_nodes = [
+            {"kind": "button", "id": "a.x", "label": "X", "icon": 3},
+            {"kind": "button", "id": "a.x", "label": "X", "meta": 3},
+            {"kind": "button", "id": "a.x", "label": "X", "variant": "wide"},
+            {"kind": "button", "id": "a.x", "label": "X", "menu": {"id": "a.m", "options": [], "badge": "x"}},
+            {"kind": "button", "id": "a.x", "label": "X", "menu": {"options": [{"value": "a", "label": "A"}]}},
+            {"kind": "button", "id": "a.x", "label": "X", "menu": {"id": "a.m", "badge": "x",
+                                                                   "options": [{"value": "a"}]}},
+        ]
+        for node in bad_nodes:
+            with self.subTest(node=node), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([node]))
+        with self.assertRaises(P.ProtocolError):  # a menu id shares the id space of the tree
+            P.validate_tree(self.tree([P.node_button("a.x", "X"), P.node_button(
+                "a.y", "Y", menu=P.menu("a.x", "a", [{"value": "a", "label": "A"}], "A"))]))
+
+    def test_group_fields(self):
+        tiles = P.node_group("Timeline", [P.node_button("a.one", "One")], id="a.timeline", collapsible=True, tiles=True)
+        self.assertEqual((tiles["id"], tiles["collapsible"], tiles["tiles"], tiles["columns"]),
+                         ("a.timeline", True, True, 3), "tiles default to three columns")
+        plain = P.node_group("T", [])
+        self.assertEqual((plain["columns"], "id" in plain, "tiles" in plain, "collapsible" in plain), (1, False, False, False))
+        self.assertEqual(P.node_group("T", [], tiles=True, columns=2)["columns"], 2)
+        P.validate_tree(self.tree([tiles]))
+        with self.assertRaises(P.ProtocolError):  # group ids are unique, also against node ids
+            P.validate_tree(self.tree([tiles, P.node_group("B", [], id="a.timeline")]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([tiles, P.node_button("a.timeline", "Same")]))
+        with self.assertRaises(P.ProtocolError):  # a collapsible group needs an id
+            P.validate_tree(self.tree([P.node_group("A", [], collapsible=True)]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "id": "", "tiles": True}]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "group", "title": "A", "items": [], "tiles": "yes"}]))
+
+    def test_progress_chip_and_section_icon(self):
+        progress = P.node_progress(0.4, "Sorting project 38 / 142", detail="C0042.MP4 > Footage", cancel="files.stop")
+        self.assertEqual((progress["detail"], progress["cancel"]), ("C0042.MP4 > Footage", "files.stop"))
+        self.assertFalse({"detail", "cancel"} & set(P.node_progress(0.4, "x")))
+        chip = P.node_text("142 in the root", tone="ok", small=True, chip=True)
+        self.assertTrue(chip["chip"])
+        self.assertNotIn("chip", P.node_text("x"))
+        P.validate_tree(self.tree([progress, chip], icon="actions"))
+        self.assertEqual(P.section("a", "A", [], icon="folder")["icon"], "folder")
+        self.assertNotIn("icon", P.section("a", "A", []))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "progress", "value": 0.1, "label": "x", "cancel": 5}]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "text", "text": "x", "chip": "yes"}]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree({"type": P.T_UI, "revision": 1, "title": "", "status": None, "footer": None,
+                             "sections": [dict(P.section("a", "A", []), icon=7)]})
+
+    def test_list_row_buttons_may_carry_2_0_fields(self):
+        row = P.list_row("r1", "T", actions=[P.node_button("a.go", "Go", icon="open", variant="icon")])
+        P.validate_tree(self.tree([P.node_list("a.l", [row])]))
+        bad = P.list_row("r1", "T", actions=[{"kind": "button", "id": "a.go", "label": "Go", "short": "x" * 20}])
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([P.node_list("a.l", [bad])]))
+
+
 class Messages(unittest.TestCase):
+    def test_theme_message(self):
+        self.assertEqual(P.theme("sky"), {"type": "theme", "name": "sky"})
+        self.assertEqual(P.theme("black")["name"], "black")
+        for unknown in ("dusk", "", None, 3):
+            self.assertEqual(P.theme(unknown), {"type": "theme", "name": "black"}, repr(unknown))
+
+    def test_action_result_message(self):
+        message = P.action_result("actions.adjustment_layer", "ok", "Adjustment layer added · V3", None, at=1761000000000)
+        self.assertEqual(message, {"type": "action_result", "id": "actions.adjustment_layer", "outcome": "ok",
+                                   "text": "Adjustment layer added · V3", "detail": None, "at": 1761000000000})
+        for outcome in ("ok", "warn", "error", "neutral"):
+            self.assertEqual(P.action_result("a.b", outcome, "t", "why")["detail"], "why")
+        self.assertGreater(P.action_result("a.b", "ok", "t")["at"], 1_700_000_000_000, "epoch milliseconds")
+        with self.assertRaises(P.ProtocolError):
+            P.action_result("a.b", "accent", "t")
+        with self.assertRaises(P.ProtocolError):
+            P.action_result("", "ok", "t")
+
     def test_hello_parses_and_rejects(self):
         hello = P.Hello.parse({"type": "hello", "role": "agent", "panel_version": "1.0.0", "protocol": 1,
                                "project_path": None})

@@ -4,7 +4,8 @@
 .DESCRIPTION
   1. Creates / refreshes .venv and installs the requirements.
   2. Runs the unit tests (scratch PREMIERE_DECK_HOME and PREMIERE_DECK_CEP_DIR) unless -SkipTests.
-  3. Makes build\icon.ico.
+  3. Makes build\icon.ico and renders src\premiere_deck\ui\themes.json into the generated theme CSS
+     (build\gen_themes.py: the kit copy's css\themes.css and the token block of panel\css\panel.css).
   4. Generates the panel's VERSION and the manifest versions from __version__, copies the panel to
      build\work\panel_bundle (without deck.json / .debug) and signs it with build\sign_panel.ps1 when
      DECK_SIGN_P12 and DECK_SIGN_PASSWORD are set (else a warning: unsigned panel).
@@ -49,7 +50,7 @@ Write-Host "Installing requirements ..."
 Invoke-Checked "pip install" { & $VenvPython -m pip install --quiet -r requirements.txt -r requirements-dev.txt }
 & $VenvPython --version
 & $VenvPython -m pip list --format=freeze |
-    Select-String -Pattern "^(pywebview|pythonnet|websockets|watchdog|numpy|onnxruntime-directml|tokenizers|pillow|pyinstaller)=="
+    Select-String -Pattern "^(pywebview|pythonnet|websockets|watchdog|pillow|pyinstaller)=="
 if ($SkipBuild) { Write-Host "Environment ready (-SkipBuild)."; return }
 
 $Version = (Select-String -Path (Join-Path $Root "src\premiere_deck\__init__.py") -Pattern '__version__\s*=\s*"([^"]+)"').Matches[0].Groups[1].Value
@@ -76,6 +77,9 @@ if (-not $SkipTests) {
 
 # 3. icon ------------------------------------------------------------------------------------------------------------
 Invoke-Checked "icon" { & $VenvPython build\make_icon.py }
+
+# 3b. themes: ui\themes.json -> the kit copy's css\themes.css and the token block of panel\css\panel.css ------------
+Invoke-Checked "theme generator" { & $VenvPython build\gen_themes.py }
 
 # 4. panel: version, bundle copy, signature --------------------------------------------------------------------------
 $PanelSrc = Join-Path $Root "src\premiere_deck\panel"

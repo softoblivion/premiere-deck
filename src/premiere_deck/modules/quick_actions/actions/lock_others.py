@@ -9,7 +9,10 @@ from premiere_deck.modules.quick_actions.results import count, value
 class LockOthers(Action):
     id = "lock_others"
     label = "Lock other tracks"
+    short = "Lock others"
+    icon = "lock-others"
     active_label = "Restore locks"
+    active_short = "Restore locks"
     hint = "Locks every track without a selected clip; press again to restore the locks."
     group = "Tracks"
     feasibility = (
@@ -20,7 +23,7 @@ class LockOthers(Action):
 
     def button(self, module) -> dict:
         if self.id in module.toggles:
-            return {"label": self.active_label, "tone": "accent"}
+            return {"label": self.active_label, "short": self.active_short, "tone": "accent"}
         return {}
 
     def run(self, ctx, module):

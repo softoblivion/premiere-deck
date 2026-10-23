@@ -100,6 +100,9 @@ class HostInfoService:
     def open_url(self, url: str) -> None:
         self._hub.open_url(url)
 
+    def show(self, page: Optional[str] = None) -> None:
+        self._hub.show(page)
+
 
 class UiService:
     def __init__(self, hub: "Hub", module_id: str) -> None:
@@ -112,6 +115,11 @@ class UiService:
 
     def toast(self, tone: str, text: str) -> None:
         self._hub.toast(tone, text)
+
+    def result(self, button_id: str, outcome: str, text: str, detail: Optional[str] = None) -> None:
+        prefix = self._module_id + "."
+        full_id = button_id if button_id.startswith(prefix) else prefix + button_id
+        self._hub.action_result(self._module_id, full_id, outcome, text, detail)
 
     def confirm(self, question: str) -> bool:
         return self._hub.confirm(question, module_id=self._module_id)
@@ -133,7 +141,7 @@ class Hub:
     def __init__(self, paths: Optional[AppPaths] = None, settings: Optional[Settings] = None, *, fake: bool = False,
                  modules: Optional[list] = None, ports: Optional[tuple] = None,
                  installer: Optional[PanelInstaller] = None, launch_fn: Callable[..., int] = L.launch,
-                 watch: bool = True) -> None:
+                 watch: bool = True, fake_display: bool = True) -> None:
         self.paths = paths or AppPaths()
         self.paths.ensure()
         self.settings = settings or Settings(self.paths.settings_file)
@@ -143,6 +151,7 @@ class Hub:
         self._ports = ports
         self._launch_fn = launch_fn
         self._use_watch = watch
+        self._fake_display = fake_display  # --fake: a fake visible panel joins too (host/fake_agent.py)
         self.emit: Callable[[str, Any], None] = lambda name, payload: None
         self.on_open_window: Callable[[Optional[str]], None] = lambda page: None
         if installer is None:
@@ -167,6 +176,7 @@ class Hub:
         self._running_since: Optional[float] = None
         self._launched_at: Optional[float] = None
         self._displays = 0
+        self._agent_seen = False  # the agent connected during this Premiere session (no debug-mode offer then)
         self._facade_events = False
         self._activity: collections.deque = collections.deque(maxlen=ACTIVITY_SIZE)
         self._confirms: dict[str, tuple[threading.Event, list]] = {}
@@ -180,9 +190,11 @@ class Hub:
         if self._started:
             return
         self._started = True
+        for folder in self.paths.remove_retired_data():
+            log.info("removed data of a retired feature: %s", folder)
         self.install_result = self.installer.ensure().as_dict()
         self.server = DeckServer(self.version, ports=self._ports or P.PORT_RANGE, discovery_dir=self._discovery_dir,
-                                 host_exe=self.paths.exe_path, update_for=self._update_for)
+                                 host_exe=self.paths.exe_path, update_for=self._update_for, theme=self.theme_name)
         self.server.agent.add_presence_tap(self._on_agent_presence)
         self.server.agent.add_tap(self._on_agent_message)
         self.server.displays.set_handler(self._on_display_message)
@@ -247,7 +259,7 @@ class Hub:
 
         panel_version = self.installer.installed_version() or "0"
         self.fake_agent = FakeAgent(self.server.port, self.server.token, home=self.paths.home,
-                                    panel_version=panel_version)
+                                    panel_version=panel_version, with_display=self._fake_display)
         self.fake_agent.start()
 
     # -- facade
@@ -304,12 +316,10 @@ class Hub:
     def _on_agent_presence(self, present: bool, hello: Optional[P.Hello]) -> None:
         if present and hello is not None:
             self._launched_at = None
+            self._agent_seen = True
             self.registry.thread.post(lambda: self._send_subscriptions(on_connect=True))
-            if self._displays == 0 and self.server is not None:
-                try:
-                    self.server.agent.send(P.open_display())
-                except ConnectionError:
-                    pass
+            # The host never opens the visible panel (docs/PROTOCOL.md 3): the user opens it once from
+            # Window > Extensions and Premiere keeps it in the workspace.
             self._set_project_path(hello.project_path)
         else:
             self._set_project_path(None)
@@ -378,7 +388,7 @@ class Hub:
         self._emit_state()
 
     def _host_action(self, action_id: str) -> None:
-        page = "settings" if action_id == "host.settings" else None
+        page = "settings" if action_id == "host.settings" else "deck"  # BRIDGE_API.md 4 `navigate`
         try:
             self.on_open_window(page)
         except Exception:  # noqa: BLE001
@@ -402,6 +412,8 @@ class Hub:
         self._running_since = time.time() if running else None
         if not running:
             self._launched_at = None
+        # A new Premiere session (or none); an agent that is already there counts as seen.
+        self._agent_seen = bool(running and self.server is not None and self.server.agent.connected)
         self._emit_state()
         if running:
             timer = threading.Timer(FALLBACK_AFTER + 0.5, self._emit_state)
@@ -409,18 +421,24 @@ class Hub:
             timer.start()
 
     def premiere_state(self) -> dict:
+        """`PremiereState` (docs/BRIDGE_API.md 3.2): `connected` only while a display (the visible panel) is
+        connected; `starting` in the first 20 s of a start without an agent; `waiting` while Premiere runs without a
+        display (`agent_connected` tells whether the headless agent is there)."""
         agent = self.server.agent.hello if self.server else None
-        connected = agent is not None
+        agent_connected = agent is not None
+        displays = self._displays
         now = time.time()
-        running = self.premiere_running or connected
-        if connected:
+        running = self.premiere_running or agent_connected or displays > 0
+        launching = self._launched_at is not None and now - self._launched_at < FALLBACK_AFTER
+        if displays > 0:
             state = "connected"
-        elif self._launched_at is not None and now - self._launched_at < FALLBACK_AFTER:
+        elif not agent_connected and launching:
             state = "starting"
-        elif running and self._running_since is not None and now - self._running_since < FALLBACK_AFTER:
+        elif (not agent_connected and running and self._running_since is not None
+              and now - self._running_since < FALLBACK_AFTER):
             state = "starting"
         elif running:
-            state = "no_panel"
+            state = "waiting"
         else:
             state = "not_running"
         project = self.registry.project if self.registry else None
@@ -428,6 +446,7 @@ class Hub:
         return {
             "state": state,
             "running": running,
+            "agent_connected": agent_connected,
             "premiere_version": agent.premiere_version if agent else None,
             "panel_version": agent.panel_version if agent else None,
             "project": None if project is None else {"path": project.path, "name": project.name,
@@ -435,8 +454,11 @@ class Hub:
             "project_path": self.project_path,
             "exe": installs[0].exe if installs else None,
             "installs": [i.as_dict() for i in installs],
-            "fallback_offer": state == "no_panel" and not self.settings.get("debug_mode_written"),
-            "displays": self._displays,
+            # The debug-mode offer is for a panel that never loaded in this Premiere session, not for an agent that
+            # went away (Premiere exiting, a page reload).
+            "fallback_offer": (state == "waiting" and not agent_connected and not self._agent_seen
+                               and not self.fake and not self.settings.get("debug_mode_written")),
+            "displays": displays,
             "fake": self.fake,
         }
 
@@ -467,6 +489,12 @@ class Hub:
                 self._set_project_path(project)
             return self.premiere_state()
         connected = self.server is not None and self.server.agent.connected
+        launched = self._launched_at
+        if launched is not None and time.time() - launched < FALLBACK_AFTER and not connected:
+            # A second request while the first start is under way (a double click, the tray and the window):
+            # Premiere is not started twice and the request is not an error.
+            log.info("launch request ignored: Premiere Pro is starting")
+            return self.premiere_state()
         if L.is_premiere_running() or connected:
             if not project:
                 raise ValueError("Premiere Pro is already running.")
@@ -480,6 +508,7 @@ class Hub:
             raise ValueError("Premiere Pro was not found. Choose its program file in Settings.")
         self._launch_fn(install.exe, project)
         self._launched_at = time.time()
+        self._agent_seen = False
         if project:
             self.settings.add_recent_project(project)
         self._emit_state()
@@ -492,7 +521,9 @@ class Hub:
         """Deck's own list first, then Premiere's MRU; missing files are left out."""
         seen: set[str] = set()
         rows: list[dict] = []
-        own = [{"path": p, "opened_at": None, "source": "deck"} for p in self.settings.get("recent_projects", [])]
+        opened = self.settings.get("recent_opened", {}) or {}
+        own = [{"path": p, "opened_at": opened.get(p), "source": "deck"}
+               for p in self.settings.get("recent_projects", [])]
         mru = [] if self.fake else [dict(e, source="premiere") for e in L.premiere_recent_projects()]
         if self.fake and self.fake_agent is not None:
             own.insert(0, {"path": self.fake_agent.project["path"], "opened_at": None, "source": "deck"})
@@ -517,19 +548,38 @@ class Hub:
 
     def reinstall_panel(self) -> dict:
         result = self.installer.ensure(force=True)
-        if self.server is not None:
-            self.server.write_discovery()
-            if result.changed and self.server.agent.connected and not result.manifest_changed:
-                try:
-                    self.server.agent.send(P.reload())
-                except ConnectionError:
-                    pass
-        self._emit_state()
-        if result.action == "failed":
-            raise ValueError(result.message)
+        self._after_install(result)
         if result.action == "skipped_junction":
             raise ValueError("The panel folder is linked to the source folder; nothing was replaced.")
         return self.panel_status()
+
+    def check_panel_update(self) -> dict:
+        """`panel_check_update()` (docs/BRIDGE_API.md 2): the start-up check of docs/PANEL.md 4.2 on demand. The
+        installed panel is compared with the bundled one and replaced when they differ (`ensure()`, the same call
+        `start()` makes). `installed` is the version found before the call."""
+        installed = self.installer.installed_version()
+        bundled = self.installer.source_version()
+        result = self.installer.ensure()
+        self._after_install(result)
+        log.info("panel update check: installed %s, bundled %s, %s", installed, bundled, result.action)
+        return {"updated": result.changed, "installed": installed, "bundled": bundled}
+
+    def _after_install(self, result: Any) -> None:
+        """After `ensure()`: rewrite `deck.json`, ask the connected agent and every connected display to load the
+        new files (`reload` when only files changed; a manifest change waits for a Premiere restart,
+        `welcome.update`), refresh the state; a failed install raises its sentence."""
+        if self.server is not None:
+            self.server.write_discovery()
+            if result.changed and not result.manifest_changed:
+                if self.server.agent.connected:
+                    try:
+                        self.server.agent.send(P.reload())
+                    except ConnectionError:
+                        pass
+                self.server.displays.reload()  # the visible panel loads the new files as well (docs/PROTOCOL.md 4)
+        self._emit_state()
+        if result.action == "failed":
+            raise ValueError(result.message)
 
     def remove_panel(self) -> dict:
         result = self.installer.uninstall()
@@ -574,6 +624,39 @@ class Hub:
     def activity(self) -> list[dict]:
         return list(self._activity)
 
+    # -- theme (docs/PROTOCOL.md 6.5)
+    def theme_name(self) -> str:
+        """The `theme` setting as the panel gets it: `black` or `sky`."""
+        name = self.settings.get("theme")
+        return name if name in P.THEMES else P.DEFAULT_THEME
+
+    def notify_theme(self) -> None:
+        """Sends the current theme to every connected display. The window calls it after a theme change; displays
+        that connect later get it right after `welcome`."""
+        if self.server is not None:
+            try:
+                self.server.displays.theme(self.theme_name())
+            except Exception:  # noqa: BLE001
+                log.debug("panel theme failed", exc_info=True)
+
+    # -- action results (docs/PROTOCOL.md 6.6)
+    def action_result(self, module_id: str, button_id: str, outcome: str, text: str,
+                      detail: Optional[str] = None) -> None:
+        """`ctx.ui.result`: `action_result` to every display, the `result` event to the window, a line in the
+        activity feed (`tone` = the outcome). Callable from any thread."""
+        if outcome not in P.OUTCOMES:
+            log.warning("result of %s with unknown outcome %r ignored", button_id, outcome)
+            return
+        message = P.action_result(button_id, outcome, text, detail)
+        if self.server is not None:
+            try:
+                self.server.displays.send(message)
+            except Exception:  # noqa: BLE001
+                log.debug("panel result failed", exc_info=True)
+        self.emit("result", {"module": module_id, "id": message["id"], "outcome": outcome, "text": message["text"],
+                             "detail": message["detail"], "at": message["at"]})
+        self._add_activity(module_id, message["text"], outcome)
+
     # -- toasts and confirmations
     def toast(self, tone: str, text: str) -> None:
         tone = tone if tone in P.TONES else "neutral"
@@ -613,6 +696,13 @@ class Hub:
         return True
 
     # -- shell helpers
+    def show(self, page: Optional[str] = None) -> None:
+        """`ctx.host.show(page)`: the host window to the front, on `page` (a module id) when given."""
+        try:
+            self.on_open_window(page)
+        except Exception:  # noqa: BLE001
+            log.exception("opening the window failed")
+
     def open_path(self, path: str) -> bool:
         from premiere_deck.shell import winutil
 
@@ -648,7 +738,14 @@ class Hub:
 
     def _emit_state(self) -> None:
         try:
-            self.emit("premiere", self.premiere_state())
+            state = self.premiere_state()
+            key = (state["state"], state["agent_connected"], state["displays"], state["fallback_offer"])
+            if key != getattr(self, "_logged_state", None):
+                self._logged_state = key
+                log.info("premiere state %s (agent %s, displays %s%s)", state["state"],
+                         "connected" if state["agent_connected"] else "absent", state["displays"],
+                         ", debug-mode offer" if state["fallback_offer"] else "")
+            self.emit("premiere", state)
         except Exception:  # noqa: BLE001
             log.debug("state event failed", exc_info=True)
 

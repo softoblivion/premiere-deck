@@ -9,7 +9,10 @@ from premiere_deck.modules.quick_actions.results import value
 class SoloTrack(Action):
     id = "solo_track"
     label = "Solo audio track"
+    short = "Solo track"
+    icon = "solo-track"
     active_label = "Restore audio"
+    active_short = "Restore audio"
     hint = "Mutes every audio track except the selected clip's; press again to restore the mutes."
     group = "Tracks"
     feasibility = (
@@ -20,7 +23,7 @@ class SoloTrack(Action):
 
     def button(self, module) -> dict:
         if self.id in module.toggles:
-            return {"label": self.active_label, "tone": "accent"}
+            return {"label": self.active_label, "short": self.active_short, "tone": "accent"}
         return {}
 
     def run(self, ctx, module):

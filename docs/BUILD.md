@@ -14,12 +14,11 @@ and fills it). Versions of the first build (2026-10-21):
 | pythonnet / clr_loader | 3.2.1 / 0.3.1 | WinForms backend of pywebview, tray icon (`NotifyIcon`) |
 | websockets | 17.3 (asyncio server; sync client in tests and `--fake`) | host <-> panel transport |
 | watchdog | 6.0.0 | Files module |
-| numpy | 2.5.4 | AI search |
-| onnxruntime-directml | 1.24.4 | AI search |
-| tokenizers | 0.23.3 | AI search |
-| Pillow | 13.0.0 | thumbnails, `build\make_icon.py` |
+| numpy | 2.5.4 | audio samples for the YAMNet classifier (Files module, `FILES.md` 3.8) |
+| onnxruntime | 1.31.0 (CPU provider only; the DirectML build of 1.x is gone) | runs `modules\files\models\yamnet.onnx` |
+| Pillow | 13.0.0 (dev only, `requirements-dev.txt`) | `build\make_icon.py` (no runtime use in the host since 2.0) |
 | PyInstaller / hooks-contrib | 6.22.3 / 2026.9 | one-file exe |
-| ffmpeg / ffprobe | 9.0.2 (gyan.dev full build on PATH) | probe, frames; the app downloads its own copy into `<data>\bin` when none is found (`core\tools.py`, yt-dlp/FFmpeg-Builds, verified by SHA-256) |
+| ffmpeg / ffprobe | 9.0.2 (gyan.dev full build on PATH) | media probe; the app downloads its own copy into `<data>\bin` when none is found (`core\tools.py`, yt-dlp/FFmpeg-Builds, verified by SHA-256) |
 
 `requirements.txt` holds the runtime packages, `requirements-dev.txt` adds PyInstaller. `pyproject.toml` carries the
 same metadata (version from `premiere_deck.__version__`).
@@ -100,6 +99,5 @@ the update path or the panel installer (the panel update rides on it).
 | The host does not start: "no free port in 47800..47809" | other programs hold all ten ports | close them; the range is fixed by `PROTOCOL.md` 2 |
 | "The window could not be started" | Microsoft Edge WebView2 Runtime missing | install the Evergreen WebView2 Runtime |
 | ffmpeg download fails | offline, proxy, or GitHub blocked | put `ffmpeg.exe` and `ffprobe.exe` on PATH or into `<data>\bin` |
-| AI search reports "CPU · slow" | `onnxruntime-directml` found no DirectML device | update the GPU driver; CPU works, slower |
 | A second start shows nothing new | the first instance is in the tray (Premiere runs) | a second start shows the first instance's window (WM_COPYDATA); check the tray |
 | Test scratch folders stay behind | a log handler or a thread still holds a file | `tests\test_host_helpers.remove_tree` retries; stop hubs and servers in `tearDown` first |

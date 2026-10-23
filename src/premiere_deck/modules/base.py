@@ -90,6 +90,7 @@ class Tools(Protocol):
 class UiPort(Protocol):
     def invalidate(self) -> None: ...
     def toast(self, tone: Tone, text: str) -> None: ...
+    def result(self, button_id: str, outcome: str, text: str, detail: Optional[str] = None) -> None: ...
     def confirm(self, question: str) -> bool: ...
 
 
@@ -100,6 +101,7 @@ class HostInfo(Protocol):
     def open_path(self, path: str) -> None: ...
     def reveal(self, path: str) -> None: ...
     def open_url(self, url: str) -> None: ...
+    def show(self, page: Optional[str] = None) -> None: ...
 
 
 class EventBus(Protocol):
@@ -108,7 +110,6 @@ class EventBus(Protocol):
 
 class PathsLike(Protocol):
     root: Path
-    models_dir: Path
     logs_dir: Path
 
     def cache_dir(self, module_id: str) -> Path: ...
@@ -138,6 +139,7 @@ class Module:
 
     id: str = ""
     title: str = ""
+    icon: Optional[str] = None  # symbol name of the panel sprite for the tab (docs/PANEL.md 1)
     description: str = ""
     order: int = 100
     events: Sequence[str] = ()
@@ -185,35 +187,53 @@ class Module:
         prefix = self.id + "."
         return action_id[len(prefix):] if action_id.startswith(prefix) else action_id
 
+    def _pid(self, node_id: str) -> str:
+        """The id with this module's prefix; an id that already carries it is kept (a module may pass either)."""
+        return node_id if node_id.startswith(self.id + ".") else self._id(node_id)
+
     def button(self, local_id: str, label: str, **kw: Any) -> dict:
-        return P.node_button(self._id(local_id), label, **kw)
+        menu = kw.get("menu")
+        if isinstance(menu, dict) and isinstance(menu.get("id"), str):
+            kw["menu"] = dict(menu, id=self._pid(menu["id"]))
+        return P.node_button(self._pid(local_id), label, **kw)
+
+    def menu(self, local_id: str, value: Any, options: list, badge: str) -> dict:
+        """`button(..., menu=...)` value: the choice a tile carries (docs/PROTOCOL.md 6.1)."""
+        return P.menu(self._pid(local_id), value, options, badge)
 
     def toggle(self, local_id: str, label: str, value: bool, **kw: Any) -> dict:
-        return P.node_toggle(self._id(local_id), label, value, **kw)
+        return P.node_toggle(self._pid(local_id), label, value, **kw)
 
     def select(self, local_id: str, label: str, value: str, options: list, **kw: Any) -> dict:
-        return P.node_select(self._id(local_id), label, value, options, **kw)
+        return P.node_select(self._pid(local_id), label, value, options, **kw)
 
     def input(self, local_id: str, label: str, value: str = "", **kw: Any) -> dict:
-        return P.node_input(self._id(local_id), label, value, **kw)
+        return P.node_input(self._pid(local_id), label, value, **kw)
 
     def list_(self, local_id: str, rows: list, **kw: Any) -> dict:
-        return P.node_list(self._id(local_id), rows, **kw)
+        return P.node_list(self._pid(local_id), rows, **kw)
 
     def row_action(self, local_id: str, label: str, **kw: Any) -> dict:
-        return P.node_button(self._id(local_id), label, **kw)
+        return self.button(local_id, label, **kw)
+
+    def group(self, title: Optional[str], items: list, *, id: Optional[str] = None, **kw: Any) -> dict:
+        """`id`, `columns`, `collapsible` and `tiles` as in `protocol.node_group`; the id gets the module prefix."""
+        return P.node_group(title, items, id=None if id is None else self._pid(id), **kw)
+
+    def progress(self, value: Optional[float], label: str = "", *, detail: Optional[str] = None,
+                 cancel: Optional[str] = None) -> dict:
+        """`cancel` is a local button id (the Stop pill sends it, prefixed)."""
+        return P.node_progress(value, label, detail=detail, cancel=None if cancel is None else self._pid(cancel))
 
     text = staticmethod(P.node_text)
-    progress = staticmethod(P.node_progress)
     row = staticmethod(P.node_row)
     divider = staticmethod(P.node_divider)
-    group = staticmethod(P.node_group)
     list_row = staticmethod(P.list_row)
     status = staticmethod(P.status)
 
     def section(self) -> dict:
         """The module's panel section, validated against the protocol."""
-        sec = P.section(self.id, self.title, self.render(), status=self.section_status())
+        sec = P.section(self.id, self.title, self.render(), status=self.section_status(), icon=self.icon)
         P.validate_tree({"type": P.T_UI, "revision": 0, "title": "", "status": None, "sections": [sec], "footer": None})
         return sec
 
@@ -353,8 +373,11 @@ class FakeTools:
 
 
 class FakeUi:
+    """Records toasts, results (`results`: (button id as given, outcome, text, detail)) and confirmations."""
+
     def __init__(self, confirm_answer: bool = True) -> None:
         self.toasts: list[tuple[str, str]] = []
+        self.results: list[tuple[str, str, str, Optional[str]]] = []
         self.invalidations = 0
         self.confirm_answer = confirm_answer
         self.confirmations: list[str] = []
@@ -364,6 +387,11 @@ class FakeUi:
 
     def toast(self, tone: str, text: str) -> None:
         self.toasts.append((tone, text))
+
+    def result(self, button_id: str, outcome: str, text: str, detail: Optional[str] = None) -> None:
+        if outcome not in ("ok", "warn", "error", "neutral"):
+            raise ValueError(f"unknown outcome {outcome!r}")
+        self.results.append((button_id, outcome, text, detail))
 
     def confirm(self, question: str) -> bool:
         self.confirmations.append(question)
@@ -377,9 +405,13 @@ class FakeHostInfo:
         self.opened: list[str] = []
         self.revealed: list[str] = []
         self.urls: list[str] = []
+        self.shown: list[Optional[str]] = []
 
     def open_path(self, path: str) -> None:
         self.opened.append(path)
+
+    def show(self, page: Optional[str] = None) -> None:
+        self.shown.append(page)
 
     def reveal(self, path: str) -> None:
         self.revealed.append(path)
@@ -399,10 +431,8 @@ class FakeEvents:
 class FakePaths:
     def __init__(self, root: Path) -> None:
         self.root = root
-        self.models_dir = root / "models"
         self.logs_dir = root / "logs"
-        for folder in (self.models_dir, self.logs_dir):
-            folder.mkdir(parents=True, exist_ok=True)
+        self.logs_dir.mkdir(parents=True, exist_ok=True)
 
     def cache_dir(self, module_id: str) -> Path:
         folder = self.root / "cache" / module_id

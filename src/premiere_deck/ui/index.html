@@ -1,20 +1,21 @@
 <!doctype html>
-<html lang="en" data-theme="nova">
+<html lang="en" data-theme="black" data-mode="compact" data-screen="idle">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="darkreader-lock">
   <title>Premiere Deck</title>
   <link rel="icon" href="assets/glyph.svg" type="image/svg+xml">
   <!-- The cached theme before the first paint (js/main.js writes the key on every confirmed settings object). -->
-  <script>try{var t=localStorage.getItem('pd.theme');if(['dusk','nova','frost','bloom'].indexOf(t)>=0)document.documentElement.dataset.theme=t;}catch(e){}</script>
-  <!-- Liquid UI design kit: a vendored copy (vendor/liquid_ui/VENDORED.txt); never edited here. -->
+  <script>try{var t=localStorage.getItem('pd.theme');if(["black","sky"].indexOf(t)>=0)document.documentElement.dataset.theme=t;}catch(e){}</script>
+  <!-- Liquid UI design kit: the project-owned copy (vendor/liquid_ui/KIT.txt); themes.css is generated from themes.json. -->
   <link rel="stylesheet" href="vendor/liquid_ui/css/tokens.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/themes.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/base.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/scene.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/glass.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/components.css">
-  <!-- Premiere Deck host window. -->
+  <!-- Premiere Deck host window (docs/HOST_UI.md). -->
   <link rel="stylesheet" href="css/app.css">
   <script type="module" src="js/main.js"></script>
 </head>
@@ -26,26 +27,32 @@
   <svg id="lg-defs" aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden"><defs></defs></svg>
 
   <div id="app">
+    <!-- Title bar: compact = the window capsule only; main = brand, version pill, capsule (HOST_UI.md 2). -->
     <header id="titlebar" class="titlebar">
       <div class="tb-drag pywebview-drag-region"></div>
       <div class="tb-brand pywebview-drag-region">
         <span id="tb-glyph" class="tb-glyph pywebview-drag-region"></span>
         <span class="tb-name pywebview-drag-region">Premiere Deck</span>
       </div>
-      <button type="button" id="ver-pill" class="ver-pill" aria-haspopup="dialog"><span class="ver-dot" aria-hidden="true"></span><span class="ver-text"></span></button>
+      <span id="tb-pill-slot" class="pill-slot"></span>
       <div class="tb-space pywebview-drag-region"></div>
       <div id="tb-cluster" class="tb-cluster">
-        <button type="button" id="btn-settings" class="tb-btn tb-gear" aria-label="Settings" title="Settings" aria-haspopup="dialog"></button>
+        <button type="button" id="btn-settings" class="tb-btn tb-gear" aria-label="Settings" aria-haspopup="dialog"></button>
         <span class="tb-sep" aria-hidden="true"></span>
-        <button type="button" id="win-min" class="tb-btn" aria-label="Minimize" title="Minimize"></button>
-        <button type="button" id="win-close" class="tb-btn tb-close" aria-label="Close" title="Close"></button>
+        <button type="button" id="win-min" class="tb-btn" aria-label="Minimize"></button>
+        <button type="button" id="win-close" class="tb-btn tb-close" aria-label="Close"></button>
       </div>
     </header>
 
-    <div class="shell">
-      <nav id="rail" class="rail glass-lite" aria-label="Pages"><span class="lg-rim" aria-hidden="true"></span><div id="rail-list" class="rail-list"></div></nav>
-      <main id="page" class="page" tabindex="-1"></main>
-    </div>
+    <!-- Idle and waiting (compact window), js/pages/compact.js. -->
+    <main id="compact" class="compact" tabindex="-1"></main>
+    <!-- Main (wide window): the left column and the module tabs, js/pages/wide.js. -->
+    <div id="wide" class="wide" hidden></div>
+  </div>
+
+  <!-- The version pill of the kit's update control; moved between the hero block and the title bar. -->
+  <div id="pill-park" class="pill-park" aria-hidden="true">
+    <button type="button" id="ver-pill" class="ver-pill" aria-haspopup="dialog"><span class="ver-dot" aria-hidden="true"></span><span class="ver-text"></span></button>
   </div>
 
   <!-- Overlays grow out of the control that opened them (kit js/overlay.js). -->

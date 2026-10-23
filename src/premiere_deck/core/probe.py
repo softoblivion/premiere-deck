@@ -7,6 +7,11 @@ Alpha is detected from what ffprobe reports:
 - VP8 / VP9 / AV1 in WebM / Matroska with the stream tag `alpha_mode` = 1 (libvpx stores alpha as side data, so the
   pixel format alone says `yuv420p`).
 A probe failure classifies by extension only and keeps the error text in `probe_error`.
+
+Since 2.0 the probe also reports `tags` (format tags merged with the tags of the first video stream, the stream's
+value winning, keys lower-cased, values as strings) and `nb_streams` (`format.nb_streams`), used by the Files
+classifier (docs/FILES.md 3.8, 4). `fps` is the first video stream's `avg_frame_rate`, else its `r_frame_rate`,
+rounded to 3 decimals (24000/1001 -> 23.976); both raw rates are kept in `extra`.
 """
 
 from __future__ import annotations
@@ -77,6 +82,27 @@ def _float(value: Any) -> Optional[float]:
     return number if number >= 0 else None
 
 
+def merged_tags(fmt: dict, stream: Optional[dict]) -> dict[str, str]:
+    """Container tags merged with one stream's tags; the stream's value wins on a clash. Keys lower-cased."""
+    out: dict[str, str] = {}
+    for source in (fmt.get("tags") or {}, (stream or {}).get("tags") or {}):
+        if not isinstance(source, dict):
+            continue
+        for key, value in source.items():
+            if value is None:
+                continue
+            out[str(key).lower()] = str(value)
+    return out
+
+
+def _int(value: Any) -> Optional[int]:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number >= 0 else None
+
+
 def parse_probe(path: str, data: dict, size: Optional[int] = None) -> MediaInfo:
     """`MediaInfo` from ffprobe's `-show_format -show_streams` JSON (pure; tested without ffprobe)."""
     ext = PurePath(path).suffix.lower().lstrip(".")
@@ -118,7 +144,8 @@ def parse_probe(path: str, data: dict, size: Optional[int] = None) -> MediaInfo:
 
     extra: dict = {"format_name": format_name or None}
     if first_video is not None:
-        extra.update(pix_fmt=first_video.get("pix_fmt"), profile=first_video.get("profile"))
+        extra.update(pix_fmt=first_video.get("pix_fmt"), profile=first_video.get("profile"),
+                     avg_frame_rate=first_video.get("avg_frame_rate"), r_frame_rate=first_video.get("r_frame_rate"))
     if first_audio is not None:
         extra.update(sample_rate=first_audio.get("sample_rate"), channels=first_audio.get("channels"))
     bit_rate = fmt.get("bit_rate")
@@ -141,6 +168,8 @@ def parse_probe(path: str, data: dict, size: Optional[int] = None) -> MediaInfo:
         codec_video=first_video.get("codec_name") if first_video else None,
         codec_audio=first_audio.get("codec_name") if first_audio else None,
         extra=extra,
+        tags=merged_tags(fmt, first_video),
+        nb_streams=_int(fmt.get("nb_streams")) if fmt.get("nb_streams") is not None else (len(streams) or None),
     )
 
 

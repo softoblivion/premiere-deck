@@ -3,7 +3,8 @@
    rising specks (canvas), light sweep, vignette, grain. Every loop is a CSS animation of
    `transform` (compositor only); the parallax wrappers move by a transform transition.
    Colours come from the scene tokens (--bg-*, --scene-hue, --scene-accent, --scene-line) and
-   from the options of initBackground(); the kit's documentation, "Background". */
+   from the options of initBackground(); the strength of each layer from --scene-*-o and the
+   vignette from --scene-vignette (per theme, css/themes.css), so a light scene needs no override. */
 
 #scene {
   position: fixed;
@@ -22,6 +23,9 @@
   transition: transform 1.6s cubic-bezier(0.16, 0.84, 0.24, 1);
   will-change: transform;
 }
+
+/* The colour layers' strength per theme. */
+.sc-fields { opacity: var(--scene-fields-o, 1); }
 
 /* (2) Colour fields: large soft radial gradients, each on its own slow drift loop. The core is
    kept dim (the alpha ramps from a * 0.9 at the centre) so a field reads as depth, not a spot. */
@@ -115,7 +119,7 @@
 .sc-lines-in {
   position: absolute;
   inset: 0;
-  opacity: var(--lines-o, 1);
+  opacity: calc(var(--lines-o, 1) * var(--scene-lines-o, 1));
   animation: lines-drift 96s ease-in-out infinite alternate;
   will-change: transform;
 }
@@ -142,6 +146,7 @@
     color-mix(in srgb, var(--c) 26%, transparent) 0%,
     color-mix(in srgb, var(--c) 10%, transparent) 42%,
     transparent 72%);
+  opacity: var(--scene-floor-o, 1);
 }
 
 /* (4) Rising specks: a half-resolution canvas, upscaled by the compositor (soft by design). */
@@ -150,6 +155,7 @@
   inset: 40px;
   width: calc(100% - 80px);
   height: calc(100% - 80px);
+  opacity: var(--scene-specks-o, 1);
 }
 
 /* (5) Light sweep: a soft diagonal band crosses the window once per cycle, then rests off-screen. */
@@ -181,16 +187,14 @@
 .sc-vignette {
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(120% 90% at 50% 42%, transparent 48%, rgba(0, 0, 0, 0.58) 100%),
-    linear-gradient(180deg, rgba(0, 0, 0, 0.4) 0%, transparent 20%);
+  background: var(--scene-vignette);
 }
 
 .sc-grain {
   position: absolute;
   inset: 0;
   background-repeat: repeat;
-  opacity: 0.5;
+  opacity: var(--scene-grain-o, 0.5);
 }
 
 /* Paused (unfocused, hidden, idle, reduced motion): every loop holds its frame. */

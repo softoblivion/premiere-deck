@@ -74,12 +74,11 @@ _own = collect_submodules("premiere_deck")
 if len(_own) < 20:
     raise SystemExit(f"collect_submodules found only {len(_own)} premiere_deck modules: check SRC on sys.path")
 hiddenimports = _own + [
-    "numpy",
-    "onnxruntime",
-    "tokenizers",
     "watchdog.observers",
     "watchdog.events",
-    "PIL.Image",
+    "numpy",
+    "onnxruntime",
+    "onnxruntime.capi._pybind_state",
     "webview.platforms.winforms",
     "webview.platforms.edgechromium",
     "clr_loader",

@@ -1,16 +1,23 @@
-// Module page blocks (docs/BRIDGE_API.md, section 5): cards, table, list, form, grid, actions, text,
-// progress, built from the page model `render_host()` returns. Interactive elements are the panel's
-// node shapes (button, toggle, select, input, text, progress) drawn with kit controls.
+// Module page blocks (docs/BRIDGE_API.md, section 5): cards, table, list, form, grid, actions (buttons or
+// tiles), chips, text and progress, built from the page model `render_host()` returns. Interactive elements are the
+// panel's node shapes (button, toggle, select, input, text, progress) drawn with kit controls; button fields
+// `icon`, `short`, `meta`, `menu`, `variant` and the progress fields `detail`, `cancel` as in the panel.
 //
 // Re-rendering never costs the user their place: blocks are keyed by `id` (or type + index), a block
 // whose model is unchanged keeps its DOM, a changed block is rebuilt and the focused control, the
 // typed text of a focused input and the scroll position of inner scrollers are put back.
+//
+// The window's pane is narrow (430 px): a table with more than four columns leaves its mono columns out, an
+// `actions` block whose id is `<table id>_actions` is drawn in that table's title row, the list `last_result` is
+// drawn as a tinted result line, and a list with `columns: 2` (or the id `visibility`) lays its rows out in two
+// columns grouped by the row's `group` (or the part of its subtitle before " · ").
 
 import { Switch, Select } from '../vendor/liquid_ui/js/controls.js';
 import { gel } from '../vendor/liquid_ui/js/glass.js';
 import { percent } from '../vendor/liquid_ui/js/format.js';
 import { call } from './api.js';
 import { askConfirm } from './confirm.js';
+import { ic, hasIcon } from './icons.js';
 import { h, toneClass, cellText, cellTone, safeImg, failToast, logOnce, bar, setBar } from './ui.js';
 
 // ---------------------------------------------------------------------------------------------
@@ -125,37 +132,115 @@ export function makeAct(moduleId) {
 
 const NODE_KINDS = new Set(['button', 'toggle', 'select', 'input', 'text', 'progress']);
 const kindOf = (n) => n.kind ?? n.type;
+const iconOf = (name) => (name && hasIcon(name) ? ic(name) : '');
 
-/** A node button (BRIDGE_API 5: tone accent = the tinted primary; confirm = question sheet first). */
+/** Run a node button: confirmation sheet first when it has `confirm`, busy state while the call runs. */
+async function press(b, node, ctx, row, value) {
+  if (b.classList.contains('is-busy') || node.id == null || b.disabled) return;
+  const tone = node.tone;
+  if (node.confirm) {
+    const yes = await askConfirm({ question: String(node.confirm), origin: b, danger: tone === 'error' || tone === 'danger' });
+    if (!yes) return;
+  }
+  b.classList.add('is-busy');
+  b.setAttribute('aria-busy', 'true');
+  try {
+    await ctx.act(node.id, typeof value === 'function' ? value() : value, row);
+  } finally {
+    if (b.isConnected && !node.busy) {
+      b.classList.remove('is-busy');
+      b.removeAttribute('aria-busy');
+    }
+  }
+}
+
+/** A small menu under `anchor` (a button's `menu`): a pick sends the menu's id with the picked value. */
+function openMenu(anchor, menu, ctx, row) {
+  document.querySelectorAll('.node-menu').forEach((m) => m.remove());
+  const list = h('div', 'select-menu node-menu', { role: 'menu' });
+  for (const op of menu.options || []) {
+    const on = String(op.value) === String(menu.value);
+    const item = h('button', `menu-item select-opt${on ? ' is-on' : ''}`, { type: 'button', role: 'menuitemradio', 'aria-checked': String(on) },
+      h('span', '', { text: op.label ?? String(op.value) }));
+    item.addEventListener('click', (e) => {
+      e.stopPropagation();
+      list.remove();
+      if (!on) ctx.act(menu.id, op.value, row);
+    });
+    list.append(item);
+  }
+  document.body.append(list);
+  const r = anchor.getBoundingClientRect();
+  const w = Math.max(140, list.offsetWidth);
+  list.style.left = `${Math.round(Math.max(8, Math.min(r.right - w, innerWidth - w - 8)))}px`;
+  const below = r.bottom + 6 + list.offsetHeight < innerHeight - 8;
+  list.style.top = `${Math.round(below ? r.bottom + 6 : r.top - 6 - list.offsetHeight)}px`;
+  const close = (e) => {
+    if (list.contains(e.target)) return;
+    list.remove();
+    removeEventListener('pointerdown', close, true);
+  };
+  setTimeout(() => addEventListener('pointerdown', close, true), 0);
+}
+
+function menuBadge(node, ctx, row) {
+  const m = node.menu;
+  if (!m || m.id == null) return null;
+  const label = m.badge ?? (m.options || []).find((o) => String(o.value) === String(m.value))?.label ?? m.value;
+  const badge = h('span', 'tile-badge', { role: 'button', tabindex: '0', 'aria-haspopup': 'menu', text: String(label ?? '') });
+  const open = (e) => {
+    e.stopPropagation();
+    e.preventDefault();
+    openMenu(badge, m, ctx, row);
+  };
+  badge.addEventListener('click', open);
+  badge.addEventListener('keydown', (e) => (e.key === 'Enter' || e.key === ' ') && open(e));
+  return badge;
+}
+
+/** A node button (BRIDGE_API 5: tone accent = the tinted primary; confirm = question sheet first; variant icon). */
 export function buttonEl(node, ctx, { row = null, size = 'btn-s', value = null } = {}) {
   const tone = node.tone;
-  const cls = ['btn', size];
-  if (tone === 'accent') cls.push('btn-tinted');
-  if (tone === 'error' || tone === 'danger') cls.push('btn-danger');
-  const b = h('button', cls.join(' '), { type: 'button', 'data-fk': `${node.id ?? ''}|${row ?? ''}`, title: node.hint || null }, h('span', '', { text: node.label ?? '' }));
+  const attrs = { type: 'button', 'data-fk': `${node.id ?? ''}|${row ?? ''}`, 'data-node': node.id ?? null, title: node.hint || null };
+  let b;
+  if (node.variant === 'icon') {
+    b = h('button', 'icon-btn icon-btn-plate icon-btn-s', { ...attrs, 'aria-label': node.label ?? '', title: node.hint || node.label || null },
+      h('span', 'ic-hold', { 'data-ic': '', html: iconOf(node.icon) || ic('open') }));
+  } else {
+    const cls = ['btn', size];
+    if (tone === 'accent') cls.push('btn-tinted');
+    if (tone === 'error' || tone === 'danger') cls.push('btn-danger');
+    if (node.variant === 'ghost') cls.push('btn-ghost');
+    const glyphHtml = iconOf(node.icon);
+    b = h('button', cls.join(' '), attrs,
+      glyphHtml ? h('span', 'ic-hold', { 'data-ic': '', html: glyphHtml }) : null,
+      h('span', '', { text: node.label ?? '' }));
+  }
   if (node.busy) {
     b.classList.add('is-busy');
     b.setAttribute('aria-busy', 'true');
   }
   if (node.disabled) b.disabled = true;
   gel(b);
-  b.addEventListener('click', async () => {
-    if (b.classList.contains('is-busy') || node.id == null) return;
-    if (node.confirm) {
-      const yes = await askConfirm({ question: String(node.confirm), origin: b, danger: tone === 'error' || tone === 'danger' });
-      if (!yes) return;
-    }
-    b.classList.add('is-busy');
-    b.setAttribute('aria-busy', 'true');
-    try {
-      await ctx.act(node.id, typeof value === 'function' ? value() : value, row);
-    } finally {
-      if (b.isConnected && !node.busy) {
-        b.classList.remove('is-busy');
-        b.removeAttribute('aria-busy');
-      }
-    }
-  });
+  b.addEventListener('click', () => press(b, node, ctx, row, value));
+  return b;
+}
+
+/** A node button as a glass tile: icon well, short label, one-line meta, optional choice badge. */
+export function tileEl(node, ctx, { row = null } = {}) {
+  const label = node.short || node.label || '';
+  const b = h('button', `ftile${node.busy ? ' is-busy is-running' : ''}${node.tone === 'accent' ? ' is-accent' : ''}`, {
+    type: 'button', 'data-fk': `${node.id ?? ''}|${row ?? ''}`, 'data-node': node.id ?? null, title: node.hint || null,
+    'aria-label': node.label || label,
+  },
+  h('span', 'well', { 'data-ic': '', html: node.busy ? '<span class="spinner" aria-hidden="true"></span>' : (iconOf(node.icon) || ic('actions')) }),
+  h('b', '', { text: label }),
+  node.meta ? h('small', '', { text: String(node.meta) }) : h('small', 'is-empty', { text: '' }),
+  menuBadge(node, ctx, row));
+  if (node.busy) b.setAttribute('aria-busy', 'true');
+  if (node.disabled) b.disabled = true;
+  gel(b, { amount: 0.8 });
+  b.addEventListener('click', () => press(b, node, ctx, row, null));
   return b;
 }
 
@@ -163,10 +248,15 @@ function textEl(node) {
   return h('p', `tx ${toneClass(node.tone)}${node.small ? ' tx-small' : ''}`, { text: node.text ?? '' });
 }
 
-function progressEl(node) {
+/** Progress card: label (with the count), percentage, bar, the current file in mono, and a Stop pill. */
+function progressEl(node, ctx) {
   const v = node.value;
-  const top = h('div', 'pg-top', null, h('span', '', { text: node.label ?? '' }), v == null ? null : h('span', 'tnum', { text: percent(v) }));
-  return h('div', 'pg', null, node.label || v != null ? top : null, bar(v));
+  const stop = node.cancel && ctx ? buttonEl({ id: node.cancel, label: 'Stop', icon: 'cross' }, ctx, { size: 'btn-xs' }) : null;
+  const top = h('div', 'pg-top', null,
+    h('span', 'pg-label', { text: node.label ?? '' }),
+    v == null ? null : h('span', 'pg-pct tnum', { text: percent(v) }),
+    stop);
+  return h('div', `pg${stop ? ' pg-card' : ''}`, null, top, bar(v), node.detail ? h('div', 'pg-detail mono', { text: String(node.detail), title: String(node.detail) }) : null);
 }
 
 /** Field spec from a form field, filter or search node; null when it is neither. */
@@ -288,7 +378,7 @@ export function renderNode(node, ctx, controls, { row = null, size = 'btn-s' } =
   const kind = kindOf(node) || (node.label != null ? 'button' : null);
   if (kind === 'button') return buttonEl(node, ctx, { row, size });
   if (kind === 'text') return textEl(node);
-  if (kind === 'progress') return progressEl(node);
+  if (kind === 'progress') return progressEl(node, ctx);
   if (kind === 'toggle' || kind === 'select' || kind === 'input') {
     const spec = normField(node);
     if (spec && spec.t !== 'node') return fieldRow(spec, buildField(spec, { send: async (v) => (await ctx.act(spec.nodeId, v, row)) !== null }, controls));
@@ -299,7 +389,8 @@ export function renderNode(node, ctx, controls, { row = null, size = 'btn-s' } =
 
 function fieldRow(spec, field) {
   const label = h('div', 'fm-label', null, h('span', '', { text: spec.label ?? spec.key ?? '' }), spec.hint ? h('small', '', { text: spec.hint }) : null);
-  return h('div', 'fm-row', null, label, h('div', `fm-ctl${spec.t === 'text' || spec.t === 'number' ? (spec.submitLabel ? ' fm-ctl-xwide' : ' fm-ctl-wide') : ''}`, null, field.el));
+  return h('div', `fm-row${spec.t === 'text' || spec.t === 'number' ? ' fm-row-wide' : ''}`, null, label,
+    h('div', `fm-ctl${spec.t === 'text' || spec.t === 'number' ? (spec.submitLabel ? ' fm-ctl-xwide' : ' fm-ctl-wide') : ''}`, null, field.el));
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -307,16 +398,16 @@ function fieldRow(spec, field) {
 
 function buildCards(b, ctx, controls) {
   const items = b.items || [];
-  const grid = h('div', 'tiles');
+  const grid = h('div', 'cards');
   for (const it of items) {
-    const tile = h('div', `tile glass-lite ${toneClass(it.tone)}`, { 'data-rid': it.id }, h('span', 'lg-rim', { 'aria-hidden': 'true' }));
-    tile.append(h('div', 'tile-title', null, it.tone && it.tone !== 'neutral' ? h('i', 'dot') : null, h('span', '', { text: it.title ?? '' })));
-    tile.append(h('div', 'tile-value tnum', { text: cellText(it.value) }));
+    const tile = h('div', `card-tile glass-lite ${toneClass(it.tone)}`, { 'data-rid': it.id }, h('span', 'lg-rim', { 'aria-hidden': 'true' }));
+    tile.append(h('div', 'ct-title', null, it.tone && it.tone !== 'neutral' ? h('i', 'dot') : null, h('span', '', { text: it.title ?? '' })));
+    tile.append(h('div', 'ct-value tnum', { text: cellText(it.value) }));
     const detail = it.detail ?? it.subtitle;
-    if (detail) tile.append(h('div', 'tile-detail', { text: String(detail) }));
+    if (detail) tile.append(h('div', 'ct-detail', { text: String(detail) }));
     if (it.progress != null) tile.append(bar(it.progress));
     if (it.actions && it.actions.length) {
-      tile.append(h('div', 'tile-acts', null, it.actions.map((a) => renderNode(a, ctx, controls, { row: it.id, size: 'btn-xs' }))));
+      tile.append(h('div', 'ct-acts', null, it.actions.map((a) => renderNode(a, ctx, controls, { row: it.id, size: 'btn-xs' }))));
     }
     grid.append(tile);
   }
@@ -324,10 +415,36 @@ function buildCards(b, ctx, controls) {
   return grid;
 }
 
+/** Columns shown in the narrow pane: all up to four, else the non-mono ones. */
+function visibleColumns(cols) {
+  if (cols.length <= 4) return cols;
+  const plain = cols.filter((c) => !c.mono);
+  return plain.length ? plain : cols.slice(0, 4);
+}
+
+/** Text length (header included) up to which a column keeps the width of its text; the others share the rest. */
+const FIT_CHARS = 12;
+
+/** Per column: null for a short one (it keeps its text width), else its share of the rest in percent, weighted
+ * by the longest text of the column. */
+function columnWidths(cols, rows) {
+  const len = cols.map((c) => {
+    let n = String(c.label ?? c.key ?? '').length;
+    for (const r of rows) n = Math.max(n, cellText(r[c.key]).length);
+    return n;
+  });
+  const weights = len.map((n) => (n <= FIT_CHARS ? 0 : Math.min(n, 32)));
+  const sum = weights.reduce((x, y) => x + y, 0);
+  return weights.map((w) => (w ? Math.round((w / sum) * 1000) / 10 : null));
+}
+
 function buildTable(b, ctx, controls) {
-  const cols = b.columns || [];
+  const all = b.columns || [];
+  const cols = visibleColumns(all);
+  const hidden = all.filter((c) => !cols.includes(c));
   const rows = b.rows || [];
   const hasActs = rows.some((r) => r.actions && r.actions.length);
+  const widths = columnWidths(cols, rows);
   const card = h('div', 'tbl-card');
   const filters = b.filters || [];
   if (filters.length || b.search) {
@@ -351,20 +468,24 @@ function buildTable(b, ctx, controls) {
   const head = h('tr', '', null, cols.map((c) => h('th', c.align === 'right' ? 'ta-r' : '', { scope: 'col', text: c.label ?? c.key ?? '' })), hasActs ? h('th', 'tbl-acts-h', { 'aria-label': 'Actions' }) : null);
   const body = h('tbody');
   for (const r of rows) {
-    const tr = h('tr', '', { 'data-rid': r.id });
+    const extra = hidden.map((c) => cellText(r[c.key])).filter(Boolean).join(' > ');
+    const tr = h('tr', '', { 'data-rid': r.id, title: extra || null });
     cols.forEach((c, i) => {
       const v = r[c.key];
       const tone = cellTone(v);
-      const td = h('td', `${c.align === 'right' ? 'ta-r ' : ''}${c.mono ? 'mono ' : ''}${tone ? toneClass(tone) : ''}`.trim());
+      const td = h('td', `${widths[i] == null ? 'tbl-fit ' : ''}${c.align === 'right' ? 'ta-r ' : ''}${c.mono ? 'mono ' : ''}${tone ? toneClass(tone) : ''}`.trim());
       if (i === 0 && r.tone && r.tone !== 'neutral') td.append(h('i', `dot ${toneClass(r.tone)}`));
-      td.append(h('span', 'cell-t', { text: cellText(v), title: cellText(v) }));
+      td.append(h('span', 'cell-t', { text: cellText(v) }));
       tr.append(td);
     });
     if (hasActs) tr.append(h('td', 'tbl-acts', null, h('div', 'tbl-acts-in', null, (r.actions || []).map((a) => renderNode(a, ctx, controls, { row: r.id, size: 'btn-xs' })))));
     body.append(tr);
   }
   if (!rows.length) body.append(h('tr', '', null, h('td', 'tbl-empty', { colSpan: cols.length + (hasActs ? 1 : 0), text: b.empty || 'No rows.' })));
-  const table = h('table', 'tbl', null, h('thead', '', null, head), body);
+  // The columns share the pane by the length of their text and shrink with an ellipsis; the actions column keeps
+  // the width of its buttons (a table wider than the pane would clip it).
+  const group = h('colgroup', '', null, widths.map((pct) => h('col', '', pct == null ? null : { style: `width:${pct}%` })), hasActs ? h('col', 'tbl-acts-c') : null);
+  const table = h('table', 'tbl', null, group, h('thead', '', null, head), body);
   card.append(h('div', 'tbl-scroll', { 'data-sk': 'tbl' }, table));
   return card;
 }
@@ -374,24 +495,72 @@ function thumbEl(src, cls) {
   return s ? h('img', cls, { src: s, alt: '', draggable: false }) : h('span', `${cls} thumb-ph`, { 'aria-hidden': 'true' });
 }
 
+const TONE_ICON = { ok: 'check', warn: 'warn', error: 'cross', accent: 'info', neutral: 'info' };
+
+/** A row's icon: its `icon`, else (rows with a switch) the sprite symbol named like the row id ('_' -> '-'). */
+function rowIcon(r) {
+  if (r.icon && hasIcon(r.icon)) return r.icon;
+  const guess = r.toggle && r.id != null ? String(r.id).replace(/_/g, '-') : null;
+  return guess && hasIcon(guess) ? guess : null;
+}
+
+function listRow(r, ctx, controls, { compact = false, result = false } = {}) {
+  const row = h('div', `lst-row${compact ? ' is-compact' : ''}${result ? ` lst-result ${toneClass(r.tone)}` : ''}`, { 'data-rid': r.id, title: compact && r.subtitle ? r.subtitle : null });
+  if (r.thumb) row.append(thumbEl(r.thumb, 'lst-thumb'));
+  if (result) row.append(h('span', 'lst-ic', { html: ic(TONE_ICON[r.tone] || 'info') }));
+  else if (rowIcon(r)) row.append(h('span', 'lst-ic', { 'data-ic': '', html: iconOf(rowIcon(r)) }));
+  else if (r.tone && r.tone !== 'neutral') row.append(h('i', `dot ${toneClass(r.tone)}`));
+  const sub = compact ? null : (r.subtitle ? h('div', 'lst-sub', { text: r.subtitle, title: r.subtitle }) : null);
+  row.append(h('div', 'lst-main', null, h('div', 'lst-title', { text: r.title ?? '' }), sub));
+  if (r.meta) row.append(h('div', 'lst-meta mono', { text: String(r.meta) }));
+  if (r.actions && r.actions.length) row.append(h('div', 'lst-acts', null, r.actions.map((a) => renderNode(a, ctx, controls, { row: r.id, size: 'btn-xs' }))));
+  if (r.toggle && r.toggle.id) {
+    // Optional row switch (BRIDGE_API.md 5): sends the toggle's id with the new value and row = the row id.
+    const sw = new Switch({
+      label: r.title || 'Shown',
+      checked: !!r.toggle.value,
+      onChange: async (v) => {
+        const ok = (await ctx.act(r.toggle.id, v, r.id)) !== null;
+        if (!ok) sw.set(!v);
+      },
+    });
+    sw.el.dataset.fk = `${r.toggle.id}|${r.id}`;
+    sw.setDisabled(!!r.toggle.disabled);
+    controls.push(sw);
+    row.classList.toggle('is-off', !r.toggle.value);
+    row.append(h('div', `lst-acts lst-toggle${compact ? ' switch-s' : ''}`, null, sw.el));
+  }
+  return row;
+}
+
+function groupOf(r) {
+  if (r.group) return String(r.group);
+  const sub = String(r.subtitle || '');
+  const at = sub.indexOf(' · ');
+  return at > 0 ? sub.slice(0, at) : '';
+}
+
 function buildList(b, ctx, controls) {
   const rows = b.rows || [];
-  const list = h('div', 'lst');
-  for (const r of rows) {
-    const row = h('div', 'lst-row', { 'data-rid': r.id });
-    if (r.thumb) row.append(thumbEl(r.thumb, 'lst-thumb'));
-    if (r.tone && r.tone !== 'neutral') row.append(h('i', `dot ${toneClass(r.tone)}`));
-    row.append(h('div', 'lst-main', null, h('div', 'lst-title', { text: r.title ?? '' }), r.subtitle ? h('div', 'lst-sub', { text: r.subtitle }) : null));
-    if (r.meta) row.append(h('div', 'lst-meta mono', { text: String(r.meta) }));
-    if (r.actions && r.actions.length) row.append(h('div', 'lst-acts', null, r.actions.map((a) => renderNode(a, ctx, controls, { row: r.id, size: 'btn-xs' }))));
-    if (r.toggle && r.toggle.id) {
-      // Optional row switch (BRIDGE_API.md 5): sends the toggle's id with the new value and row = the row id.
-      const node = { kind: 'toggle', ...r.toggle, label: '' };  // the row title already names it
-      row.append(h('div', 'lst-acts lst-toggle', null, renderNode(node, ctx, controls, { row: r.id })));
+  const result = b.id === 'last_result';
+  const grouped = !result && (Number(b.columns) === 2 || b.id === 'visibility');
+  let list;
+  if (grouped) {
+    list = h('div', 'lst-cols');
+    const groups = new Map();
+    for (const r of rows) {
+      const g = groupOf(r);
+      if (!groups.has(g)) groups.set(g, []);
+      groups.get(g).push(r);
     }
-    list.append(row);
+    for (const [g, items] of groups) {
+      list.append(h('div', 'lst-group', null, g ? h('div', 'caption', { text: g }) : null, items.map((r) => listRow(r, ctx, controls, { compact: true }))));
+    }
+  } else {
+    list = h('div', `lst${result ? ' lst-results' : ''}`);
+    for (const r of rows) list.append(listRow(r, ctx, controls, { result }));
   }
-  if (!rows.length) list.append(h('p', 'empty-line', { text: b.empty || 'Nothing to show.' }));
+  if (!rows.length && b.empty) list.append(h('p', 'empty-line', { text: b.empty }));
   return list;
 }
 
@@ -464,10 +633,35 @@ function buildGrid(b, ctx, controls) {
 }
 
 function buildActions(b, ctx, controls) {
-  const row = h('div', 'act-row');
+  if (b.tiles) {
+    const cols = Math.max(1, Math.min(3, Number(b.columns) || 2));
+    const grid = h('div', 'ftiles', { style: `--cols:${cols}` });
+    for (const a of b.items || []) {
+      if ((kindOf(a) || 'button') !== 'button') continue;
+      grid.append(tileEl(a, ctx));
+    }
+    return grid;
+  }
+  const row = h('div', 'btn-row');
   for (const a of b.items || []) {
     const el = renderNode(a, ctx, controls);
     if (el) row.append(el);
+  }
+  return row;
+}
+
+/** "142 in the root" -> <b>142</b> in the root. */
+function chipText(text) {
+  const m = /^([\d.,]+)(\s.*)$/.exec(String(text ?? ''));
+  return m ? [h('b', '', { text: m[1] }), m[2]] : [String(text ?? '')];
+}
+
+function buildChips(b) {
+  const row = h('div', 'chips');
+  for (const c of b.items || []) {
+    row.append(h('span', `chip ${toneClass(c.tone)}`, { 'data-rid': c.id ?? null },
+      c.icon && hasIcon(c.icon) ? h('span', 'chip-ic', { html: ic(c.icon) }) : h('span', 'dot'),
+      chipText(c.text)));
   }
   return row;
 }
@@ -479,17 +673,27 @@ const BUILDERS = {
   form: buildForm,
   grid: buildGrid,
   actions: buildActions,
+  chips: buildChips,
   text: (b) => textEl(b),
-  progress: (b) => progressEl(b),
+  progress: (b, ctx) => progressEl(b, ctx),
 };
 
 export const BLOCK_TYPES = Object.keys(BUILDERS);
 
-function buildBlock(b, type, ctx) {
+function buildBlock(b, type, ctx, headActions) {
   const controls = [];
   const sec = h('section', `blk blk-${type}`, { 'data-block': b.id ?? null });
-  if (b.title) sec.append(h('h3', 'blk-h', { text: b.title }));
-  if (b.hint && type !== 'text') sec.append(h('p', 'blk-hint', { text: b.hint }));
+  const grouped = type === 'list' && (Number(b.columns) === 2 || b.id === 'visibility');
+  const listActs = type === 'list' && Array.isArray(b.actions) ? b.actions : [];
+  const acts = [...(headActions ? headActions.items || [] : []), ...listActs];
+  if (grouped && ctx.setHeadHint) {
+    ctx.setHeadHint(b.title || '');  // the pane head carries the title of a grouped list
+  } else if (b.title || acts.length) {
+    sec.append(h('div', 'blk-head', null,
+      h('h3', 'blk-h', { text: b.title || '' }),
+      acts.length ? h('div', 'blk-head-acts', null, acts.map((a) => buttonEl({ ...a, variant: a.variant || 'ghost', icon: a.icon || (a.id && /journal/.test(a.id) ? 'journal' : null) }, ctx, { size: 'btn-xs' }))) : null));
+  }
+  if (b.hint && type !== 'text' && !grouped) sec.append(h('p', 'blk-hint', { text: b.hint }));
   const body = BUILDERS[type](b, ctx, controls);
   if (body) sec.append(body);
   return { el: sec, destroy: () => controls.forEach((c) => c.destroy && c.destroy()) };
@@ -497,7 +701,7 @@ function buildBlock(b, type, ctx) {
 
 /**
  * Render the blocks of a page model into `container`.
- * ctx = { moduleId, act(nodeId, value, row) }. update(blocks) can be called as often as needed.
+ * ctx = { moduleId, act(nodeId, value, row), setHeadHint?(text) }. update(blocks) can be called as often as needed.
  */
 export function createBlocks(container, ctx) {
   const keyed = new Keyed(container);
@@ -505,8 +709,23 @@ export function createBlocks(container, ctx) {
     update(blocks) {
       const list = [];
       const seen = new Set();
-      (blocks || []).forEach((b, i) => {
-        if (!b || typeof b !== 'object') return;
+      const all = (blocks || []).filter((b) => b && typeof b === 'object');
+      const merged = new Set();
+      // An `actions` block named `<table id>_actions` goes into that table's title row.
+      const heads = new Map();
+      for (const b of all) {
+        const type = b.type ?? b.kind;
+        if (type === 'actions' && !b.tiles && typeof b.id === 'string' && b.id.endsWith('_actions')) {
+          const target = b.id.slice(0, -'_actions'.length);
+          if (all.some((x) => (x.type ?? x.kind) === 'table' && x.id === target)) {
+            heads.set(target, b);
+            merged.add(b);
+          }
+        }
+      }
+      if (ctx.setHeadHint) ctx.setHeadHint('');
+      all.forEach((b, i) => {
+        if (merged.has(b)) return;
         const type = b.type ?? b.kind;
         if (!BUILDERS[type]) {
           logOnce('warning', `Module page block type "${type}" is not supported and was skipped.`);
@@ -515,7 +734,10 @@ export function createBlocks(container, ctx) {
         let key = b.id != null ? String(b.id) : `${type}#${i}`;
         if (seen.has(key)) key = `${key}~${i}`;
         seen.add(key);
-        list.push({ key, sig: JSON.stringify(b), build: () => buildBlock(b, type, ctx) });
+        const head = heads.get(b.id);
+        const grouped = type === 'list' && (Number(b.columns) === 2 || b.id === 'visibility');
+        if (grouped && ctx.setHeadHint) ctx.setHeadHint(b.title || '');
+        list.push({ key, sig: JSON.stringify([b, head || null]), build: () => buildBlock(b, type, ctx, head) });
       });
       keyed.update(list);
     },

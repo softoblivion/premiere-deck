@@ -10,6 +10,9 @@
     var RETRY_FAST_MS = 3000;
     var RETRY_SLOW_MS = 15000;
     var FAST_PHASE_MS = 60000;
+    // While waiting for the next attempt the client re-reads deck.json this often and connects at once when the
+    // port or token changed: a restarted host is joined within this interval of writing the file (PROTOCOL 2).
+    var DECK_POLL_MS = 500;
     var LOG_BUFFER = 50;
 
     // --- pure helpers ------------------------------------------------------------------------------------------
@@ -43,6 +46,18 @@
             autostart_host: data.autostart_host === true,
             written_at: Number(data.written_at || 0)
         };
+    }
+
+    // True when the freshly read deck.json names another host run than the one the last attempt used (port or
+    // token differ). A missing file is not a change; a file after none is.
+    function deckChanged(used, fresh) {
+        if (!fresh) {
+            return false;
+        }
+        if (!used) {
+            return true;
+        }
+        return used.port !== fresh.port || used.token !== fresh.token;
     }
 
     // welcome.update = reload at most once per RELOAD_GUARD_MS: a host that keeps asking (versions still differ after
@@ -255,16 +270,28 @@
         }
     };
 
+    // The next attempt after the retry delay, or as soon as deck.json names another host run (a host restart while
+    // Premiere runs: the old token is refused with 4001, the new host has already written its file).
     DeckClient.prototype.scheduleRetry = function () {
         var self = this;
         if (this.stopped || this.timer) {
             return;
         }
         var delay = retryDelay(Date.now() - this.startedAt);
-        this.timer = setTimeout(function () {
+        var due = Date.now() + delay;
+        var watchFile = !isDevBrowser();
+        var tick = function () {
             self.timer = null;
-            self.attempt();
-        }, delay);
+            if (self.stopped || self.socket) {
+                return;
+            }
+            if (Date.now() >= due || (watchFile && deckChanged(self.deck, readDeck()))) {
+                self.attempt();
+                return;
+            }
+            self.timer = setTimeout(tick, Math.min(DECK_POLL_MS, Math.max(0, due - Date.now())));
+        };
+        this.timer = setTimeout(tick, Math.min(DECK_POLL_MS, delay));
     };
 
     // Retry right away (the deck.json changed, or the user pressed "Start Premiere Deck").
@@ -465,6 +492,8 @@
         retryDelay: retryDelay,
         shouldReload: shouldReload,
         parseDeckJson: parseDeckJson,
+        deckChanged: deckChanged,
+        DECK_POLL_MS: DECK_POLL_MS,
         socketUrl: socketUrl,
         joinPath: joinPath,
         helloMessage: helloMessage,
