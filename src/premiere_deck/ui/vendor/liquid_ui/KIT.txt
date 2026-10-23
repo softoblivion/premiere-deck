@@ -1,0 +1,8 @@
+name: liquid_ui (Premiere Deck copy)
+forked_from: 3.1.0 (the shared Liquid UI kit)
+owned_by_project_since: 2026-10-22
+
+This copy of the Liquid UI kit belongs to Premiere Deck and is edited here. It is never synced from
+or back to the shared kit (the app's design diverges: two project themes, the Sora text face, crystal
+glass). Theme colours: src/premiere_deck/ui/themes.json, rendered into css/themes.css by
+build/gen_themes.py.

@@ -7,6 +7,8 @@ from premiere_deck.modules.quick_actions.results import count, number
 class RazorAll(Action):
     id = "razor_all"
     label = "Razor all tracks"
+    short = "Razor all"
+    icon = "razor-all"
     hint = "Cuts every unlocked track at the playhead."
     group = "Timeline"
     feasibility = (
@@ -25,10 +27,10 @@ class RazorAll(Action):
         at = timecode(number(result, "seconds"))
         if cuts == 0 and failed == 0:
             if locked:
-                return self.done("Nothing cut: the clips under the playhead are on locked tracks", "warn")
+                return self.done("Nothing cut", "warn", "The clips under the playhead are on locked tracks.")
             return self.done("No clip under the playhead", "neutral")
         if cuts == 0:
-            return self.done(f"{self.label} failed: Premiere did not cut at the playhead.", "error")
+            return self.fail("Premiere did not cut at the playhead.")
         text = f"Cut {plural(cuts, 'track')} at {at}"
         if locked:
             text += f" · {plural(locked, 'locked track')} skipped"

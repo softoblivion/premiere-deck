@@ -87,26 +87,26 @@ class JobRunnerTests(unittest.TestCase):
         job = files.submit(lambda j: gate.wait(5), title="Collect")
         self.assertTrue(wait_for(lambda: job.state == "running"))
         self.assertEqual([j.id for j in files.running()], [job.id])
-        self.assertEqual(ModuleJobs(self.runner, "search").running(), [])
+        self.assertEqual(ModuleJobs(self.runner, "other").running(), [])
         self.assertEqual(files.cancel_all(), 1)
         gate.set()
         self.assertTrue(wait_for(lambda: job.state in ("cancelled", "done")))
         self.assertTrue(any(s["module"] == "files" and s["title"] == "Collect" for s in snapshots))
 
     def test_high_priority_running_spans_modules(self):
-        files, search = ModuleJobs(self.runner, "files"), ModuleJobs(self.runner, "search")
-        self.assertFalse(search.high_priority_running())
+        files, other = ModuleJobs(self.runner, "files"), ModuleJobs(self.runner, "other")
+        self.assertFalse(other.high_priority_running())
         gate = threading.Event()
-        low = search.submit(lambda j: gate.wait(5), title="Indexing", priority="low")
+        low = other.submit(lambda j: gate.wait(5), title="Background", priority="low")
         self.assertTrue(wait_for(lambda: low.state == "running"))
-        self.assertFalse(search.high_priority_running(), "a low job of the same module is not high priority")
+        self.assertFalse(other.high_priority_running(), "a low job of the same module is not high priority")
         high = files.submit(lambda j: gate.wait(5), title="Collect", priority="high")
         self.assertTrue(wait_for(lambda: high.state == "running"))
-        self.assertTrue(search.high_priority_running())
+        self.assertTrue(other.high_priority_running())
         self.assertTrue(self.runner.high_priority_running())
         gate.set()
         self.assertTrue(wait_for(lambda: high.state == "done" and low.state == "done"))
-        self.assertFalse(search.high_priority_running())
+        self.assertFalse(other.high_priority_running())
 
     def test_unknown_priority(self):
         with self.assertRaises(ValueError):

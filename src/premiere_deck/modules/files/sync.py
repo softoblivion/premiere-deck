@@ -1,14 +1,17 @@
-"""Disk side of the Files module (docs/FILES.md 3, 5.4): copies with `.part` and verification, collision handling,
-the suppression set, the `watchdog` disk watcher, the Collect plan, and the Pack report and archive.
+"""Disk side of the Files module (docs/FILES.md 3, 5.4): copies with `.part` and verification, moves inside the
+root, collision handling, failure reasons and the write check (3.9), the suppression set, the `watchdog` disk
+watcher, and the ZIP report and archive (3.6).
 
 Nothing here talks to Premiere; the module applies results on its own thread.
 """
 
 from __future__ import annotations
 
+import errno
 import fnmatch
 import logging
 import os
+import secrets
 import shutil
 import threading
 import time
@@ -18,11 +21,12 @@ from typing import Callable, Iterable, Optional
 
 from premiere_deck.core.probe import quick_hash
 
-from .layout import PACK_SKIP_FOLDERS, norm, same_path
+from .layout import DECK_DIR, PACK_SKIP_FOLDERS, norm, same_path
 
 log = logging.getLogger("module.files.sync")
 
 PART_SUFFIX = ".part"
+MAX_PATH = 259  # longest usable path without long-path support (MAX_PATH 260 minus the terminating NUL)
 
 
 class CopyError(OSError):
@@ -61,12 +65,88 @@ def safe_hash(path: str) -> Optional[str]:
         return None
 
 
-# --- copies -------------------------------------------------------------------------------------------------------
+def plural(count: int, word: str) -> str:
+    return f"{count} {word}{'' if count == 1 else 's'}"
+
+
+# --- failure reasons and the write check (docs/FILES.md 3.9) -------------------------------------------------------
+
+_long_paths: Optional[bool] = None
+
+
+def long_paths_enabled() -> bool:
+    """Windows long-path support (`LongPathsEnabled` under the FileSystem key, read only); True elsewhere."""
+    global _long_paths
+    if _long_paths is None:
+        if os.name != "nt":
+            _long_paths = True
+        else:
+            try:
+                import winreg
+
+                with winreg.OpenKey(winreg.HKEY_LOCAL_MACHINE, r"SYSTEM\CurrentControlSet\Control\FileSystem") as key:
+                    _long_paths = bool(winreg.QueryValueEx(key, "LongPathsEnabled")[0])
+            except OSError:
+                _long_paths = False
+    return _long_paths
+
+
+def failure_reason(exc: BaseException, *, target: Optional[str] = None, source: Optional[str] = None) -> str:
+    """The short reason of docs/FILES.md 3.9 for a failed copy, move or archive write."""
+    if isinstance(exc, CopyCancelled):
+        return "cancelled"
+    winerror = getattr(exc, "winerror", None)
+    code = getattr(exc, "errno", None)
+    if winerror in (32, 33):
+        return "file in use"
+    if winerror in (39, 112) or code == errno.ENOSPC:
+        return "disk full"
+    if winerror == 206 or code == errno.ENAMETOOLONG:
+        return "path too long"
+    if target and len(os.path.abspath(target) + PART_SUFFIX) > MAX_PATH and not long_paths_enabled():
+        return "path too long"
+    if isinstance(exc, PermissionError) or winerror in (5, 1314):
+        return "access denied"
+    if isinstance(exc, FileNotFoundError) or (source and not os.path.exists(source)):
+        return "source not found"
+    return "copy error"
+
+
+def write_check(root: str) -> Optional[str]:
+    """Create and delete `<root>/.premiere-deck/write-check-<random>.tmp` (the folder is created first when
+    missing). Returns None when the root is writable, else the failure reason."""
+    folder = os.path.join(root, DECK_DIR)
+    path = os.path.join(folder, f"write-check-{secrets.token_hex(4)}.tmp")
+    try:
+        os.makedirs(folder, exist_ok=True)
+        with open(path, "xb") as handle:
+            handle.write(b"0")
+        os.remove(path)
+    except OSError as exc:
+        log.warning("write check failed in %s: %s", root, exc)
+        try:
+            if os.path.exists(path):
+                os.remove(path)
+        except OSError:
+            pass
+        reason = failure_reason(exc, target=path)
+        return "access denied" if reason in ("copy error", "source not found") else reason
+    return None
+
+
+def free_bytes(path: str) -> Optional[int]:
+    try:
+        return shutil.disk_usage(path).free
+    except OSError:
+        return None
+
+
+# --- copies and moves ---------------------------------------------------------------------------------------------
 
 
 def resolve_target(source: str, folder: str, *, source_hash: Optional[str] = None,
                    reserved: Optional[dict] = None) -> tuple[str, bool, Optional[str]]:
-    """Target path in `folder` for a copy of `source` (docs/FILES.md 3.1 step 2).
+    """Target path in `folder` for a copy or move of `source` (docs/FILES.md 3.1 step 2).
 
     Returns `(target, reuse, source_hash)`: `reuse` is True when a file with equal content (size + quick hash) is
     already there, or `source` itself is the target. A name taken by a different file gets " (2)", " (3)", ...
@@ -139,14 +219,24 @@ def copy_file(source: str, target: str, *, buffer_bytes: int = 16 << 20,
     return copied
 
 
+def move_file(source: str, target: str) -> None:
+    """Rename `source` to `target` inside one folder tree (same volume). Never overwrites: `os.rename` fails on
+    Windows when the target exists, and an existing target raises `CopyError` first."""
+    if os.path.exists(target):
+        raise CopyError(f"{target} already exists")
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    os.rename(source, target)
+
+
 # --- suppression (docs/FILES.md 5.4) ------------------------------------------------------------------------------
 
 
 class Suppression:
     """Expected outcomes of the module's own changes with a TTL; a matching event is consumed silently.
 
-    Keys: ("disk", norm path) for files the module creates or deletes, ("import", norm path) for its own imports,
-    ("bin", node id, norm bin path) for its own bin moves, ("media", node id, norm path) for its own relinks.
+    Keys: ("disk", norm path) for files the module creates, moves or deletes, ("import", norm path) for its own
+    imports, ("bin", node id, norm bin path) for its own bin moves, ("media", node id, norm path) for its own
+    relinks.
     """
 
     def __init__(self, ttl: float = 15.0, clock: Callable[[], float] = time.monotonic) -> None:
@@ -195,15 +285,19 @@ class DiskWatcher:
       file name within the hold time, which is how Windows reports moves between folders);
     - {"type": "deleted", "path"} and {"type": "deleted_dir", "path"}: held for `hold` seconds so a move can pair.
 
-    Events are debounced `debounce` seconds per path; paths for which `ignored(path)` is true are dropped.
+    Events are debounced `debounce` seconds per path; paths for which `ignored(path)` is true are dropped, and file
+    events for which `accept_file(path)` is false are dropped too (the media-extension filter; folders are never
+    filtered by it, so a folder named "Day.1" is still expanded).
     """
 
     def __init__(self, root: str, on_change: Callable[[dict], None], *, ignored: Callable[[str], bool],
+                 accept_file: Optional[Callable[[str], bool]] = None,
                  debounce: float = 1.5, stable: float = 2.0, hold: Optional[float] = None,
                  poll: float = 0.2) -> None:
         self.root = os.path.abspath(root)
         self.on_change = on_change
         self.ignored = ignored
+        self.accept_file = accept_file
         self.debounce = float(debounce)
         self.stable = float(stable)
         self.hold = float(hold if hold is not None else stable + 1.0)
@@ -256,6 +350,11 @@ class DiskWatcher:
             self._pending.clear()
 
     # -- events
+    def _file_ok(self, path: str) -> bool:
+        if self.ignored(path):
+            return False
+        return self.accept_file is None or self.accept_file(path)
+
     def _put(self, kind: str, path: str, src: Optional[str] = None) -> None:
         key = norm(path)
         now = time.monotonic()
@@ -279,7 +378,7 @@ class DiskWatcher:
             dirs[:] = [d for d in dirs if not self.ignored(os.path.join(base, d))]
             for name in files:
                 path = os.path.join(base, name)
-                if self.ignored(path):
+                if not self._file_ok(path):
                     continue
                 if src_folder:
                     rel = os.path.relpath(path, folder)
@@ -303,13 +402,13 @@ class DiskWatcher:
                 self._put("deleted_dir", src)
             return
         if kind in ("created", "modified", "closed"):
-            if not self.ignored(src):
+            if self._file_ok(src):
                 self._put("created", src)
         elif kind == "deleted":
-            if not self.ignored(src):
+            if self._file_ok(src):
                 self._put("deleted", src)
         elif kind == "moved":
-            src_ok, dest_ok = not self.ignored(src), bool(dest) and not self.ignored(dest)
+            src_ok, dest_ok = self._file_ok(src), bool(dest) and self._file_ok(dest)
             if src_ok and dest_ok:
                 self._put("moved", dest, src)
             elif dest_ok:
@@ -387,7 +486,7 @@ def _readable(path: str) -> bool:
         return False
 
 
-# --- collect plan (docs/FILES.md 3.4) -----------------------------------------------------------------------------
+# --- plan entries (Sort, Sync; docs/FILES.md 3.4, 3.5) -------------------------------------------------------------
 
 
 @dataclass
@@ -402,32 +501,11 @@ class PlanEntry:
     bin_from: str
     hash: Optional[str] = None
     reason: str = ""
+    copy: bool = False  # Sort: a file referenced by more than one item is copied instead of moved
+    bin_only: bool = False  # Sort: the file is already under its folder, only the bin changes
 
 
-@dataclass
-class CollectPlan:
-    entries: list[PlanEntry] = field(default_factory=list)
-    missing: list[dict] = field(default_factory=list)  # {"node_id", "name", "path"}
-    created_at: float = field(default_factory=time.time)
-
-    @property
-    def total_bytes(self) -> int:
-        return sum(entry.size for entry in self.entries if not entry.reuse)
-
-    def groups(self) -> list[dict]:
-        out: dict[str, dict] = {}
-        for entry in self.entries:
-            group = out.setdefault(entry.folder.casefold(), {"folder": entry.folder, "count": 0, "bytes": 0})
-            group["count"] += 1
-            group["bytes"] += 0 if entry.reuse else entry.size
-        return sorted(out.values(), key=lambda g: g["folder"].casefold())
-
-    def summary(self) -> str:
-        count = len(self.entries)
-        return f"{count} file{'s' if count != 1 else ''} · {fmt_size(self.total_bytes)}"
-
-
-# --- pack (docs/FILES.md 3.5) -------------------------------------------------------------------------------------
+# --- ZIP (docs/FILES.md 3.6) ---------------------------------------------------------------------------------------
 
 
 PACK_SKIP_NAMES = ("*.part", "*.crdownload", "*.tmp", "~*", "thumbs.db", "desktop.ini")
@@ -445,7 +523,7 @@ def _skip_folder_in_pack(name: str) -> bool:
 
 
 def pack_files(root: str) -> list[tuple[str, str, int]]:
-    """(absolute path, archive name, size) of every file a pack archive holds: the project folder minus Premiere's
+    """(absolute path, archive name, size) of every file the archive holds: the project folder minus Premiere's
     cache and preview folders and temporary files."""
     root = os.path.abspath(root)
     top = os.path.basename(root.rstrip("\\/"))
@@ -471,11 +549,14 @@ def free_zip_path(root: str) -> str:
     return candidate
 
 
-def make_zip(root: str, target: Optional[str] = None, *, on_bytes: Optional[Callable[[int, int], None]] = None,
-             cancelled: Optional[Callable[[], bool]] = None, buffer_bytes: int = 16 << 20) -> str:
+def make_zip(root: str, target: Optional[str] = None, *, on_file: Optional[Callable[[int, int, str], None]] = None,
+             on_bytes: Optional[Callable[[int, int], None]] = None,
+             cancelled: Optional[Callable[[], bool]] = None, buffer_bytes: int = 16 << 20,
+             files: Optional[list[tuple[str, str, int]]] = None) -> str:
     """Write `<root>.zip` beside the root (a free name unless `target` is given; never overwrites) through a
-    `.part` file. The only write outside the project root the module makes (docs/FILES.md 3.5)."""
-    files = pack_files(root)
+    `.part` file. The only write outside the project root the module makes (docs/FILES.md 1.2, 3.6).
+    `on_file(k, n, name)` is called before file k (1-based) of n; `on_bytes(done, total)` while writing."""
+    files = pack_files(root) if files is None else files
     total = sum(size for *_, size in files) or 1
     target = target or free_zip_path(root)
     if os.path.exists(target):
@@ -484,7 +565,11 @@ def make_zip(root: str, target: Optional[str] = None, *, on_bytes: Optional[Call
     done = 0
     try:
         with zipfile.ZipFile(part, "x", allowZip64=True) as archive:
-            for path, arcname, size in files:
+            for index, (path, arcname, size) in enumerate(files, start=1):
+                if cancelled is not None and cancelled():
+                    raise CopyCancelled()
+                if on_file is not None:
+                    on_file(index, len(files), os.path.basename(path))
                 info = zipfile.ZipInfo.from_file(path, arcname)
                 ext = os.path.splitext(path)[1].lower().lstrip(".")
                 info.compress_type = zipfile.ZIP_DEFLATED if ext in DEFLATE_EXTENSIONS else zipfile.ZIP_STORED
@@ -510,62 +595,56 @@ def make_zip(root: str, target: Optional[str] = None, *, on_bytes: Optional[Call
 
 
 @dataclass
-class PackReport:
+class ZipReport:
+    """What Make ZIP found (docs/FILES.md 3.6); written as `.premiere-deck/pack-report.txt`."""
+
     project: str
     root: str
     media_items: int
     inside: int
-    outside: list[dict]
     offline: list[dict]
     total_bytes: int
     archive: Optional[str] = None
+    files: int = 0
+    archive_bytes: int = 0
     created_at: float = field(default_factory=time.time)
 
     @property
     def ok(self) -> bool:
-        return not self.outside and not self.offline
+        return not self.offline
 
     def line(self) -> str:
         if self.ok:
-            text = f"Pack ready · {self.inside} files · {fmt_size(self.total_bytes)}"
-            return text + (f" · {os.path.basename(self.archive)}" if self.archive else "")
-        problems = self.offline + self.outside
-        names = ", ".join(entry["name"] for entry in problems[:3])
-        more = f" and {len(problems) - 3} more" if len(problems) > 3 else ""
-        kinds = []
-        if self.offline:
-            kinds.append(f"{len(self.offline)} offline")
-        if self.outside:
-            kinds.append(f"{len(self.outside)} outside the folder")
-        return f"Pack incomplete · {', '.join(kinds)}: {names}{more}"
+            return f"ZIP ready · {plural(self.files, 'file')} · {fmt_size(self.archive_bytes)}"
+        names = ", ".join(entry["name"] for entry in self.offline[:3])
+        more = f" and {len(self.offline) - 3} more" if len(self.offline) > 3 else ""
+        return f"ZIP ready · {len(self.offline)} offline: {names}{more}"
 
     def text(self) -> str:
         stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(self.created_at))
         lines = [
-            "Premiere Deck pack report",
+            "Premiere Deck ZIP report",
             f"Project: {self.project}",
             f"Folder: {self.root}",
             f"Created: {stamp}",
             "",
             f"Media items: {self.media_items}",
             f"Inside the project folder: {self.inside}",
-            f"Outside the project folder: {len(self.outside)}",
             f"Offline: {len(self.offline)}",
             f"Total media size: {fmt_size(self.total_bytes)}",
             f"Archive: {self.archive or 'not created'}",
             "",
-            "Result: " + ("ready to share" if self.ok else "media missing, see below"),
+            "Result: " + ("ready to share" if self.ok else "offline media, see below"),
         ]
         if self.offline:
             lines += ["", "Offline items:"] + [f"  {e['name']}  {e['path'] or '(no path)'}" for e in self.offline]
-        if self.outside:
-            lines += ["", "Outside the project folder:"] + [f"  {e['name']}  {e['path']}" for e in self.outside]
         return "\n".join(lines) + "\n"
 
 
-def build_pack_report(project: str, root: str, items: Iterable, is_inside: Callable[[str], bool]) -> PackReport:
-    """Counts over clip items with media (`ProjectItem`); file sizes are read from disk once per unique path."""
-    inside, outside, offline = 0, [], []
+def build_zip_report(project: str, root: str, items: Iterable, is_inside: Callable[[str], bool]) -> ZipReport:
+    """Counts over clip items with media (`ProjectItem`); file sizes are read from disk once per unique path.
+    Called after the outside check, so every online item lies inside the root."""
+    inside, offline = 0, []
     sizes: dict[str, int] = {}
     count = 0
     for item in items:
@@ -573,17 +652,14 @@ def build_pack_report(project: str, root: str, items: Iterable, is_inside: Calla
         if not path:
             continue
         count += 1
-        exists = os.path.isfile(path)
-        if item.is_offline or not exists:
+        if item.is_offline or not os.path.isfile(path):
             offline.append({"node_id": item.node_id, "name": item.name, "path": path})
             continue
-        if not is_inside(path):
-            outside.append({"node_id": item.node_id, "name": item.name, "path": path})
-            continue
-        inside += 1
-        sizes.setdefault(norm(path), file_size(path))
-    return PackReport(project=project, root=root, media_items=count, inside=inside, outside=outside,
-                      offline=offline, total_bytes=sum(sizes.values()))
+        if is_inside(path):
+            inside += 1
+            sizes.setdefault(norm(path), file_size(path))
+    return ZipReport(project=project, root=root, media_items=count, inside=inside, offline=offline,
+                     total_bytes=sum(sizes.values()))
 
 
 __all__ = [name for name in globals() if not name.startswith("_")]

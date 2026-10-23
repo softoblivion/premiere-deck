@@ -76,8 +76,8 @@ kbd {
   line-height: 1.6;
   padding: 0 6px;
   border-radius: 6px;
-  background: rgba(255, 255, 255, 0.14);
-  box-shadow: inset 0 -1px 0 rgba(0, 0, 0, 0.22), inset 0 0 0 0.5px rgba(255, 255, 255, 0.12);
+  background: var(--fill-3);
+  box-shadow: inset 0 -1px 0 var(--btn-shade), inset 0 0 0 0.5px var(--stroke-2);
   color: inherit;
 }
 
@@ -98,13 +98,13 @@ kbd {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: rgba(255, 255, 255, 0.14);
+  background: var(--scroll-thumb);
   border: 3px solid transparent;
   background-clip: padding-box;
   border-radius: 99px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background-color: rgba(255, 255, 255, 0.26);
+  background-color: var(--scroll-thumb-hover);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
@@ -142,7 +142,7 @@ kbd {
   border: 0;
   border-radius: var(--r-pill);
   background:
-    linear-gradient(to bottom, rgba(255, 255, 255, var(--btn-streak, 0.075)), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(to bottom, rgba(var(--rim-tone), var(--btn-streak, var(--btn-streak-rest))), rgba(var(--rim-tone), 0) 46%),
     var(--btn-fill);
   color: var(--ink-1);
   font: var(--t-control);
@@ -174,15 +174,15 @@ kbd {
   pointer-events: none;
   background: conic-gradient(
     from calc(var(--la) - 90deg),
-    rgba(255, 255, 255, 0.55) 0deg,
-    rgba(255, 255, 255, 0.14) 40deg,
-    rgba(255, 255, 255, 0.02) 90deg,
-    rgba(255, 255, 255, 0.02) 150deg,
-    rgba(255, 255, 255, 0.2) 180deg,
-    rgba(255, 255, 255, 0.02) 210deg,
-    rgba(255, 255, 255, 0.02) 270deg,
-    rgba(255, 255, 255, 0.14) 320deg,
-    rgba(255, 255, 255, 0.55) 360deg
+    rgba(var(--rim-tone), 0.55) 0deg,
+    rgba(var(--rim-tone), 0.14) 40deg,
+    rgba(var(--rim-tone), 0.02) 90deg,
+    rgba(var(--rim-tone), 0.02) 150deg,
+    rgba(var(--rim-tone), 0.2) 180deg,
+    rgba(var(--rim-tone), 0.02) 210deg,
+    rgba(var(--rim-tone), 0.02) 270deg,
+    rgba(var(--rim-tone), 0.14) 320deg,
+    rgba(var(--rim-tone), 0.55) 360deg
   );
   -webkit-mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
   mask: linear-gradient(#000 0 0) content-box exclude, linear-gradient(#000 0 0);
@@ -200,17 +200,17 @@ kbd {
 .btn:hover,
 .btn.is-hover {
   --btn-fill: var(--btn-fill-hover);
-  --btn-streak: 0.11;
+  --btn-streak: var(--btn-streak-hover);
   --btn-rim: 0.85;
 }
 
 .btn.is-pressed {
   --btn-fill: var(--btn-fill-press);
-  --btn-streak: 0.05;
+  --btn-streak: var(--btn-streak-press);
   --btn-rim: 1;
   box-shadow:
     inset 0 0 0 0.5px var(--btn-stroke),
-    inset 0 1px 2px rgba(0, 0, 0, 0.25),
+    var(--inset-press),
     0 0 0 0 transparent;
   transition-duration: 60ms;
 }
@@ -243,8 +243,8 @@ kbd {
   height: 16px;
   margin: -8px 0 0 -8px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.26);
-  border-top-color: rgba(255, 255, 255, 0.95);
+  border: 2px solid var(--spin-track);
+  border-top-color: var(--spin-head);
   animation: spin 0.8s linear infinite;
 }
 
@@ -317,20 +317,21 @@ kbd {
 
 .btn-tinted {
   --btn-fill: transparent;
-  --btn-streak: 0.26;
+  --btn-streak: var(--btn-streak-tinted);
   --btn-rim: 0.9;
-  --btn-stroke: rgba(255, 255, 255, 0.28);
-  --btn-bevel: rgba(255, 255, 255, 0.34);
-  --btn-shade: rgba(0, 0, 0, 0.16);
+  --btn-stroke: rgba(var(--rim-tone), 0.28);
+  --btn-bevel: rgba(var(--rim-tone), 0.34);
+  --btn-shade: rgba(var(--shade-tone), 0.16);
+  color: var(--hero-ink);
   background:
-    linear-gradient(to bottom, rgba(255, 255, 255, var(--btn-streak)), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(to bottom, rgba(var(--rim-tone), var(--btn-streak)), rgba(var(--rim-tone), 0) 46%),
     var(--accent-grad);
   box-shadow:
     inset 0 0 0 0.5px var(--btn-stroke),
     inset 0 1px 0 var(--btn-bevel),
     inset 0 -1px 0 var(--btn-shade),
     0 8px 22px -8px var(--btn-glow),
-    0 1px 2px rgba(0, 0, 0, 0.2);
+    0 1px 2px rgba(var(--shade-tone), 0.2);
   text-shadow: 0 1px 1px rgba(0, 0, 0, 0.2);
 }
 
@@ -360,19 +361,19 @@ kbd {
 
 .btn-danger:hover,
 .btn-danger.is-hover {
-  --btn-fill: rgba(255, 100, 130, 0.16);
-  --btn-stroke: rgba(255, 120, 150, 0.3);
+  --btn-fill: var(--danger-fill);
+  --btn-stroke: var(--danger-stroke);
 }
 
 .btn-danger.is-pressed {
-  --btn-fill: rgba(255, 100, 130, 0.24);
+  --btn-fill: var(--danger-fill-press);
 }
 
 .btn-danger.btn-tinted {
-  color: #fff;
+  color: var(--hero-ink);
   --btn-glow: rgba(255, 90, 130, 0.5);
   background:
-    linear-gradient(to bottom, rgba(255, 255, 255, var(--btn-streak)), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(to bottom, rgba(var(--rim-tone), var(--btn-streak)), rgba(var(--rim-tone), 0) 46%),
     var(--rose-grad);
 }
 
@@ -422,7 +423,7 @@ kbd {
 
 .icon-btn-plate {
   background:
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.075), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(to bottom, rgba(var(--rim-tone), var(--btn-streak-rest)), rgba(var(--rim-tone), 0) 46%),
     var(--btn-fill);
   color: var(--ink-1);
   box-shadow:
@@ -435,21 +436,21 @@ kbd {
 .icon-btn-plate:hover,
 .icon-btn-plate.is-hover {
   background:
-    linear-gradient(to bottom, rgba(255, 255, 255, 0.11), rgba(255, 255, 255, 0) 46%),
+    linear-gradient(to bottom, rgba(var(--rim-tone), var(--btn-streak-hover)), rgba(var(--rim-tone), 0) 46%),
     var(--btn-fill-hover);
 }
 
 .icon-btn-plate.is-pressed {
   background: var(--btn-fill-press);
-  box-shadow: inset 0 0 0 0.5px var(--btn-stroke), inset 0 1px 2px rgba(0, 0, 0, 0.25);
+  box-shadow: inset 0 0 0 0.5px var(--btn-stroke), var(--inset-press);
 }
 
 .spinner {
   width: 18px;
   height: 18px;
   border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.26);
-  border-top-color: #fff;
+  border: 2px solid var(--spin-track);
+  border-top-color: var(--spin-head);
   animation: spin 0.8s linear infinite;
 }
 

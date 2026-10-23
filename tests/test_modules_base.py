@@ -56,6 +56,71 @@ class ModuleBase(unittest.TestCase):
             Broken(self.host.context())
 
 
+class Tiles(Module):
+    id = "tiles"
+    title = "Tiles"
+    icon = "actions"
+
+    def render(self):
+        menu = self.menu("copy.format", "9x16", [{"value": "9x16", "label": "9:16"}], "9:16")
+        return [
+            self.group("Sequence", [self.button("copy", "Social copy", icon="social-copy", short="Social copy",
+                                                menu=menu, hint="Copies")],
+                       id="sequence", tiles=True, collapsible=True),
+            self.progress(0.5, "Sorting", detail="a.mp4", cancel="stop"),
+            self.row([self.text("142 in the root", chip=True, tone="ok"),
+                      self.button("open", "Open folder", icon="open-folder", variant="icon")]),
+        ]
+
+
+class TileHelpers(unittest.TestCase):
+    def setUp(self):
+        os.environ["PREMIERE_DECK_HOME"] = tempfile.mkdtemp(prefix="deck-tiles-")
+        self.module = Tiles(FakeHost().context())
+
+    def test_2_0_helpers_add_the_module_prefix(self):
+        section = self.module.section()
+        self.assertEqual(section["icon"], "actions")
+        group, progress, row = section["items"]
+        self.assertEqual((group["id"], group["tiles"], group["collapsible"], group["columns"]),
+                         ("tiles.sequence", True, True, 3))
+        button = group["items"][0]
+        self.assertEqual(button["id"], "tiles.copy")
+        self.assertEqual(button["menu"], {"id": "tiles.copy.format", "value": "9x16", "badge": "9:16",
+                                          "options": [{"value": "9x16", "label": "9:16"}]})
+        self.assertEqual((progress["cancel"], progress["detail"]), ("tiles.stop", "a.mp4"))
+        self.assertTrue(row["items"][0]["chip"])
+        self.assertEqual((row["items"][1]["id"], row["items"][1]["variant"]), ("tiles.open", "icon"))
+
+    def test_prefixing_is_idempotent(self):
+        self.assertEqual(self.module.button("tiles.go", "Go")["id"], "tiles.go")
+        self.assertEqual(self.module.group("G", [], id="tiles.g")["id"], "tiles.g")
+        self.assertEqual(self.module.progress(None, "x", cancel="tiles.stop")["cancel"], "tiles.stop")
+        self.assertEqual(self.module.menu("tiles.m", "a", [{"value": "a", "label": "A"}], "A")["id"], "tiles.m")
+
+    def test_a_long_short_label_is_a_programming_error(self):
+        with self.assertRaises(P.ProtocolError):
+            self.module.button("go", "Go", short="x" * 17)
+
+    def test_module_without_icon_has_no_icon_field(self):
+        self.assertNotIn("icon", Demo(FakeHost().context()).section())
+
+
+class FakeResults(unittest.TestCase):
+    def test_fake_ui_records_results_and_rejects_a_bad_outcome(self):
+        ui = FakeHost().ui
+        ui.result("go", "warn", "Nothing selected", "Select a clip.")
+        self.assertEqual(ui.results, [("go", "warn", "Nothing selected", "Select a clip.")])
+        with self.assertRaises(ValueError):
+            ui.result("go", "accent", "x")
+
+    def test_fake_host_info_records_show(self):
+        host = FakeHost().host
+        host.show()
+        host.show("files")
+        self.assertEqual(host.shown, [None, "files"])
+
+
 class Fakes(unittest.TestCase):
     def setUp(self):
         os.environ["PREMIERE_DECK_HOME"] = tempfile.mkdtemp(prefix="deck-fakes-")

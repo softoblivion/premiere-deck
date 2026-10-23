@@ -101,8 +101,28 @@ class Watcher(FilesCase):
         self.assertTrue(wait_for(lambda: self.imports()))
         self.assertEqual(self.imports()[0], ((path,), "Exports"))
 
+    def test_masks_folder_and_non_media_files_are_ignored_without_a_journal_entry(self):
+        before = len(self.journal())
+        write_file(self.in_root("Sample Masks", "47844aff-f497-4bb6-bd04-0f2925ddf452.prmf"))
+        write_file(self.in_root("Footage", "notes.txt"))
+        write_file(self.in_root("Footage", "Sample.prin"))
+        os.makedirs(self.in_root("Other Masks"))
+        write_file(self.in_root("Other Masks", "b.prmf"))
+        media = write_file(self.in_root("Footage", "after.mp4"))  # a media file still comes through
+        self.assertTrue(wait_for(lambda: self.imports()))
+        time.sleep(1.5)
+        self.assertEqual(self.imports(), [((media,), "Footage")])
+        ops = [e["op"] for e in self.journal()[before:]]
+        self.assertEqual(ops, ["imported"])
+        self.assertEqual(self.toasts(), [])
+
+    def test_folder_with_a_dot_is_still_expanded(self):
+        path = write_file(self.in_root("Footage", "Day.1", "a.mp4"))
+        self.assertTrue(wait_for(lambda: self.imports()))
+        self.assertEqual(self.imports(), [((path,), "Footage/Day.1")])
+
     def test_paused_watch_does_nothing(self):
-        self.module.on_action("files.watch", False)
+        self.module.on_setting_changed("watch", "project", False)
         write_file(self.in_root("Footage", "while_paused.mp4"))
         time.sleep(3)
         self.assertEqual(self.imports(), [])
@@ -148,6 +168,19 @@ class WatcherUnit(unittest.TestCase):
         self.assertTrue(wait_for(lambda: self.changes))
         time.sleep(2.0)
         self.assertEqual(self.changes, [{"type": "moved", "path": dest, "src": src}])
+
+    def test_accept_file_filters_files_only(self):
+        self.watcher.stop()
+        self.changes.clear()
+        self.watcher = DiskWatcher(self.dir, self.changes.append, ignored=lambda p: False,
+                                   accept_file=lambda p: p.endswith(".wav"), debounce=0.3, stable=0.6, hold=1.0)
+        self.watcher.start()
+        time.sleep(0.3)
+        write_file(os.path.join(self.dir, "Take.2", "x.prmf"))
+        wav = write_file(os.path.join(self.dir, "Take.2", "x.wav"))
+        self.assertTrue(wait_for(lambda: self.changes))
+        time.sleep(1.0)
+        self.assertEqual(self.changes, [{"type": "created", "path": wav}])
 
     def test_folder_moved_in_from_outside_lists_its_files(self):
         outside = scratch("files-outside-")

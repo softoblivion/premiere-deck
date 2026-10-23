@@ -1,6 +1,6 @@
-"""Quick actions module (docs/QUICK_ACTIONS.md): renders the actions as button groups, routes clicks, runs long
-actions as jobs with a busy button, and keeps only the last result, the selects' choices, the visibility setting
-and the state of the two toggle actions (solo, lock)."""
+"""Quick actions module (docs/QUICK_ACTIONS.md): renders the actions as collapsible tile groups, routes clicks, runs
+long actions as jobs with a busy tile, reports every press through `ctx.ui.result`, and keeps only the choices of
+the tile menus, the visibility setting and the state of the two toggle actions (solo, lock)."""
 
 from __future__ import annotations
 
@@ -12,7 +12,7 @@ from typing import Any, Callable, Optional
 from premiere_deck.modules.base import ActionResult, Module, ModuleContext
 from premiere_deck.modules.quick_actions import presets as presets_mod
 from premiere_deck.modules.quick_actions.action import (
-    GROUPS, Action, ActionAbort, Control, error_sentence, plural,
+    GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence, plural,
 )
 from premiere_deck.modules.quick_actions.actions import ACTION_CLASSES
 from premiere_deck.premiere.model import PremiereError, PremiereUnavailable, ProjectInfo
@@ -21,6 +21,7 @@ HIDDEN_KEY = "hidden"
 CHOICES_KEY = "choices"
 HOST_PREFIX = "host:"
 NOT_CONNECTED = "Premiere Pro is not connected"
+INTERNAL_ERROR = "An internal error occurred. Details are in the log."
 
 
 class _ModuleThreadPremiere:
@@ -48,7 +49,8 @@ class _ModuleThreadPremiere:
 
 class QuickActionsModule(Module):
     id = "actions"
-    title = "Quick actions"
+    title = "Actions"
+    icon = "actions"
     description = "Buttons for routine timeline and project operations."
     order = 20
     events = ()
@@ -63,7 +65,6 @@ class QuickActionsModule(Module):
         self.toggles: dict[str, dict] = {}
         self.presets: list[presets_mod.Preset] = []
         self.preset_roots: Optional[list[Path]] = None  # None: the installed Premiere / Media Encoder
-        self.last: Optional[tuple[str, str]] = None
         self._running: dict[str, Any] = {}
         self._local = threading.local()
 
@@ -110,29 +111,26 @@ class QuickActionsModule(Module):
         return dict(value) if isinstance(value, dict) else {}
 
     def choice(self, action: Action, name: str) -> str:
-        """The stored value of an action's control, or its default when missing or no longer an option."""
-        control = self._control(action, name)
-        if control is None:
+        """The stored value of an action's menu, or its default when missing or no longer an option."""
+        menu = self._menu(action, name)
+        if menu is None:
             return ""
         stored = self._choices().get(f"{action.id}.{name}")
-        if control.kind == "select":
-            values = [value for value, _ in control.options]
-            return stored if isinstance(stored, str) and stored in values else control.default
-        return stored if isinstance(stored, str) else control.default
+        values = [value for value, _ in menu.options]
+        return stored if isinstance(stored, str) and stored in values else menu.default
 
     def set_choice(self, action: Action, name: str, value: Any) -> bool:
-        control = self._control(action, name)
-        if control is None or not isinstance(value, str):
-            return False
-        if control.kind == "select" and value not in [v for v, _ in control.options]:
+        menu = self._menu(action, name)
+        if menu is None or not isinstance(value, str) or value not in [v for v, _ in menu.options]:
             return False
         choices = self._choices()
         choices[f"{action.id}.{name}"] = value
         self.ctx.settings.set(CHOICES_KEY, choices)
         return True
 
-    def _control(self, action: Action, name: str) -> Optional[Control]:
-        return next((control for control in action.controls(self) if control.name == name), None)
+    def _menu(self, action: Action, name: str) -> Optional[Menu]:
+        menu = action.menu(self)
+        return menu if menu is not None and menu.name == name else None
 
     # --- presets ---------------------------------------------------------------------------------------------
 
@@ -168,38 +166,38 @@ class QuickActionsModule(Module):
         if action_id in self._running:
             return ActionResult(toast=None, rerender=False)
         if not action.long:
-            result = self._execute(action, self.ctx)
-            self.last = result.toast
-            return result
+            self._report(action, self._execute(action, self.ctx))
+            return ActionResult(toast=None)
         job_ctx = dataclasses.replace(self.ctx, premiere=_ModuleThreadPremiere(self.ctx.premiere))
         pending = object()
         self._running[action_id] = pending
 
-        def work(job: Any) -> ActionResult:
+        def work(job: Any) -> Outcome:
             self._local.job = job
             try:
                 return self._execute(action, job_ctx)
             finally:
                 self._local.job = None
 
-        def finish(job: Any, result: Any) -> None:
+        def finish(job: Any, outcome: Any) -> None:
             self._running.pop(action_id, None)
-            if not isinstance(result, ActionResult):
-                result = ActionResult()
-            self.last = result.toast
-            if result.toast:
-                self.ctx.ui.toast(*result.toast)
+            if not isinstance(outcome, Outcome):
+                outcome = Outcome("neutral", f"{action.label} finished")
+            self._report(action, outcome)
             self.ctx.ui.invalidate()
 
         def fail(job: Any, exc: BaseException) -> None:
             self.log.error("%s failed in its job: %s", action_id, exc)
-            finish(job, ActionResult(toast=("error", f"{action.label} failed: an internal error occurred. "
-                                                     "Details are in the log.")))
+            finish(job, Outcome("error", f"{action.label} failed", INTERNAL_ERROR))
 
         job = self.ctx.jobs.submit(work, title=action.label, on_done=finish, on_error=fail)
         if self._running.get(action_id) is pending:
             self._running[action_id] = job
         return ActionResult(toast=None)
+
+    def _report(self, action: Action, outcome: Outcome) -> None:
+        """One result per press (docs/MODULES.md 4): the panel morphs the tile and keeps the group's result line."""
+        self.ctx.ui.result(action.id, outcome.outcome, outcome.text, outcome.detail)
 
     def progress(self, value: Optional[float], label: str = "") -> None:
         """Reports progress of the running long action (no-op outside a job)."""
@@ -207,21 +205,20 @@ class QuickActionsModule(Module):
         if job is not None:
             job.progress(value, label)
 
-    def _execute(self, action: Action, ctx: ModuleContext) -> ActionResult:
+    def _execute(self, action: Action, ctx: ModuleContext) -> Outcome:
         try:
-            result = action.run(ctx, self)
-            return result if isinstance(result, ActionResult) else ActionResult()
+            outcome = action.run(ctx, self)
+            return outcome if isinstance(outcome, Outcome) else Outcome("neutral", f"{action.label} finished")
         except ActionAbort as abort:
-            return ActionResult(toast=(abort.tone, abort.text))
+            return Outcome(abort.tone, abort.text, abort.detail)
         except PremiereUnavailable:
-            return ActionResult(toast=("warn", NOT_CONNECTED))
+            return Outcome("warn", NOT_CONNECTED)
         except PremiereError as exc:
             self.log.warning("%s: script error %s (line %s) %s", action.id, exc.message, exc.line, exc.source)
-            return ActionResult(toast=("error", f"{action.label} failed: {error_sentence(exc.message)}"))
+            return Outcome("error", f"{action.label} failed", error_sentence(exc.message))
         except Exception:  # noqa: BLE001 - a bug in one action must not break the module
             self.log.exception("%s raised", action.id)
-            return ActionResult(toast=("error", f"{action.label} failed: an internal error occurred. "
-                                                "Details are in the log."))
+            return Outcome("error", f"{action.label} failed", INTERNAL_ERROR)
 
     def _host_action(self, name: str, value: Any) -> Optional[ActionResult]:
         if name.startswith("visible."):
@@ -253,32 +250,24 @@ class QuickActionsModule(Module):
         nodes: list = []
         for group in GROUPS:
             members = [action for action in visible if action.group == group]
-            if not members:
-                continue
-            items: list = []
-            for action in members:
-                # An action's own controls come right before its button; the display lays buttons out in two
-                # columns and gives every other node the full width.
-                items.extend(self._control_node(action, control) for control in action.controls(self))
-                items.append(self._button(action))
-            nodes.append(self.group(group, items, columns=2))
-        if self.last:
-            nodes.append(self.text(self.last[1], tone=self.last[0], small=True))
+            if members:
+                nodes.append(self.group(group, [self._button(action) for action in members],
+                                        id=group.lower(), tiles=True, collapsible=True))
         return nodes
 
     def _button(self, action: Action) -> dict:
         state = action.button(self)
+        menu = action.menu(self)
+        kw: dict = {}
+        if menu is not None:
+            current = self.choice(action, menu.name)
+            kw["menu"] = self.menu(f"{action.id}.{menu.name}", current,
+                                   [{"value": value, "label": label} for value, label in menu.options],
+                                   menu.badge(current))
         return self.button(action.id, state.get("label", action.label), hint=action.hint,
                            tone=state.get("tone", "neutral"), busy=action.id in self._running,
-                           disabled=bool(state.get("disabled", False)))
-
-    def _control_node(self, action: Action, control: Control) -> dict:
-        node_id = f"{action.id}.{control.name}"
-        if control.kind == "select":
-            options = [{"value": value, "label": label} for value, label in control.options]
-            disabled = len(options) == 1 and options[0]["value"] == ""
-            return self.select(node_id, control.label, self.choice(action, control.name), options, disabled=disabled)
-        return self.input(node_id, control.label, self.choice(action, control.name), placeholder=control.placeholder)
+                           disabled=bool(state.get("disabled", False)), icon=action.icon,
+                           short=state.get("short", action.short), **kw)
 
     def section_status(self) -> Optional[dict]:
         running = [self.actions[aid].label for aid in self._running if aid in self.actions]

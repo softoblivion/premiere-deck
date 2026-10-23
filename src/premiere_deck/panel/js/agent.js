@@ -7,7 +7,6 @@
 (function (root) {
     "use strict";
 
-    var EXTENSION_PANEL_ID = "com.softoblivion.premieredeck.panel";
     var EVENT_TYPE = "com.softoblivion.premieredeck.event";
     var POLL_MS = 2000;
     var HEARTBEAT_MS = 10000;
@@ -275,9 +274,8 @@
             this.pump();
         } else if (message.type === "subscribe") {
             this.subscribe(message.events || []);
-        } else if (message.type === "open_display") {
-            this.cs.requestOpenExtension(EXTENSION_PANEL_ID, "");
         }
+        // The host never opens the visible panel (PROTOCOL 3); a 1.x `open_display` is ignored like any unknown type.
     };
 
     Agent.prototype.subscribe = function (events) {

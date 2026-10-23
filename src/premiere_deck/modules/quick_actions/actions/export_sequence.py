@@ -3,17 +3,20 @@ from __future__ import annotations
 from pathlib import Path, PureWindowsPath
 
 from premiere_deck.modules.quick_actions.action import (
-    Action, ActionAbort, Control, require_project, require_sequence, safe_file_stem,
+    Action, ActionAbort, Menu, require_project, require_sequence, safe_file_stem,
 )
 from premiere_deck.modules.quick_actions.results import text
 
 EXPORTS_DIR = "Exports"
-NO_PRESETS = "No presets found"
+BADGES = {"youtube_1080p": "YT 1080p", "instagram_9x16": "IG 9:16", "tiktok_9x16": "TT 9:16", "match_h264": "H.264"}
+BADGE_MAX = 8
 
 
 class ExportSequence(Action):
     id = "export_sequence"
     label = "Export sequence"
+    short = "Export"
+    icon = "export-sequence"
     hint = "Queues the active sequence in Media Encoder into the Exports folder (in to out when set)."
     group = "Export"
     long = True
@@ -25,11 +28,13 @@ class ExportSequence(Action):
         "Export dialog)."
     )
 
-    def controls(self, module):
+    def menu(self, module):
         options = tuple((preset.id, preset.label) for preset in module.presets)
         if not options:
-            return [Control("preset", "select", "Preset", "", (("", NO_PRESETS),))]
-        return [Control("preset", "select", "Preset", options[0][0], options)]
+            return None
+        badges = tuple((preset.id, BADGES.get(preset.id) or preset.label[:BADGE_MAX].rstrip())
+                       for preset in module.presets)
+        return Menu("preset", "Preset", options[0][0], options, badges)
 
     def button(self, module) -> dict:
         if not module.presets:

@@ -24,8 +24,10 @@ class ServerTests(unittest.TestCase):
         self.panel = self.root / "panel"
         self.panel.mkdir()
         self.decisions = []
+        self.theme_name = "black"
         self.server = DeckServer("1.0.0", ports=free_ports(3), discovery_dir=lambda: self.panel,
-                                 host_exe="C:\\Apps\\PremiereDeck.exe", update_for=self._update_for)
+                                 host_exe="C:\\Apps\\PremiereDeck.exe", update_for=self._update_for,
+                                 theme=lambda: self.theme_name)
         self.agent_messages = []
         self.presence = []
         self.display_messages = []
@@ -151,8 +153,10 @@ class ServerTests(unittest.TestCase):
         self.server.displays.send_ui(tree)  # cached for displays that connect later
         one = self.open("display")
         self.assertEqual(self.recv(one)["type"], "welcome")
+        self.assertEqual(self.recv(one), {"type": "theme", "name": "black"})
         self.assertEqual(self.recv(one)["revision"], 1)
         two = self.open("display")
+        self.recv(two)
         self.recv(two)
         self.recv(two)
         self.assertTrue(wait_for(lambda: self.display_counts[-1:] == [2]))
@@ -170,6 +174,35 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(self.server.agent.connected, "displays are not agents")
         one.close()
         self.assertTrue(wait_for(lambda: self.display_counts[-1:] == [1]))
+
+    def test_display_gets_theme_between_welcome_and_ui(self):
+        self.theme_name = "sky"
+        self.server.displays.send_ui(P.ui(4, "Premiere Deck", None, [P.section("files", "Files", [])]))
+        ws = self.open("display")
+        self.assertEqual([self.recv(ws)["type"] for _ in range(3)], ["welcome", "theme", "ui"])
+        ws2 = self.open("display")
+        self.assertEqual(self.recv(ws2)["type"], "welcome")
+        self.assertEqual(self.recv(ws2)["name"], "sky")
+        self.theme_name = "dusk"  # a bad value from the setting is sent as the default
+        ws3 = self.open("display")
+        self.recv(ws3)
+        self.assertEqual(self.recv(ws3)["name"], "black")
+
+    def test_agent_gets_no_theme_and_display_gets_results_theme_and_reload(self):
+        agent = self.open("agent")
+        self.assertEqual(self.recv(agent)["type"], "welcome")
+        display = self.open("display")
+        self.recv(display)
+        self.assertEqual(self.recv(display)["type"], "theme")
+        self.server.displays.theme("sky")
+        self.server.displays.send(P.action_result("actions.razor_all", "warn", "Nothing cut", "Locked.", at=5))
+        self.server.displays.reload()
+        self.assertEqual(self.recv(display), {"type": "theme", "name": "sky"})
+        self.assertEqual(self.recv(display), {"type": "action_result", "id": "actions.razor_all", "outcome": "warn",
+                                              "text": "Nothing cut", "detail": "Locked.", "at": 5})
+        self.assertEqual(self.recv(display), {"type": "reload"})
+        self.server.agent.send(P.script("s1", "n", "return 1;"))
+        self.assertEqual(self.recv(agent)["type"], "script", "the agent got none of the display messages")
 
     def test_role_mismatch_and_garbage_hello(self):
         ws = self.ws_connect(self.url("display"))

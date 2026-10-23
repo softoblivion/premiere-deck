@@ -100,7 +100,7 @@ class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.root = scratch_dir("bridge")
         paths = AppPaths(self.root / "data")
-        source = make_panel_source(self.root / "panel_src", "3.0.0")
+        self.source = source = make_panel_source(self.root / "panel_src", "3.0.0")
         installer = PanelInstaller(paths, "3.0.0", source=source, target=self.root / "cep" / "bundle",
                                    registry=MemoryRegistry())
         self.hub = Hub(paths, fake=True, modules=[Plain], ports=free_ports(3), installer=installer, watch=False)
@@ -134,8 +134,8 @@ class BridgeTests(unittest.TestCase):
         self.assertTrue(any('"Careful"' in s for s in self.window.scripts))
 
     def test_settings_patch_and_refusal(self):
-        after = self.bridge.set_settings({"theme": "frost"})
-        self.assertEqual(after["theme"], "frost")
+        after = self.bridge.set_settings({"theme": "sky"})
+        self.assertEqual(after["theme"], "sky")
         with self.assertRaises(BridgeError) as caught:
             self.bridge.set_settings({"theme": "neon"})
         self.assertEqual(str(caught.exception), "Unknown theme.")
@@ -176,6 +176,17 @@ class BridgeTests(unittest.TestCase):
         self.assertFalse(self.bridge.open_url("http://example.com"))
         with self.assertRaises(BridgeError):
             self.bridge.check_updates()
+
+
+    def test_panel_check_update(self):
+        self.assertEqual(self.bridge.panel_check_update(), {"updated": False, "installed": "3.0.0", "bundled": "3.0.0"})
+        self.assertFalse(any(name == "panel" for name, _ in self.pump.pending()))
+        make_panel_source(self.source, "3.0.1", extra="two")  # a newer bundled panel (after a self-update)
+        self.assertEqual(self.bridge.panel_check_update(), {"updated": True, "installed": "3.0.0", "bundled": "3.0.1"})
+        self.assertEqual(self.hub.installer.installed_version(), "3.0.1")
+        panel = [payload for name, payload in self.pump.pending() if name == "panel"]
+        self.assertEqual(panel[-1]["installed_version"], "3.0.1")
+        self.assertTrue((self.root / "cep" / "bundle" / "deck.json").is_file(), "deck.json is rewritten")
 
 
 class ShellHelpersTests(unittest.TestCase):

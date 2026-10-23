@@ -48,6 +48,26 @@ class ProbeRulesTests(unittest.TestCase):
         self.assertTrue(image.alpha)
         self.assertIsNone(image.duration)
 
+    def test_tags_and_stream_count(self):
+        data = {"format": {"nb_streams": 3, "tags": {"Major_Brand": "XAVC", "encoder": "Lavf61", "Title": "x"}},
+                "streams": [{"codec_type": "audio", "codec_name": "aac", "tags": {"handler_name": "SoundHandler"}},
+                            {"codec_type": "video", "codec_name": "hevc", "avg_frame_rate": "0/0",
+                             "r_frame_rate": "24/1", "tags": {"ENCODER": "HEVC Coding", "timecode": 10}},
+                            {"codec_type": "data"}]}
+        info = parse_probe("C:\\a\\C0001.MP4", data, size=10)
+        self.assertEqual(info.tags, {"major_brand": "XAVC", "encoder": "HEVC Coding", "title": "x", "timecode": "10"})
+        self.assertEqual(info.nb_streams, 3)
+        self.assertEqual(info.fps, 24.0)  # avg_frame_rate 0/0 falls back to r_frame_rate
+        self.assertEqual((info.extra["avg_frame_rate"], info.extra["r_frame_rate"]), ("0/0", "24/1"))
+        self.assertIsNone(info.source)
+        self.assertIsNone(info.audio_class)
+        bare = parse_probe("x.wav", {"format": {}, "streams": [{"codec_type": "audio", "codec_name": "pcm_s16le"}]},
+                           size=1)
+        self.assertEqual((bare.tags, bare.nb_streams), ({}, 1))
+        exact = parse_probe("x.mp4", {"format": {}, "streams": [{"codec_type": "video", "codec_name": "h264",
+                                                                   "avg_frame_rate": "24000/1001"}]}, size=1)
+        self.assertEqual(exact.fps, 23.976)
+
     def test_missing_file(self):
         info = probe("Z:\\does\\not\\exist.mov")
         self.assertEqual(info.kind, KIND_VIDEO)
@@ -96,6 +116,9 @@ class ProbeMediaTests(unittest.TestCase):
         self.assertAlmostEqual(info.duration, 1.0, delta=0.15)
         self.assertEqual(info.codec_video, "h264")
         self.assertIsNone(info.probe_error)
+        self.assertEqual(info.nb_streams, 2)
+        self.assertTrue(info.tags.get("encoder", "").startswith(("Lavf", "Lavc")))  # written by ffmpeg
+        self.assertTrue(all(key == key.lower() for key in info.tags))
 
     def test_alpha_webm_vp9(self):
         info = self.tools.ffprobe(self.webm)

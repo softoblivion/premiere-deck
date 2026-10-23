@@ -64,8 +64,14 @@ def run_ffmpeg(args: list[str]) -> None:
                    stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, creationflags=flags, timeout=120)
 
 
+# No "Lavf" / "Lavc" encoder tags (they mark a file as stock, docs/FILES.md 3.8): bit-exact output, encoder tags empty.
+BITEXACT = ["-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact", "-metadata", "encoder=",
+            "-metadata:s:v", "encoder=", "-metadata:s:a", "encoder="]
+
+
 def make_media(folder: str) -> dict[str, str]:
-    """The media of docs/FILES.md 9: alpha video (VP9 WebM yuva420p), plain mp4, 0.5 s and 40 s wav, a PNG."""
+    """The media of docs/FILES.md 10: alpha video (VP9 WebM yuva420p), plain mp4 (written bit-exact, so it carries
+    no encoder tag and its source stays unknown), 0.5 s and 40 s wav, a PNG."""
     os.makedirs(folder, exist_ok=True)
     out = {
         "alpha": os.path.join(folder, "logo_anim.webm"),
@@ -77,11 +83,95 @@ def make_media(folder: str) -> dict[str, str]:
     run_ffmpeg(["-f", "lavfi", "-i", "color=c=red@0.5:s=64x64:d=1,format=yuva420p", "-c:v", "libvpx-vp9",
                 "-pix_fmt", "yuva420p", "-auto-alt-ref", "0", out["alpha"]])
     run_ffmpeg(["-f", "lavfi", "-i", "testsrc=s=64x64:d=1", "-f", "lavfi", "-i", "sine=d=1", "-shortest",
-                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", out["plain"]])
+                "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", *BITEXACT, out["plain"]])
     run_ffmpeg(["-f", "lavfi", "-i", "sine=frequency=880:d=0.5", out["short_wav"]])
     run_ffmpeg(["-f", "lavfi", "-i", "sine=frequency=220:d=40", "-ar", "8000", out["long_wav"]])
     run_ffmpeg(["-f", "lavfi", "-i", "color=c=blue:s=32x32", "-frames:v", "1", out["png"]])
     return out
+
+
+def make_classifier_media(folder: str) -> dict[str, str]:
+    """The classifier media of docs/FILES.md 10: tagged mp4 files (camera make / model, a Lavf encoder), a 5 s
+    1280x720 24 fps mp4 without audio, a 20 s sine tone, a 20 s chord with tremolo (music-like), 20 s of noise and
+    20 s of silence."""
+    os.makedirs(folder, exist_ok=True)
+    out = {
+        "camera_tag": os.path.join(folder, "holiday.mp4"),
+        "lavf": os.path.join(folder, "skyline.mp4"),
+        "generator": os.path.join(folder, "sunset_take.mp4"),
+        "generator_23976": os.path.join(folder, "sunset_ntsc.mp4"),
+        "tone": os.path.join(folder, "tone.wav"),
+        "chord": os.path.join(folder, "chord.wav"),
+        "noise": os.path.join(folder, "noise.wav"),
+        "silence": os.path.join(folder, "silence.wav"),
+    }
+    video = ["-f", "lavfi", "-i", "testsrc=s=64x64:d=1:r=25", "-f", "lavfi", "-i", "sine=d=1", "-shortest",
+             "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac"]
+    run_ffmpeg([*video, *BITEXACT, "-movflags", "use_metadata_tags", "-metadata", "make=Sony",
+                "-metadata", "model=ILCE-7SM3", out["camera_tag"]])
+    run_ffmpeg([*video, out["lavf"]])  # ffmpeg writes encoder=Lavf<version>
+    run_ffmpeg(["-f", "lavfi", "-i", "testsrc=s=1280x720:d=5:r=24", "-c:v", "libx264", "-preset", "ultrafast",
+                "-pix_fmt", "yuv420p", *BITEXACT, out["generator"]])
+    run_ffmpeg(["-f", "lavfi", "-i", "testsrc=s=1280x720:d=5:r=24000/1001", "-c:v", "libx264", "-preset",
+                "ultrafast", "-pix_fmt", "yuv420p", *BITEXACT, out["generator_23976"]])
+    run_ffmpeg(["-f", "lavfi", "-i", "sine=frequency=440:d=20", out["tone"]])
+    run_ffmpeg(["-f", "lavfi", "-i",
+                "aevalsrc=0.2*(sin(2*PI*261.6*t)+sin(2*PI*329.6*t)+sin(2*PI*392*t))*(0.5+0.5*sin(2*PI*2*t)):"
+                "s=44100:d=20", out["chord"]])
+    run_ffmpeg(["-f", "lavfi", "-i", "anoisesrc=d=20:c=white:a=0.3", out["noise"]])
+    run_ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=44100:cl=mono", "-t", "20", out["silence"]])
+    return out
+
+
+def make_speech(path: str) -> bool:
+    """A spoken sentence through the Windows speech synthesizer (System.Speech), or False when it is not
+    available. ffmpeg alone cannot make a speech sample."""
+    if os.name != "nt" or not shutil.which("powershell"):
+        return False
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    text = ("Welcome back to the channel. Today we look at how the project folder is organised, "
+            "where the footage goes and how the voice over is recorded for the final cut.")
+    script = ("Add-Type -AssemblyName System.Speech; $s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+              f"$s.SetOutputToWaveFile('{path}'); $s.Speak('{text}'); $s.Dispose()")
+    flags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    try:
+        subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], check=True,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, creationflags=flags, timeout=60)
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return os.path.isfile(path) and os.path.getsize(path) > 10_000
+
+
+def fake_classifier(classes: Optional[dict] = None):
+    """A `MediaClassifier` whose decode yields one second of silence and whose scorer answers from `classes`
+    (file name -> (speech, music)); a file not listed fails like a decode error (audio_class None)."""
+    import numpy as np
+
+    from premiere_deck.modules.files.media_class import ClassifierError, MediaClassifier
+
+    classes = dict(classes or {})
+    current = {"name": ""}
+
+    class Pipe:
+        returncode = 0
+
+        def communicate(self, timeout=None):
+            return np.zeros(16000, dtype="<f4").tobytes(), b""
+
+    def pipe(args):
+        current["name"] = os.path.basename(args[args.index("-i") + 1])
+        if current["name"] not in classes:
+            raise FileNotFoundError("ffmpeg is not available")
+        return Pipe()
+
+    def scorer(waveform):
+        if current["name"] not in classes:
+            raise ClassifierError("not scored")
+        return classes[current["name"]]
+
+    classifier = MediaClassifier(pipe, scorer=scorer)
+    classifier.classes = classes
+    return classifier
 
 
 def info(path: str, kind: str, **kw) -> MediaInfo:
@@ -127,12 +217,22 @@ class FilesCase(unittest.TestCase):
         self.host.settings.project.values.update(project_settings)
         self.module = cls(self.host.context())
         self.module.SYNC_DELAY = self.SYNC_DELAY  # short quiet window; the coalescing itself is tested in test_modules_files_events
+        self.module._classifier = fake_classifier()  # no ffmpeg decode, no model: audio_class stays None
         self.module.start()
         self.module.project_opened(self.project)
         if enabled:
-            result = self.module.on_action("files.setup")
-            self.assertEqual(result.toast[0], "ok", result.toast)
+            self.module.on_action("files.setup")
+            self.assertEqual(self.host.ui.results[-1][:2], ("setup", "ok"), self.host.ui.results[-1])
         return self.module
+
+    def press(self, action: str, value=None, row: Optional[str] = None) -> tuple:
+        """Press a control and return its one result (button, outcome, text, detail); no toast for a press."""
+        before_results, before_toasts = len(self.host.ui.results), len(self.host.ui.toasts)
+        self.module.on_action(action, value, row)
+        results = self.host.ui.results[before_results:]
+        self.assertEqual(len(results), 1, f"{action}: {results}")
+        self.assertEqual(self.host.ui.toasts[before_toasts:], [], f"{action} toasted")
+        return results[0]
 
     def fire(self, name: str = "project.changed") -> None:
         """Deliver a Premiere event and wait for the coalesced sync it arms to finish."""

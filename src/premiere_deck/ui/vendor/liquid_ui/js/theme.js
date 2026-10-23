@@ -1,27 +1,33 @@
-// Themes: four named palettes shared by every app (the kit's documentation, "Themes"). A theme is
-// a hue family (the scene) and a contrast accent (the primary action, highlights); css/themes.css
-// holds the generated tokens of each one under `:root[data-theme="<name>"]`, so the first paint
-// needs no JS. applyTheme() switches the attribute and retints the scene; mountThemeControl()
-// renders the settings row with the four swatches. The app persists the choice in its settings.
+// Themes of Premiere Deck (docs/HOST_UI.md 7): Crystal Black (dark, the default) and Crystal Sky
+// (light). Every token value lives in src/premiere_deck/ui/themes.json; build/gen_themes.py renders
+// it into css/themes.css under `:root[data-theme="<name>"]`, so the first paint needs no JS and
+// nothing is derived at runtime. applyTheme() switches the attribute with the sweep (a View
+// Transition) and retints the scene; mountThemeControl() renders the two theme cards of the
+// settings sheet. The app persists the choice in its settings.
 
 import { retint } from './background.js';
 import { gel } from './glass.js';
+import { icon } from './icons.js';
 
+/** The themes, in card order (name, label, hue and accent as in ui/themes.json; tests/test_themes.py). */
 export const THEMES = [
-  { name: 'dusk', label: 'Dusk', hue: '#2a5bd8', accent: '#ff7a59' },
-  { name: 'nova', label: 'Nova', hue: '#6a3df0', accent: '#ff8a4a' },
-  { name: 'frost', label: 'Frost', hue: '#2d7fc9', accent: '#b58cff' },
-  { name: 'bloom', label: 'Bloom', hue: '#d2409a', accent: '#3ee6b8' },
+  { name: 'black', label: 'Crystal Black', scheme: 'dark', hue: '#5f6f8c', accent: '#7563ff' },
+  { name: 'sky', label: 'Crystal Sky', scheme: 'light', hue: '#4b93e6', accent: '#5a45e0' },
 ];
 
-export const DEFAULT_THEME = 'dusk';
+export const DEFAULT_THEME = 'black';
+
+/** Length of the sweep (css/components.css "Theme sweep" holds the same value). */
+export const SWEEP_MS = 600;
 
 export function themeByName(name) {
   return THEMES.find((t) => t.name === name) || null;
 }
 
 // ---------------------------------------------------------------------------------------------
-// Token derivation (the generator of css/themes.css; also used by the gallery for ad-hoc pairs)
+// Token derivation: the identity and scene tokens the kit derives from a hue / accent pair. The
+// dark theme's values start from it; ui/themes.json keeps the result ("derived") and the values
+// each theme replaces ("overrides"), and build/gen_themes.py checks the two stay in step.
 
 const rgb = (hex) => {
   const n = parseInt(hex.slice(1), 16);
@@ -60,63 +66,110 @@ export function derive({ hue, accent }) {
   };
 }
 
-/** The CSS of css/themes.css (run by the kit's tools/gen-themes.mjs). */
-export function themesCss() {
-  const block = (sel, t) => `${sel} {\n${Object.entries(derive(t)).map(([k, v]) => `  ${k}: ${v};`).join('\n')}\n}`;
-  return THEMES.map((t) => `/* ${t.label}: hue ${t.hue}, accent ${t.accent} */\n${block(`:root[data-theme="${t.name}"]`, t)}`).join('\n\n');
-}
-
 // ---------------------------------------------------------------------------------------------
 // Applying a theme
 
 let current = '';
+let target = '';
+let sweeping = null;
 const listeners = new Set();
 
-/** The active theme name (from the root attribute, else the default). */
+/** The active theme name (the last one applied, else the root attribute, else the default). */
 export function currentTheme() {
-  return current || document.documentElement.dataset.theme || DEFAULT_THEME;
+  return target || current || document.documentElement.dataset.theme || DEFAULT_THEME;
+}
+
+/** Whether applyTheme() animates: the View Transitions API exists and the page is visible. */
+export function canSweep() {
+  return typeof document.startViewTransition === 'function' && document.visibilityState === 'visible';
 }
 
 /**
- * Switch the theme: sets `data-theme` on the root and retints the scene. Unknown names fall
- * back to the default. Returns the name applied.
+ * Switch the theme: sets `data-theme` on the root, retints the scene and tells the listeners.
+ * Unknown names fall back to the default. The first call of a page (start-up) is instant; later
+ * changes run the sweep where the View Transitions API exists (reduced motion: 1 ms, the CSS),
+ * else they are instant too. `{ animate: false }` forces an instant switch. Returns the name.
  */
-export function applyTheme(name) {
+export function applyTheme(name, { animate = true } = {}) {
   const t = themeByName(name) || themeByName(DEFAULT_THEME);
-  if (document.documentElement.dataset.theme === t.name && current === t.name) return t.name;
-  document.documentElement.dataset.theme = t.name;
-  current = t.name;
-  retint();
-  for (const fn of listeners) fn(t.name);
+  const root = document.documentElement;
+  if (target === t.name || (!target && current === t.name && root.dataset.theme === t.name)) return t.name;
+  const first = !current && !target;
+  target = t.name;
+  const update = () => {
+    root.dataset.theme = t.name;
+    current = t.name;
+    retint();
+    for (const fn of listeners) {
+      try {
+        fn(t.name);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+  };
+  if (sweeping) sweeping.skipTransition();
+  if (first || !animate || !canSweep()) {
+    update();
+    return t.name;
+  }
+  let line = null;
+  const vt = document.startViewTransition(() => {
+    update();
+    line = document.createElement('div');
+    line.className = 'theme-line';
+    line.setAttribute('aria-hidden', 'true');
+    document.body.append(line);
+  });
+  sweeping = vt;
+  vt.finished.catch(() => {}).finally(() => {
+    if (line) line.remove();
+    if (sweeping === vt) sweeping = null;
+  });
   return t.name;
 }
 
-/** Called after every applyTheme(); returns an unsubscribe function. */
+/** Resolves when the running sweep (if any) has finished. */
+export function sweepDone() {
+  return sweeping ? sweeping.finished.catch(() => {}) : Promise.resolve();
+}
+
+/** Called after every applyTheme() with the new name; returns an unsubscribe function. */
 export function onTheme(fn) {
   listeners.add(fn);
   return () => listeners.delete(fn);
 }
 
 // ---------------------------------------------------------------------------------------------
-// Settings row
+// Settings row: the theme cards
 
 /**
- * Append a "Theme" row with the four swatches to `host` (a `.set-card`). `onChange(name)` is
- * called on a click (the app saves it and calls set() with the confirmed value, or applies it
- * at once). Returns { el, set(name), destroy() }.
+ * Append a "Theme" row with one card per theme to `host` (a `.set-card`). Each card shows a mini
+ * preview of its theme (scene, glass card, accent pill) drawn in that theme's tokens; the selected
+ * card carries the accent rim. `onChange(name)` is called on a click (the app applies and saves
+ * it, then calls set() with the confirmed value). Returns { el, set(name), destroy() }.
  */
-export function mountThemeControl(host, { value = currentTheme(), label = 'Theme', hint = 'Background colour and accent of the window', onChange } = {}) {
+export function mountThemeControl(host, {
+  value = currentTheme(),
+  label = 'Theme',
+  hint = 'Window and panel. The panel follows the window.',
+  onChange,
+} = {}) {
   const row = document.createElement('div');
   row.className = 'set-row set-row-col';
-  row.innerHTML = `<div class="set-label"><span>${label}</span><small>${hint}</small></div><div class="theme-row" role="radiogroup" aria-label="${label}"></div>`;
-  const group = row.querySelector('.theme-row');
-  const chips = THEMES.map((t) => {
+  row.innerHTML = `<div class="set-label"><span></span><small></small></div><div class="theme-cards" role="radiogroup"></div>`;
+  row.querySelector('.set-label > span').textContent = label;
+  row.querySelector('.set-label small').textContent = hint;
+  const group = row.querySelector('.theme-cards');
+  group.setAttribute('aria-label', label);
+  const cards = THEMES.map((t) => {
     const b = document.createElement('button');
     b.type = 'button';
-    b.className = 'theme-chip';
-    b.dataset.theme = t.name;
+    b.className = 'theme-card';
+    b.dataset.name = t.name;
     b.setAttribute('role', 'radio');
-    b.innerHTML = `<span class="theme-sw" aria-hidden="true" style="--h:${t.hue};--a:${t.accent}"><i></i></span><span class="theme-name">${t.label}</span>`;
+    b.innerHTML = `<span class="tc-prev" data-theme-scope="${t.name}" aria-hidden="true"><span class="tc-glass"><span class="tc-line"></span><span class="tc-line"></span></span><span class="tc-pill"></span></span><span class="tc-name"><span></span>${icon('check')}</span>`;
+    b.querySelector('.tc-name > span').textContent = t.label;
     b.addEventListener('click', () => {
       if (b.getAttribute('aria-checked') === 'true') return;
       set(t.name);
@@ -127,22 +180,23 @@ export function mountThemeControl(host, { value = currentTheme(), label = 'Theme
     return b;
   });
   const set = (name) => {
-    chips.forEach((b) => {
-      const on = b.dataset.theme === name;
-      b.setAttribute('aria-checked', String(on));
-      b.classList.toggle('is-on', on);
-      b.tabIndex = on ? 0 : -1;
+    const on = themeByName(name) ? name : DEFAULT_THEME;
+    cards.forEach((b) => {
+      const is = b.dataset.name === on;
+      b.setAttribute('aria-checked', String(is));
+      b.classList.toggle('is-on', is);
+      b.tabIndex = is ? 0 : -1;
     });
   };
   group.addEventListener('keydown', (e) => {
-    const i = chips.findIndex((b) => b.getAttribute('aria-checked') === 'true');
+    const i = cards.findIndex((b) => b.getAttribute('aria-checked') === 'true');
     let j = -1;
-    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') j = (i + 1) % chips.length;
-    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') j = (i - 1 + chips.length) % chips.length;
+    if (e.key === 'ArrowRight' || e.key === 'ArrowDown') j = (i + 1) % cards.length;
+    if (e.key === 'ArrowLeft' || e.key === 'ArrowUp') j = (i - 1 + cards.length) % cards.length;
     if (j < 0) return;
     e.preventDefault();
-    chips[j].focus();
-    chips[j].click();
+    cards[j].focus();
+    cards[j].click();
   });
   set(value);
   host.appendChild(row);

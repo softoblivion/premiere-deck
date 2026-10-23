@@ -97,6 +97,12 @@ class PanelInstallTests(unittest.TestCase):
                        capture_output=True)
         self.assertTrue(self.installer.is_junction())
         self.assertFalse(self.installer.needs_install())
+        with self.assertLogs("premiere_deck.host.panel_install", level="INFO") as logged:
+            result = self.installer.ensure()
+        self.assertEqual(result.action, "skipped_junction")
+        lines = [m for m in logged.output if "skipped" in m]
+        self.assertEqual(len(lines), 1, logged.output)
+        self.assertIn(os.path.realpath(dev), lines[0], "the log line names the junction target")
         result = self.installer.ensure(force=True)
         self.assertEqual(result.action, "skipped_junction")
         self.assertEqual((dev / "VERSION").read_text("utf-8"), "0.0.1-dev")

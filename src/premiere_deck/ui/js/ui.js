@@ -109,3 +109,49 @@ export function isoToEpoch(iso) {
   const t = iso ? Date.parse(iso) : NaN;
   return isFinite(t) ? t / 1000 : 0;
 }
+
+/** "Just now", "12 min ago", "4 h ago", "Yesterday", "3 days ago", then a short date. Epoch seconds. */
+export function ago(epoch) {
+  if (!epoch) return '';
+  const d = Date.now() / 1000 - epoch;
+  if (d < 45) return 'Just now';
+  if (d < 3600) return `${Math.max(1, Math.round(d / 60))} min ago`;
+  if (d < 86400) return `${Math.round(d / 3600)} h ago`;
+  const days = Math.floor(d / 86400);
+  if (days < 2) return 'Yesterday';
+  if (days < 7) return `${days} days ago`;
+  return new Date(epoch * 1000).toLocaleDateString('en-US', { day: 'numeric', month: 'short' });
+}
+
+/** "12:03" (24 h) of an epoch in seconds. */
+export function clock(epoch) {
+  if (!epoch) return '';
+  const t = new Date(epoch * 1000);
+  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+}
+
+const FLASH_ICON = { ok: 'check', error: 'cross', warn: 'warn', neutral: 'check' };
+const FLASH_MS = 2000;
+
+/**
+ * The outcome of an action on its control for 2 s (as the panel's tiles): the icon in the control's `[data-ic]`
+ * holder turns into a check (mint glow) or a cross (rose glow); controls without an icon only glow.
+ * `iconHtml(name)` draws the result icon.
+ */
+export function flash(el, outcome, iconHtml) {
+  if (!el || !el.isConnected) return;
+  const tone = FLASH_ICON[outcome] ? outcome : 'neutral';
+  clearTimeout(el.__flashT);
+  el.querySelectorAll(':scope [data-ic] > .flash-ic').forEach((n) => n.remove());
+  const holder = el.querySelector('[data-ic]');
+  if (holder && iconHtml) holder.append(h('span', 'flash-ic', { html: iconHtml(FLASH_ICON[tone]) }));
+  el.classList.remove('is-flash');
+  void el.offsetWidth; // restart the animation
+  el.dataset.flash = tone;
+  el.classList.add('is-flash');
+  el.__flashT = setTimeout(() => {
+    el.classList.remove('is-flash');
+    delete el.dataset.flash;
+    el.querySelectorAll(':scope [data-ic] > .flash-ic').forEach((n) => n.remove());
+  }, FLASH_MS);
+}

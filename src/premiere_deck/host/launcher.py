@@ -1,4 +1,4 @@
-"""Premiere Pro discovery, launch and process watch (docs/HOST_UI.md 3.1, 3.5).
+"""Premiere Pro discovery, launch and process watch (docs/HOST_UI.md 3.1, 3.4).
 
 Discovery, newest first (the setting `premiere_exe` overrides when it names an existing file):
 1. `HKLM\\SOFTWARE\\Adobe\\Premiere Pro\\<version>`: an `InstallPath` value when present, else the folder

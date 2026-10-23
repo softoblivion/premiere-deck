@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import secrets
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional, Protocol
 
@@ -33,7 +34,6 @@ T_BYE = "bye"
 T_SCRIPT = "script"
 T_SCRIPT_RESULT = "script.result"
 T_SUBSCRIBE = "subscribe"
-T_OPEN_DISPLAY = "open_display"
 T_RELOAD = "reload"
 T_EVENT = "event"
 T_HEARTBEAT = "heartbeat"
@@ -42,8 +42,14 @@ T_UI = "ui"
 T_ACTION = "action"
 T_DISPLAY_READY = "display.ready"
 T_TOAST = "toast"
+T_THEME = "theme"
+T_ACTION_RESULT = "action_result"
 
 TONES = ("neutral", "ok", "warn", "error", "accent")
+OUTCOMES = ("ok", "warn", "error", "neutral")  # action_result outcomes (docs/PROTOCOL.md 6.6)
+THEMES = ("black", "sky")  # docs/PROTOCOL.md 6.5
+DEFAULT_THEME = "black"
+SHORT_MAX = 16  # longest tile label (button `short`)
 
 # Premiere events a module may subscribe to (docs/PROTOCOL.md 8).
 EVENTS = (
@@ -151,10 +157,6 @@ def subscribe(events: Iterable[str]) -> dict:
     return {"type": T_SUBSCRIBE, "events": names}
 
 
-def open_display() -> dict:
-    return {"type": T_OPEN_DISPLAY}
-
-
 def reload() -> dict:
     return {"type": T_RELOAD}
 
@@ -190,6 +192,23 @@ def toast(tone: str, text: str, ms: int = 3500) -> dict:
     return {"type": T_TOAST, "tone": tone, "text": str(text), "ms": int(ms)}
 
 
+def theme(name: Any) -> dict:
+    """`theme` message (docs/PROTOCOL.md 6.5); an unknown name is sent as the default theme."""
+    return {"type": T_THEME, "name": name if name in THEMES else DEFAULT_THEME}
+
+
+def action_result(button_id: str, outcome: str, text: str, detail: Optional[str] = None,
+                  at: Optional[int] = None) -> dict:
+    """`action_result` message (docs/PROTOCOL.md 6.6); `at` is epoch ms (now when omitted)."""
+    if outcome not in OUTCOMES:
+        raise ProtocolError(f"unknown outcome {outcome!r}")
+    if not isinstance(button_id, str) or not button_id:
+        raise ProtocolError("an action_result needs the button id")
+    return {"type": T_ACTION_RESULT, "id": button_id, "outcome": outcome, "text": str(text),
+            "detail": None if detail is None else str(detail),
+            "at": int(time.time() * 1000) if at is None else int(at)}
+
+
 def ui(revision: int, title: str, status: Optional[dict], sections: list, footer: Optional[dict] = None) -> dict:
     message = {"type": T_UI, "revision": int(revision), "title": title, "status": status, "sections": sections, "footer": footer}
     validate_tree(message)
@@ -199,10 +218,26 @@ def ui(revision: int, title: str, status: Optional[dict], sections: list, footer
 # --- UI node builders (used by modules/base.py, which adds the module prefix to ids) ------------------------------
 
 
+def menu(id: str, value: Any, options: list, badge: str) -> dict:
+    """The choice a tile carries (docs/PROTOCOL.md 6.1 `button.menu`): `badge` is the current choice in short form;
+    a pick sends `action` with this `id` and the option's `value`."""
+    return {"id": id, "value": value, "badge": str(badge),
+            "options": [{"value": o["value"], "label": str(o["label"])} for o in options]}
+
+
 def node_button(id: str, label: str, *, hint: Optional[str] = None, tone: str = "neutral", busy: bool = False,
-                disabled: bool = False, confirm: Optional[str] = None) -> dict:
+                disabled: bool = False, confirm: Optional[str] = None, icon: Optional[str] = None,
+                short: Optional[str] = None, meta: Optional[str] = None, menu: Optional[dict] = None,
+                variant: Optional[str] = None) -> dict:
+    """2.0 fields: `icon` (sprite symbol), `short` (tile label, at most 16 characters), `meta` (line under the tile
+    label), `menu` (see `menu()`), `variant` (`"icon"`: a small round button with the icon only)."""
+    if short is not None and len(short) > SHORT_MAX:
+        raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
+    if variant not in (None, "icon"):
+        raise ProtocolError(f"unknown button variant {variant!r}")
     return _strip({"kind": "button", "id": id, "label": label, "hint": hint, "tone": tone, "busy": busy,
-                   "disabled": disabled, "confirm": confirm})
+                   "disabled": disabled, "confirm": confirm, "icon": icon, "short": short, "meta": meta,
+                   "menu": menu, "variant": variant})
 
 
 def node_toggle(id: str, label: str, value: bool, *, hint: Optional[str] = None, disabled: bool = False) -> dict:
@@ -221,12 +256,23 @@ def node_input(id: str, label: str, value: str = "", *, placeholder: str = "", s
                    "submit_label": submit_label, "disabled": disabled})
 
 
-def node_text(text: str, *, tone: str = "neutral", small: bool = False) -> dict:
-    return {"kind": "text", "text": str(text), "tone": tone, "small": bool(small)}
+def node_text(text: str, *, tone: str = "neutral", small: bool = False, chip: bool = False) -> dict:
+    """`chip`: a small status chip, a dot in the tone's colour and the text (docs/PROTOCOL.md 6.1)."""
+    node = {"kind": "text", "text": str(text), "tone": tone, "small": bool(small)}
+    if chip:
+        node["chip"] = True
+    return node
 
 
-def node_progress(value: Optional[float], label: str = "") -> dict:
-    return {"kind": "progress", "value": None if value is None else max(0.0, min(1.0, float(value))), "label": label}
+def node_progress(value: Optional[float], label: str = "", *, detail: Optional[str] = None,
+                  cancel: Optional[str] = None) -> dict:
+    """`detail`: one line under the bar (the current item); `cancel`: a button node id the "Stop" pill sends."""
+    node = {"kind": "progress", "value": None if value is None else max(0.0, min(1.0, float(value))), "label": label}
+    if detail is not None:
+        node["detail"] = str(detail)
+    if cancel is not None:
+        node["cancel"] = str(cancel)
+    return node
 
 
 def node_list(id: str, rows: list, *, empty: str = "") -> dict:
@@ -248,13 +294,29 @@ def node_divider() -> dict:
     return {"kind": "divider"}
 
 
-def node_group(title: Optional[str], items: list, *, columns: int = 1) -> dict:
-    """A titled block inside a section (docs/PROTOCOL.md 6.1); `columns` 2 lays consecutive buttons out in pairs."""
-    return {"kind": "group", "title": title, "items": items, "columns": columns}
+def node_group(title: Optional[str], items: list, *, columns: Optional[int] = None, id: Optional[str] = None,
+               collapsible: bool = False, tiles: bool = False) -> dict:
+    """A titled block inside a section (docs/PROTOCOL.md 6.1). `columns` 1 to 3 (default 1, or 3 with `tiles`) lays
+    consecutive buttons out in that many columns; `tiles` draws the buttons as icon tiles; `collapsible` makes the
+    caption the collapse control, remembered by the display per `id` (unique in the tree)."""
+    node = {"kind": "group", "title": title, "items": items,
+            "columns": columns if columns is not None else (3 if tiles else 1)}
+    if id is not None:
+        node["id"] = id
+    if collapsible:
+        node["collapsible"] = True
+    if tiles:
+        node["tiles"] = True
+    return node
 
 
-def section(id: str, title: str, items: list, *, status: Optional[dict] = None, collapsed: bool = False) -> dict:
-    return {"id": id, "title": title, "collapsed": bool(collapsed), "status": status, "items": items}
+def section(id: str, title: str, items: list, *, status: Optional[dict] = None, collapsed: bool = False,
+            icon: Optional[str] = None) -> dict:
+    """A panel tab; `icon` is a symbol name of the panel sprite (docs/PANEL.md 1). `collapsed` is ignored by 2.x."""
+    sec = {"id": id, "title": title, "collapsed": bool(collapsed), "status": status, "items": items}
+    if icon is not None:
+        sec["icon"] = icon
+    return sec
 
 
 def status(text: str, tone: str = "neutral") -> dict:
@@ -282,6 +344,8 @@ def validate_tree(message: dict) -> None:
         if not isinstance(sec, dict) or not isinstance(sec.get("id"), str) or not sec["id"]:
             raise ProtocolError("a section has a string id")
         _unique(seen, "section:" + sec["id"])
+        if sec.get("icon") is not None and not isinstance(sec["icon"], str):
+            raise ProtocolError("a section icon is a string or null")
         if sec.get("status") is not None:
             _check_status(sec["status"])
         _validate_nodes(sec.get("items", []), seen)
@@ -309,6 +373,14 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
         if kind == "select":
             if not isinstance(node.get("options"), list) or not node["options"]:
                 raise ProtocolError("select needs options")
+        if kind == "button":
+            _validate_button(node, seen)
+        if kind == "text" and not isinstance(node.get("chip", False), bool):
+            raise ProtocolError("text chip is a bool")
+        if kind == "progress":
+            for field_name in ("detail", "cancel"):
+                if node.get(field_name) is not None and not isinstance(node[field_name], str):
+                    raise ProtocolError(f"progress {field_name} is a string or null")
         if kind == "list":
             for row in node.get("rows", []):
                 if not isinstance(row, dict) or not isinstance(row.get("id"), str):
@@ -326,18 +398,55 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
                         raise ProtocolError("a row button needs an id")
                     if "tone" in action:
                         _check_tone(action["tone"])
+                    _validate_button(action, None)
         if kind == "row":
             _validate_nodes(node.get("items", []), seen)
         if kind == "group":
             title = node.get("title")
             if title is not None and not isinstance(title, str):
                 raise ProtocolError("a group title is a string or null")
-            if node.get("columns", 1) not in (1, 2):
-                raise ProtocolError("group columns is 1 or 2")
+            columns = node.get("columns", 1)
+            if isinstance(columns, bool) or columns not in (1, 2, 3):
+                raise ProtocolError("group columns is 1, 2 or 3")
+            for flag in ("collapsible", "tiles"):
+                if not isinstance(node.get(flag, False), bool):
+                    raise ProtocolError(f"group {flag} is a bool")
+            group_id = node.get("id")
+            if group_id is not None:
+                if not isinstance(group_id, str) or not group_id:
+                    raise ProtocolError("a group id is a non-empty string")
+                _unique(seen, group_id)
+            elif node.get("collapsible"):
+                raise ProtocolError("a collapsible group needs an id")
             items = node.get("items", [])
             if any(isinstance(item, dict) and item.get("kind") == "group" for item in items if isinstance(items, list)):
                 raise ProtocolError("groups do not nest")
             _validate_nodes(items, seen)
+
+
+def _validate_button(node: dict, seen: Optional[set]) -> None:
+    """2.0 button fields (docs/PROTOCOL.md 6.1); `seen` is None for list row buttons (their ids repeat per row)."""
+    for field_name in ("icon", "short", "meta"):
+        if node.get(field_name) is not None and not isinstance(node[field_name], str):
+            raise ProtocolError(f"button {field_name} is a string or null")
+    short = node.get("short")
+    if isinstance(short, str) and len(short) > SHORT_MAX:
+        raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
+    if node.get("variant") not in (None, "icon"):
+        raise ProtocolError(f"unknown button variant {node.get('variant')!r}")
+    menu_value = node.get("menu")
+    if menu_value is None:
+        return
+    if not isinstance(menu_value, dict) or not isinstance(menu_value.get("id"), str) or not menu_value["id"]:
+        raise ProtocolError("a button menu needs a string id")
+    options = menu_value.get("options")
+    if not isinstance(options, list) or not options or not all(
+            isinstance(o, dict) and "value" in o and isinstance(o.get("label"), str) for o in options):
+        raise ProtocolError("a button menu needs options of {value, label}")
+    if not isinstance(menu_value.get("badge", ""), str):
+        raise ProtocolError("a button menu badge is a string")
+    if seen is not None:
+        _unique(seen, menu_value["id"])
 
 
 def _unique(seen: set, key: str) -> None:

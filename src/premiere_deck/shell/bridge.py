@@ -3,7 +3,8 @@
 Contract: docs/BRIDGE_API.md. pywebview exposes every public attribute of the js_api object, so `Bridge` has exactly
 the methods of BRIDGE_API.md section 2 as public names (`CONTRACT_METHODS`); everything else starts with an
 underscore. The hub (host/hub.py) does the work; the bridge validates arguments, turns failures into one sentence
-and owns the window-side concerns (dialogs, hide / quit, updater).
+and owns the window-side concerns (dialogs, hide / quit, updater, the window mode: compact or wide follows
+`PremiereState.state`, BRIDGE_API.md 6).
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ import time
 from typing import Any, Callable, Optional
 
 from premiere_deck.core.jobs import JobCancelled
+from premiere_deck.host.fake_agent import FAKE_STATES, set_fake_premiere
 
 from . import winutil
 
@@ -29,6 +31,8 @@ MAX_UI_LOG_CHARS = 2000
 _DIALOG_OPEN = 10  # webview.FileDialog.OPEN
 MSG_FAILED = "The operation failed; details are in the log."
 PROJECT_TYPES = ("Premiere Pro projects (*.prproj)", "All files (*.*)")
+WIDEN_DELAY = 0.45  # s: the compact page shows "Panel connected" before the window widens (HOST_UI.md 2)
+RESIZE_MS = 300
 EXE_TYPES = ("Programs (*.exe)", "All files (*.*)")
 
 
@@ -88,6 +92,7 @@ def build_event_script(events: list[tuple[str, Any]]) -> str:
             "var d=function(n,p){h.dispatch(n,p)};" + calls + "})();")
 
 
+URGENT = ("window",)  # not held back by min_interval
 COALESCED = {"job": "id", "premiere": None, "modules": None, "panel": None, "settings": None, "update": None}
 
 
@@ -108,7 +113,8 @@ class EventPump:
     - Nothing is delivered before `set_ready()`; everything emitted earlier is kept.
     - State-like events (`premiere`, `modules`, `panel`, `settings`, `update`) and `job` per id are coalesced: a
       pending event keeps its place and takes the newest payload. Everything else is delivered in order.
-    - Batches go out through `deliver(script)` (window.run_js) on one daemon thread, at most one per `min_interval`.
+    - Batches go out through `deliver(script)` (window.run_js) on one daemon thread, at most one per `min_interval`;
+      a `window` event is sent without that wait.
     """
 
     def __init__(self, deliver: Optional[Callable[[str], Any]] = None, start_delay: float = 0.1,
@@ -122,6 +128,7 @@ class EventPump:
         self._pending: dict[str, list] = {}
         self._ready_at: Optional[float] = None
         self._next_at = 0.0
+        self._urgent = False  # a queued event that skips the min_interval wait
         self._stopped = False
         self._thread: Optional[threading.Thread] = None
 
@@ -142,6 +149,8 @@ class EventPump:
                 self._queue.append(entry)
                 if key is not None:
                     self._pending[key] = entry
+            if name in URGENT:
+                self._urgent = True  # delivered at once: the page animates in step with the native resize
             self._cond.notify_all()
 
     def set_ready(self) -> None:
@@ -178,6 +187,7 @@ class EventPump:
             events = [(name, payload) for name, payload, _ in self._queue]
             self._queue = []
             self._pending = {}
+            self._urgent = False
             return events
 
     def flush(self) -> int:
@@ -195,7 +205,7 @@ class EventPump:
             with self._cond:
                 while not self._stopped:
                     if self._ready_at is not None and self._deliver is not None and self._queue:
-                        delay = max(self._ready_at, self._next_at) - time.monotonic()
+                        delay = max(self._ready_at, 0.0 if self._urgent else self._next_at) - time.monotonic()
                         if delay <= 0:
                             break
                         self._cond.wait(delay)
@@ -231,6 +241,12 @@ class Bridge:
         self._auto_download_for: Optional[str] = None
         self._shut_down = False
         self._on_hide: Callable[[], None] = lambda: None
+        self._on_theme: Callable[[str], None] = lambda theme: None  # the shell retints the window border
+        # Window mode (compact | wide) and the shell's resizer: resize(mode, animate) -> bool (False: nothing to do).
+        self._mode = "wide" if _premiere_mode(self._safe_premiere_state()) == "wide" else "compact"
+        self._resize: Optional[Callable[..., bool]] = None
+        self._can_animate: Callable[[], bool] = lambda: True
+        self._mode_gen = 0
         hub.emit = self._emit
 
     # -- wiring (underscore names are not exposed to JS)
@@ -244,6 +260,62 @@ class Bridge:
 
     def _emit(self, name: str, payload: Any = None) -> None:
         self._pump.emit(name, payload)
+        if name == "premiere" and isinstance(payload, dict):
+            self._on_premiere_state(payload)
+
+    # -- window mode (BRIDGE_API.md 4 `window`, 6)
+    def _safe_premiere_state(self) -> dict:
+        try:
+            return self._hub.premiere_state()
+        except Exception:  # noqa: BLE001 - the hub may not be started yet
+            return {}
+
+    def _attach_resizer(self, resize: Callable[..., bool], can_animate: Callable[[], bool] = lambda: True) -> None:
+        self._resize = resize
+        self._can_animate = can_animate
+
+    def _window_payload(self, ms: int = 0) -> dict:
+        return {"mode": self._mode, "focused": self._focused, "ms": int(ms)}
+
+    def _on_premiere_state(self, premiere: dict) -> None:
+        """Every `premiere` event: widen on entering `connected` (after WIDEN_DELAY, so the compact page shows the
+        connection first), narrow at once on leaving it."""
+        want = _premiere_mode(premiere)
+        with self._lock:
+            self._mode_gen += 1
+            gen = self._mode_gen
+        if want == self._mode:
+            return
+        if want == "wide" and not self._hidden:
+            timer = threading.Timer(WIDEN_DELAY, self._mode_timer, args=(gen, want))
+            timer.daemon = True
+            timer.start()
+            return
+        self._set_mode(want)
+
+    def _mode_timer(self, gen: int, want: str) -> None:
+        if gen != self._mode_gen:
+            return  # the state changed again meanwhile
+        if _premiere_mode(self._safe_premiere_state()) != want:
+            return
+        self._set_mode(want)
+
+    def _set_mode(self, mode: str, animate: Optional[bool] = None) -> None:
+        """Send the `window` event, then let the shell move the native size (the page animates in the same time)."""
+        with self._lock:
+            if mode == self._mode:
+                return
+            self._mode = mode
+        if animate is None:
+            animate = not self._hidden and self._can_animate()
+        ms = RESIZE_MS if animate else 0
+        self._emit("window", self._window_payload(ms))
+        resize = self._resize
+        if resize is not None:
+            try:
+                resize(mode, animate=animate, ms=ms)
+            except Exception:  # noqa: BLE001
+                log.exception("window resize failed")
 
     def _toast(self, message: str, kind: str = "info") -> None:
         self._emit("toast", {"kind": kind, "message": message})
@@ -254,7 +326,7 @@ class Bridge:
             if focused == self._focused:
                 return
             self._focused = focused
-        self._emit("window", {"focused": focused})
+        self._emit("window", self._window_payload(0))
 
     def _update_status(self) -> dict:
         return self._updater.status() if self._updater is not None else _default_update_status(self._version)
@@ -262,7 +334,7 @@ class Bridge:
     def _state(self) -> dict:
         state = self._hub.state()
         state["update"] = self._update_status()
-        state["window"] = {"focused": self._focused}
+        state["window"] = {"mode": self._mode, "focused": self._focused}
         return state
 
     def _need_window(self) -> Any:
@@ -308,6 +380,10 @@ class Bridge:
         window = self._window
         if window is None:
             return
+        # A show from the tray takes the size of the current state without an animation (HOST_UI.md 7).
+        want = _premiere_mode(self._safe_premiere_state())
+        if self._hidden and want != self._mode:
+            self._set_mode(want, animate=False)
         try:
             window.show()
             window.restore()
@@ -420,6 +496,17 @@ class Bridge:
             self._emit("settings", self._hub.settings.public())
             raise
         self._emit("settings", after)
+        if "theme" in patch:
+            try:
+                self._on_theme(str(after.get("theme")))
+            except Exception:  # noqa: BLE001
+                log.debug("window retint failed", exc_info=True)
+            notify = getattr(self._hub, "notify_theme", None)  # the panel follows the theme (PROTOCOL.md `theme`)
+            if callable(notify):
+                try:
+                    notify()
+                except Exception:  # noqa: BLE001
+                    log.debug("theme notification failed", exc_info=True)
         if after.get("auto_download_updates") and not before.get("auto_download_updates") and self._updater:
             status = self._updater.status()
             if status.get("stage") == "available":
@@ -497,6 +584,13 @@ class Bridge:
         status = self._hub.reinstall_panel()
         self._emit("panel", status)
         return status
+
+    @_api
+    def panel_check_update(self):
+        result = self._hub.check_panel_update()
+        if result.get("updated"):
+            self._emit("panel", self._hub.panel_status())
+        return result
 
     @_api
     def panel_remove(self):
@@ -606,6 +700,15 @@ class Bridge:
         return True
 
     @_api
+    def fake_premiere(self, state):
+        if not getattr(self._hub, "fake", False):
+            raise BridgeError("Only available in the simulated mode.")
+        if state not in FAKE_STATES:
+            raise BridgeError("Unknown state.")
+        set_fake_premiere(self._hub, state)
+        return self._hub.premiere_state()
+
+    @_api
     def log(self, level, message):
         ui_log.log(LOG_LEVELS.get(str(level).lower(), logging.INFO), "ui: %s", str(message)[:MAX_UI_LOG_CHARS])
         return None
@@ -618,6 +721,10 @@ class Bridge:
         return self._updater
 
 
+def _premiere_mode(premiere: dict) -> str:
+    return "wide" if isinstance(premiere, dict) and premiere.get("state") == "connected" else "compact"
+
+
 def _need_id(value: Any) -> None:
     if not isinstance(value, str) or not value:
         raise BridgeError("Unknown module.")
@@ -627,7 +734,8 @@ def _need_id(value: Any) -> None:
 CONTRACT_METHODS = (
     "ready", "get_state", "get_settings", "set_settings", "launch_premiere", "pick_project", "pick_premiere_exe",
     "recent_projects", "modules", "set_module_enabled", "module_page", "module_action", "module_settings",
-    "set_module_setting", "panel_status", "panel_reinstall", "panel_remove", "panel_debug_mode", "ffmpeg_status",
-    "ffmpeg_download", "answer_confirm", "open_data_folder", "reveal", "open_path", "open_url", "window_minimize",
-    "window_close", "quit", "update_status", "check_updates", "download_update", "apply_update", "log",
+    "set_module_setting", "panel_status", "panel_reinstall", "panel_check_update", "panel_remove", "panel_debug_mode",
+    "ffmpeg_status", "ffmpeg_download", "answer_confirm", "open_data_folder", "reveal", "open_path", "open_url", "window_minimize",
+    "window_close", "quit", "update_status", "check_updates", "download_update", "apply_update", "fake_premiere",
+    "log",
 )

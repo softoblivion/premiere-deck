@@ -50,6 +50,8 @@ def _is_relative(path: str) -> bool:
 class SaveVersion(Action):
     id = "save_version"
     label = "Save version"
+    short = "Save version"
+    icon = "save-version"
     hint = "Saves the project as the next numbered version and keeps editing the new file."
     group = "Project"
     feasibility = (

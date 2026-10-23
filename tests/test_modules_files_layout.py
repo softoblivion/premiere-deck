@@ -1,6 +1,9 @@
+"""Layouts, rules (with the classifier fields of docs/FILES.md 2), overrides, exclusions, root detection, mapping."""
+
 import json
 import os
 import unittest
+from dataclasses import replace
 
 from premiere_deck.core.media import MediaInfo
 from premiere_deck.modules.files import layout as L
@@ -27,8 +30,13 @@ class DefaultLayoutRules(unittest.TestCase):
         self.assertEqual(self.layout.project_dir, "Project")
         self.assertIn("Audio/SFX", self.layout.folders)
         self.assertTrue(self.layout.mirror_subfolders)
-        self.assertEqual(len(self.layout.rules), 11)
+        self.assertEqual(len(self.layout.rules), 16)
+        self.assertEqual(self.layout.media_dir, "Media")
+        self.assertEqual(list(self.layout.folders),
+                         ["Footage", "Stock", "Generated", "Overlays", "Audio/Music", "Audio/SFX", "Audio/Voice",
+                          "Graphics", "Motion", "Media", "Exports", "Exports/Frames", "Project"])
         self.assertIn("default", L.shipped_layouts())
+        self.assertEqual(self.layout.to_json()["media_dir"], "Media")
 
     def test_rule_1_video_with_alpha_is_overlay(self):
         self.assertEqual(self.folder(mi("logo.mov", "video", alpha=True)), "Overlays")
@@ -40,6 +48,55 @@ class DefaultLayoutRules(unittest.TestCase):
 
     def test_rule_3_other_video_is_footage(self):
         self.assertEqual(self.folder(mi("A001_C002.mp4", "video", duration=12.0)), "Footage")
+        self.assertEqual(self.folder(mi("x.mp4", "video", source="camera")), "Footage")
+        self.assertEqual(self.folder(mi("x.mp4", "video", source="unknown")), "Footage")
+
+    def test_classifier_rules_generated_and_stock_video(self):
+        self.assertEqual(self.folder(mi("x.mp4", "video", source="generated")), "Generated")
+        self.assertEqual(self.folder(mi("x.mp4", "video", source="stock")), "Stock")
+        # alpha and overlay names come first
+        self.assertEqual(self.folder(mi("x.mov", "video", alpha=True, source="stock")), "Overlays")
+        self.assertEqual(self.folder(mi("film grain.mp4", "video", source="generated")), "Overlays")
+
+    def test_classifier_rules_audio_class(self):
+        self.assertEqual(self.folder(mi("a.wav", "audio", duration=200.0, audio_class="speech")), "Audio/Voice")
+        self.assertEqual(self.folder(mi("a.wav", "audio", duration=5.0, audio_class="music")), "Audio/Music")
+        self.assertEqual(self.folder(mi("a.wav", "audio", duration=200.0, audio_class="other")), "Audio/SFX")
+        # a name rule wins over the class; an unknown class falls to the duration rules
+        self.assertEqual(self.folder(mi("whoosh.wav", "audio", duration=200.0, audio_class="speech")), "Audio/SFX")
+        self.assertEqual(self.folder(mi("vo_01.wav", "audio", duration=200.0, audio_class="music")), "Audio/Voice")
+        self.assertEqual(self.folder(mi("a.wav", "audio", duration=5.0)), "Audio/SFX")
+
+    def test_classifier_runs_only_when_a_classifier_rule_is_reached(self):
+        calls = []
+
+        def enrich(info):
+            calls.append(info.path)
+            return replace(info, audio_class="speech")
+
+        named = mi("whoosh_long.wav", "audio", duration=200.0)
+        self.assertEqual(classify(named, self.layout, enrich=enrich).folder, "Audio/SFX")
+        self.assertEqual(calls, [])
+        decision = classify(mi("talk.wav", "audio", duration=200.0), self.layout, enrich=enrich)
+        self.assertEqual((decision.folder, decision.info.audio_class), ("Audio/Voice", "speech"))
+        self.assertEqual(len(calls), 1)
+        overrides = parse_overrides([{"name": "talk*", "to": "Audio/Music"}])
+        self.assertEqual(classify(mi("talk.wav", "audio"), self.layout, overrides, enrich=enrich).folder,
+                         "Audio/Music")
+        self.assertEqual(len(calls), 1)
+
+        def broken(info):
+            raise RuntimeError("model failed")
+
+        self.assertEqual(classify(mi("talk.wav", "audio", duration=200.0), self.layout, enrich=broken).folder,
+                         "Audio/Music")
+
+    def test_list_values_of_classifier_fields(self):
+        layout = L.parse_layout({"folders": ["A", "B"], "rules": [
+            {"match": {"kind": "video", "source": ["stock", "generated"]}, "to": "A"}, {"match": {}, "to": "B"}]})
+        self.assertEqual(classify(mi("x.mp4", "video", source="generated"), layout).folder, "A")
+        self.assertEqual(classify(mi("x.mp4", "video", source="camera"), layout).folder, "B")
+        self.assertEqual(classify(mi("x.mp4", "video"), layout).folder, "B")
 
     def test_rule_4_sfx_names(self):
         for name in ("whoosh_01.wav", "SFX hit.mp3", "Riser-long.wav", "impact.flac"):
@@ -91,7 +148,8 @@ class DefaultLayoutRules(unittest.TestCase):
             {"to": "Footage"},  # neither source nor name: skipped
             {"source": "C:\\x", "to": "../outside"},  # unsafe target: skipped
             "garbage",
-        ])
+            {"name": "*", "to": "Media/Sub"},  # into the Sync folder: skipped
+        ], media_dir="Media")
         self.assertEqual(len(overrides), 2)
         pack = MediaInfo(path="C:\\src\\pack\\long.wav", kind="audio", ext="wav", size=1, duration=100.0)
         self.assertEqual(classify(pack, self.layout, overrides).folder, "Audio/SFX")
@@ -114,7 +172,13 @@ class LayoutFiles(unittest.TestCase):
                  json.dumps({"folders": ["A"], "rules": [{"match": {"kind": "sound"}, "to": "A"}]}),
                  json.dumps({"folders": ["A"], "rules": [{"match": {"name": "(["}, "to": "A"}]}),
                  json.dumps({"folders": ["../escape"], "rules": [{"to": "A"}]}),
-                 json.dumps({"folders": ["A"], "rules": [{"match": {"colour": 1}, "to": "A"}]})]
+                 json.dumps({"folders": ["A"], "rules": [{"match": {"colour": 1}, "to": "A"}]}),
+                 json.dumps({"folders": ["A"], "rules": [{"match": {"source": "drone"}, "to": "A"}]}),
+                 json.dumps({"folders": ["A"], "rules": [{"match": {"audio_class": ["speech", "noise"]}, "to": "A"}]}),
+                 json.dumps({"folders": ["A"], "rules": [{"match": {"source": []}, "to": "A"}]}),
+                 json.dumps({"folders": ["A", "Media"], "rules": [{"match": {}, "to": "Media"}]}),
+                 json.dumps({"folders": ["A"], "media_dir": "Sync", "rules": [{"match": {}, "to": "Sync/x"}]}),
+                 json.dumps({"folders": ["A"], "media_dir": "../x", "rules": [{"match": {}, "to": "A"}]})]
         for text in cases:
             with self.subTest(text=text):
                 with open(bad, "w", encoding="utf-8") as handle:
@@ -123,6 +187,14 @@ class LayoutFiles(unittest.TestCase):
                     L.load_layout_file(bad)
         with self.assertRaises(L.LayoutError):
             L.load_layout_file(os.path.join(self.dir, "missing.json"))
+
+    def test_1x_layout_without_media_dir_gets_one(self):
+        layout = L.parse_layout({"folders": ["Video"], "rules": [{"match": {}, "to": "Video"}]})
+        self.assertEqual((layout.media_dir, list(layout.folders)), ("Media", ["Video", "Media"]))
+        custom = L.parse_layout({"folders": ["Video", "Inbox"], "media_dir": "inbox",
+                                 "rules": [{"match": {}, "to": "Video"}]})
+        self.assertEqual(list(custom.folders), ["Video", "Inbox"])
+        self.assertTrue(custom.in_media_dir("Inbox/Day1"))
 
     def test_clean_folder(self):
         self.assertEqual(L.clean_folder("Audio\\SFX/"), "Audio/SFX")
@@ -165,6 +237,14 @@ class LayoutFiles(unittest.TestCase):
             with self.subTest(rel=rel):
                 self.assertTrue(L.is_excluded(os.path.join(root, *rel.split("/")), root))
         self.assertFalse(L.is_excluded(os.path.join(root, "Footage", "clip.mp4"), root))
+        masks = L.masks_folder(os.path.join(root, "Sample.prproj"))
+        self.assertEqual(masks, "sample masks")
+        mask_file = os.path.join(root, "Sample Masks", "47844aff.prmf")
+        self.assertTrue(L.is_excluded(mask_file, root, masks=masks))
+        self.assertTrue(L.is_excluded(os.path.join(root, "sample masks", "x.mp4"), root, masks=masks))
+        self.assertTrue(L.is_excluded(os.path.join(root, "Sample Masks"), root, masks=masks))
+        self.assertTrue(L.is_excluded(os.path.join(root, "Other", "a.prmf"), root))  # .prmf anywhere
+        self.assertFalse(L.is_excluded(os.path.join(root, "Other Masks", "x.mp4"), root, masks=masks))
         hidden = write_file(os.path.join(root, "Footage", "secret.mp4"))
         os.system(f'attrib +h "{hidden}"')
         self.assertTrue(L.is_excluded(hidden, root))
@@ -180,6 +260,11 @@ class LayoutFiles(unittest.TestCase):
         self.assertIsNone(m.layout_folder_of(j("Project", "a.mp4")))  # next to the project file
         self.assertIsNone(m.layout_folder_of(os.path.join(os.path.dirname(root), "x.mp4")))
         self.assertEqual(m.layout_folder_of(j("Footage2", "a.mp4")), "Footage2")  # mirrored user folder
+        self.assertEqual(m.deepest_layout_folder(j("Footage", "Day1", "a.mp4")), "Footage")
+        self.assertEqual(m.deepest_layout_folder(j("audio", "sfx", "x", "a.wav")), "Audio/SFX")
+        self.assertIsNone(m.deepest_layout_folder(j("Footage2", "a.mp4")))
+        self.assertIsNone(m.deepest_layout_folder(j("Project", "a.mp4")))
+        self.assertEqual(m.rel_folder(j("Footage", "Day1", "a.mp4")), "Footage/Day1")
         self.assertTrue(m.is_exports(j("Exports", "Frames", "f.png")))
         self.assertFalse(m.is_exports(j("Footage", "f.png")))
         self.assertEqual(m.folder_for_bin("Overlays"), "Overlays")

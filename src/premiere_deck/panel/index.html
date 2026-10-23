@@ -1,27 +1,21 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="black">
 <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
     <title>Premiere Deck</title>
-    <style>
-        /* Bundled font files (docs/PANEL.md 3): headings and captions, and paths. Body text uses the system font. */
-        @font-face {
-            font-family: "Unbounded";
-            src: url("fonts/Unbounded-latin.woff2") format("woff2");
-            font-weight: 200 900;
-            font-style: normal;
-            font-display: swap;
-        }
-        @font-face {
-            font-family: "Geist Mono";
-            src: url("fonts/GeistMono-Variable.woff2") format("woff2");
-            font-weight: 100 900;
-            font-style: normal;
-            font-display: swap;
-        }
-    </style>
+    <script>
+        // The theme of the last session is drawn before the host answers (docs/PANEL.md 2); display.js keeps it
+        // in step with the host's `theme` message. Without storage the page starts in the default theme.
+        (function () {
+            try {
+                var name = window.localStorage.getItem("deck.theme");
+                document.documentElement.setAttribute("data-theme", name === "sky" ? "sky" : "black");
+            } catch (e) {
+                document.documentElement.setAttribute("data-theme", "black");
+            }
+        }());
+    </script>
     <link rel="stylesheet" href="css/panel.css">
 </head>
 <body>

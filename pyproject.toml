@@ -20,14 +20,12 @@ dependencies = [
     "pythonnet>=3.0.3",
     "websockets>=17.0",
     "watchdog>=6.0",
-    "numpy>=2.0",
-    "onnxruntime-directml>=1.24",
-    "tokenizers>=0.23",
-    "Pillow>=11.0",
+    "numpy>=2.3",
+    "onnxruntime>=1.24",
 ]
 
 [project.optional-dependencies]
-dev = ["pyinstaller>=6.22"]
+dev = ["pyinstaller>=6.22", "Pillow>=11.0"]
 
 [project.urls]
 Homepage = "https://github.com/softoblivion/premiere-deck"

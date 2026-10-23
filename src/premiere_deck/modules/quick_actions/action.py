@@ -1,8 +1,9 @@
 """The base class of a quick action and the helpers every action uses (docs/QUICK_ACTIONS.md).
 
-An action is one class under `actions/` with `id`, `label`, `hint`, `group`, `feasibility` and `run(ctx, module)`.
-Preconditions that fail raise `ActionAbort` with the toast to show; script errors raise `PremiereError` and are
-turned into "<Label> failed: <sentence>" by the module. Scripts live in `jsx/<name>.jsx`; `jsx/_common.jsx` is
+An action is one class under `actions/` with `id`, `label`, `short`, `icon`, `hint`, `group`, `feasibility` and
+`run(ctx, module) -> Outcome`. Preconditions that fail raise `ActionAbort` with the result to show; script errors
+raise `PremiereError` and become the result "<Label> failed" with the sentence as `detail` (the module reports every
+outcome through `ctx.ui.result`, docs/MODULES.md 4). Scripts live in `jsx/<name>.jsx`; `jsx/_common.jsx` is
 prepended to each of them.
 """
 
@@ -13,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Optional
 
-from premiere_deck.modules.base import ActionResult, ModuleContext
+from premiere_deck.modules.base import ModuleContext
 from premiere_deck.premiere.model import ProjectInfo, Selection, SequenceInfo
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -33,30 +34,48 @@ DEFAULT_TIMEOUT_MS = 30000
 _INVALID_NAME = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 
 
-class ActionAbort(Exception):
-    """A precondition failed (nothing selected, no active sequence); carries the toast."""
+@dataclass
+class Outcome:
+    """What one press reports through `ctx.ui.result`: `outcome` is ok | warn | error | neutral."""
 
-    def __init__(self, tone: str, text: str) -> None:
+    outcome: str
+    text: str
+    detail: Optional[str] = None
+
+
+class ActionAbort(Exception):
+    """A precondition failed (nothing selected, no active sequence); carries the result to show."""
+
+    def __init__(self, tone: str, text: str, detail: Optional[str] = None) -> None:
         super().__init__(text)
-        self.tone = tone
+        self.tone = tone  # the outcome: warn | error | neutral
         self.text = text
+        self.detail = detail
 
 
 @dataclass(frozen=True)
-class Control:
-    """A `select` or `input` node rendered right above the action's button; its value is passed to `run`."""
+class Menu:
+    """The choice an action carries as the `menu` of its tile (docs/QUICK_ACTIONS.md 1). `options` are
+    (value, label); the badge of a value is its entry in `badges` or else its label."""
 
     name: str
-    kind: str  # select | input
     label: str
-    default: str = ""
-    options: tuple[tuple[str, str], ...] = ()  # (value, label) for select
-    placeholder: str = ""
+    default: str
+    options: tuple[tuple[str, str], ...]
+    badges: tuple[tuple[str, str], ...] = ()
+
+    def badge(self, value: str) -> str:
+        badges = dict(self.badges)
+        if value in badges:
+            return badges[value]
+        return dict(self.options).get(value, "")
 
 
 class Action:
     id: str = ""
     label: str = ""
+    short: str = ""  # tile label, at most 16 characters (protocol.SHORT_MAX)
+    icon: str = ""  # symbol name of the panel sprite
     hint: str = ""
     group: str = ""
     # The exact API calls the action relies on and where they are documented (docs/QUICK_ACTIONS.md 1).
@@ -65,14 +84,14 @@ class Action:
     long: bool = False
     timeout_ms: int = DEFAULT_TIMEOUT_MS
 
-    def controls(self, module: "QuickActionsModule") -> list[Control]:
-        return []
+    def menu(self, module: "QuickActionsModule") -> Optional[Menu]:
+        return None
 
     def button(self, module: "QuickActionsModule") -> dict:
-        """Overrides of the button node (`label`, `tone`, `disabled`) for the action's current state."""
+        """Overrides of the button node (`label`, `short`, `tone`, `disabled`) for the action's current state."""
         return {}
 
-    def run(self, ctx: ModuleContext, module: "QuickActionsModule") -> ActionResult:
+    def run(self, ctx: ModuleContext, module: "QuickActionsModule") -> Outcome:
         raise NotImplementedError
 
     # --- helpers --------------------------------------------------------------------------------------------
@@ -84,8 +103,12 @@ class Action:
         return ctx.premiere.eval(f"actions.{name}", script_text(ctx, name), args,
                                  timeout_ms=timeout_ms or self.timeout_ms)
 
-    def done(self, text: str, tone: str = "ok") -> ActionResult:
-        return ActionResult(toast=(tone, text))
+    def done(self, text: str, outcome: str = "ok", detail: Optional[str] = None) -> Outcome:
+        return Outcome(outcome, text, detail)
+
+    def fail(self, detail: str) -> Outcome:
+        """The result "<Label> failed" with the one-sentence reason as `detail`."""
+        return Outcome("error", f"{self.label} failed", detail)
 
 
 def script_text(ctx: ModuleContext, name: str) -> str:
@@ -119,7 +142,7 @@ def require_selection(ctx: ModuleContext) -> Selection:
 
 
 def timecode(seconds: float) -> str:
-    """`HH:MM:SS` of a time in seconds (the toast format of docs/QUICK_ACTIONS.md 4)."""
+    """`HH:MM:SS` of a time in seconds (the result format of docs/QUICK_ACTIONS.md 4)."""
     total = max(0, int(seconds + 1e-6))
     return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
 

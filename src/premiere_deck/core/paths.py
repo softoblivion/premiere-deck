@@ -55,8 +55,6 @@ class AppPaths:
         self.settings_file: Path = self.home / "settings.json"
         self.bin_dir: Path = self.home / "bin"
         self.versions_file: Path = self.bin_dir / "versions.json"
-        self.models_dir: Path = self.home / "models"
-        self.models_file: Path = self.models_dir / "models.json"
         self.panel_dir: Path = self.home / "panel"
         self.logs_dir: Path = self.home / "logs"
         self.log_dir: Path = self.logs_dir  # alias used by the shell
@@ -70,8 +68,8 @@ class AppPaths:
 
     def ensure(self) -> None:
         """Create the data folder and its sub-folders."""
-        for folder in (self.home, self.bin_dir, self.models_dir, self.logs_dir, self.job_logs_dir, self.webview_dir,
-                       self.updates_dir, self.cache_root):
+        for folder in (self.home, self.bin_dir, self.logs_dir, self.job_logs_dir, self.webview_dir, self.updates_dir,
+                       self.cache_root):
             folder.mkdir(parents=True, exist_ok=True)
 
     def cache_dir(self, module_id: str) -> Path:
@@ -85,8 +83,15 @@ class AppPaths:
     def binary(self, name: str) -> Path:
         return self.bin_dir / name
 
-    def model_file(self, filename: str) -> Path:
-        return self.models_dir / filename
+    def remove_retired_data(self) -> list[Path]:
+        """Delete data folders of removed features (`models/`, `cache/search/` of versions before 2.0); returns what
+        existed. Errors are ignored. A project's own `.premiere-deck/` folders are never touched."""
+        removed: list[Path] = []
+        for folder in (self.home / "models", self.cache_root / "search"):
+            if folder.exists():
+                remove_path(folder)
+                removed.append(folder)
+        return removed
 
     def job_log(self, job_id: str) -> Path:
         self.job_logs_dir.mkdir(parents=True, exist_ok=True)

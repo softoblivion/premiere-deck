@@ -25,7 +25,7 @@ class PathsTests(unittest.TestCase):
         self.assertEqual(paths.home, (self.root / "data").resolve())
         self.assertEqual(paths.root, paths.home)
         paths.ensure()
-        for folder in (paths.bin_dir, paths.models_dir, paths.logs_dir, paths.webview_dir, paths.updates_dir):
+        for folder in (paths.bin_dir, paths.logs_dir, paths.webview_dir, paths.updates_dir):
             self.assertTrue(folder.is_dir(), folder)
         self.assertEqual(paths.settings_file.name, "settings.json")
         self.assertEqual(paths.host_log, paths.logs_dir / "host.log")
@@ -44,6 +44,23 @@ class PathsTests(unittest.TestCase):
         for bad in ("", "..", "a/b", "c:d"):
             with self.assertRaises(ValueError):
                 paths.cache_dir(bad)
+
+    def test_remove_retired_data(self):
+        paths = AppPaths(self.root)
+        paths.ensure()
+        self.assertEqual(paths.remove_retired_data(), [], "nothing to remove on a clean data folder")
+        (paths.home / "models").mkdir()
+        (paths.home / "models" / "weights.bin").write_bytes(b"x")
+        retired = paths.cache_root / "search"
+        retired.mkdir(parents=True)
+        (retired / "thumb.jpg").write_bytes(b"x")
+        kept = paths.cache_dir("files")
+        (kept / "keep.txt").write_text("x", "utf-8")
+        removed = paths.remove_retired_data()
+        self.assertEqual(sorted(p.name for p in removed), ["models", "search"])
+        self.assertFalse((paths.home / "models").exists())
+        self.assertFalse(retired.exists())
+        self.assertTrue((kept / "keep.txt").is_file(), "other cache folders stay")
 
     def test_atomic_write_and_broken_json(self):
         target = self.root / "x" / "data.json"
@@ -66,10 +83,19 @@ class SettingsTests(unittest.TestCase):
         settings = Settings(self.file)
         self.assertEqual(settings.get("theme"), DEFAULT_THEME)
         self.assertTrue(settings.get("keep_running_with_premiere"))
-        settings.patch({"theme": "Bloom", "keep_running_with_premiere": False})
+        self.assertEqual(DEFAULT_THEME, "black")
+        settings.patch({"theme": "Sky", "keep_running_with_premiere": False})
         again = Settings(self.file)
-        self.assertEqual(again.get("theme"), "bloom")
+        self.assertEqual(again.get("theme"), "sky")
         self.assertFalse(again.get("keep_running_with_premiere"))
+
+    def test_theme_names_of_1x_fall_back_to_black(self):
+        for old in ("dusk", "nova", "frost", "bloom", "", None, 7):
+            self.file.write_text(json.dumps({"theme": old}), "utf-8")
+            self.assertEqual(Settings(self.file).get("theme"), "black", old)
+        for name in ("black", "sky", " SKY "):
+            self.file.write_text(json.dumps({"theme": name}), "utf-8")
+            self.assertEqual(Settings(self.file).get("theme"), name.strip().lower())
 
     def test_bad_values_fall_back_and_patch_refuses(self):
         self.file.write_text(json.dumps({"theme": "neon", "keep_running_with_premiere": "yes", "future_key": 3}), "utf-8")
@@ -79,6 +105,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.get("future_key"), 3)
         with self.assertRaises(ValueError):
             settings.patch({"theme": "neon"})
+        with self.assertRaises(ValueError):
+            settings.patch({"theme": "nova"})
         with self.assertRaises(ValueError):
             settings.patch({"recent_projects": []})
         with self.assertRaises(ValueError):
@@ -107,11 +135,11 @@ class SettingsTests(unittest.TestCase):
             scoped.set("layout", "custom")
         current["deck"] = str(deck)
         deck.mkdir(parents=True)
-        (deck / "project.json").write_text(json.dumps({"layout_id": "x", "modules": {"search": {"a": 1}}}), "utf-8")
+        (deck / "project.json").write_text(json.dumps({"layout_id": "x", "modules": {"extra": {"a": 1}}}), "utf-8")
         scoped.set("layout", "custom")
         data = json.loads((deck / "project.json").read_text("utf-8"))
         self.assertEqual(data["layout_id"], "x")
-        self.assertEqual(data["modules"]["search"], {"a": 1})
+        self.assertEqual(data["modules"]["extra"], {"a": 1})
         self.assertEqual(data["modules"]["files"], {"layout": "custom"})
         (deck / "project.json").write_text("not json", "utf-8")
         self.assertEqual(scoped.get("layout", "default"), "default")

@@ -266,6 +266,8 @@ class PanelInstaller:
             return InstallResult("no_source", version, self.installed_version(),
                                  message="The panel files are missing from this build.")
         if self.is_junction():
+            log.info("panel install skipped: %s is a junction to %s (development link, left untouched)",
+                     self.target, os.path.realpath(self.target))
             return InstallResult("skipped_junction", version, self.installed_version(),
                                  message="The panel folder is linked to the source (development).")
         staged = self.stage()

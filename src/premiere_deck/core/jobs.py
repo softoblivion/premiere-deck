@@ -2,7 +2,7 @@
 
 - Priorities `high`, `normal`, `low`; within a priority first in, first out.
 - Two general workers take any job; one more worker is reserved for `high` jobs, so a quick high-priority job (a
-  thumbnail the user waits for) never queues behind two long indexing jobs.
+  thumbnail the user waits for) never queues behind two long background jobs.
 - `Job.cancel()` sets `cancelled` and the job's `cancel_event`; the function checks it and returns or raises. A
   job cancelled while still queued never runs.
 - Callbacks (`on_progress`, `on_done`, `on_error`) run through `dispatch`, which the host sets to "post onto the

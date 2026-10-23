@@ -32,7 +32,7 @@ from . import protocol as P
 
 log = logging.getLogger("premiere_deck.host.registry")
 
-MODULES = ["files", "quick_actions", "ai_search"]
+MODULES = ["files", "quick_actions"]
 RENDER_DELAY = 0.05
 CALL_TIMEOUT = 60.0
 

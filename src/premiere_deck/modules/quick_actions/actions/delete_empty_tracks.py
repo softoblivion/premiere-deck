@@ -7,6 +7,8 @@ from premiere_deck.modules.quick_actions.results import count
 class DeleteEmptyTracks(Action):
     id = "delete_empty_tracks"
     label = "Delete empty tracks"
+    short = "Empty tracks"
+    icon = "delete-empty-tracks"
     hint = "Removes unlocked video and audio tracks that hold no clips."
     group = "Timeline"
     feasibility = (
