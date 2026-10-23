@@ -1,4 +1,4 @@
-"""Shared helpers of the host worker's tests (no test cases here).
+"""Shared helpers of the host tests (no test cases here).
 
 Every scratch folder lives under `PREMIERE_DECK_HOME` (set by the runner) or a temp folder; the CEP extensions
 folder of a test is always a scratch folder (`PREMIERE_DECK_CEP_DIR`), never Adobe's.

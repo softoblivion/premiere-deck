@@ -1,7 +1,6 @@
 # Quick actions module
 
-Owner: actions worker (code and the details below), integrator (this contract). Module id `actions`. Tiles in the
-panel for operations every editor performs many times a day that cost several steps in Premiere's own interface.
+Module id `actions`. Tiles in the panel for operations every editor performs many times a day that cost several steps in Premiere's own interface.
 
 Code: `modules/quick_actions/module.py` (`QuickActionsModule`: rendering, routing, jobs, settings),
 `action.py` (base class `Action`, `Menu`, `Outcome`, `ActionAbort`, helpers), `actions/<id>.py` (one class per action
@@ -20,8 +19,8 @@ panel opens on it.
 ## 1. Actions
 
 Every action was checked against the ExtendScript DOM and the QE DOM of Premiere Pro 2026 (26.5.2); the exact calls
-and where they are documented are in each class's `feasibility` text, the live runs in `reports\actions_phase2.md`
-(2.0) and `reports\r21_actions.md` (2.1). QE is undocumented: every QE call is guarded (existence checked, result
+and where they are documented are in each class's `feasibility` text, the results of the live runs on
+26.5.2 (2.0 and 2.1) in the column "Calls" of the table below. QE is undocumented: every QE call is guarded (existence checked, result
 read back). Steps saved = what the user does in Premiere today.
 
 | Group | id | Code | Label | Does | Calls (26.5.2): worked / did not | Steps saved today |

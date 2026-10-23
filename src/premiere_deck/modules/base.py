@@ -1,7 +1,7 @@
 """Module contract (docs/MODULES.md): the base class every module subclasses, the services a module receives, and
 the test doubles (`FakeHost`) module tests build their context from.
 
-Owner: integrator. The host implements the service protocols in host/hub.py and the real `PremiereApi`; modules
+The host implements the service protocols in host/hub.py and the real `PremiereApi`; modules
 only ever see the protocols below.
 """
 

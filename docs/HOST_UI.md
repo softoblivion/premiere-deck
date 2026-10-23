@@ -1,9 +1,9 @@
 # Host window
 
-Owner: host worker (code), integrator (this contract). The window of `PremiereDeck.exe`: the project-owned copy of
+The window of `PremiereDeck.exe`: the project-owned copy of
 the Liquid UI kit (`ui/vendor/liquid_ui`, edited in place, never synced), frameless with the kit's title bar,
 fixed size with two locked sizes (compact 420 x 560 logical px, 3:4; wide 720 x 560), tray icon while Premiere
-runs. Copy neutral and factual (`_workspace\CONVENTIONS.md`), friendlier through hierarchy, spacing and feedback,
+runs. Copy is neutral and factual, friendlier through hierarchy, spacing and feedback,
 never through exclamation marks.
 
 ## 1. Shell
@@ -133,7 +133,7 @@ any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a p
 refused with "The setting needs on or off."); a bad or
 hand-edited value falls back to its default on load (`core/settings.py`); keys of newer versions are kept.
 
-## 7. Implementation notes (host worker)
+## 7. Implementation notes
 
 - Tabs of main: one per module in `order` (taken from `modules()`, so a new module gets its tab without a window
   change); Settings is the title-bar sheet (3.4), not a tab.
@@ -177,7 +177,7 @@ hand-edited value falls back to its default on load (`core/settings.py`); keys o
 - Font: Sora (SIL OFL, latin subset, variable woff2 with its licence text in the kit copy's `fonts/`) for all text;
   Geist Mono for numbers, paths and times. The kit copy's `css/tokens.css` is the only place that names the text
   font. Unbounded is gone.
-- Notices (user's rule 2026-10-23, `_workspace\CONVENTIONS.md` "Notices"): every notice of the window closes on a
+- Notices: every notice of the window closes on a
   click anywhere on it, except on a control inside it (a button, link or field does its own thing and the notice
   stays). Helpers: `ui/js/ui.js` `closeOnClick(el, close)` and `noticeMs(tone)`.
   - Toasts (kit copy `ui/vendor/liquid_ui/js/toast.js`): a click on the toast closes it, sticky ones included; the

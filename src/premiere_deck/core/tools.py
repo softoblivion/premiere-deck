@@ -1,6 +1,6 @@
 """ffmpeg / ffprobe discovery, download and the `Tools` service of the modules (docs/MODULES.md 3).
 
-Discovery order (`_workspace/RECIPES.md` 3): `<data>/bin` first, then PATH. When neither has both tools,
+Discovery order: `<data>/bin` first, then PATH. When neither has both tools,
 `ensure()` downloads the static build of yt-dlp/FFmpeg-Builds once, verifies it against the release's
 `checksums.sha256`, extracts the two exes through `.part` files and records them in `bin/versions.json`.
 """

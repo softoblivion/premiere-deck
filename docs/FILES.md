@@ -1,7 +1,6 @@
 # Files module
 
-Owner: files worker (code and the details of this document), integrator (the contract). Module id `files`. Keeps
-the media of a project sorted the same way on disk and in the project panel, and makes a project folder
+Module id `files`. Keeps the media of a project sorted the same way on disk and in the project panel, and makes a project folder
 self-contained so it can be copied to another machine without offline media. Package
 `src/premiere_deck/modules/files/`: `module.py` (`FilesModule`), `layout.py` (layouts, exclusions, root detection,
 folder <-> bin mapping), `classify.py` (rules and overrides over `MediaInfo`), `media_class.py` (the classifier of
@@ -423,8 +422,8 @@ and since 2.0:
 - `audio_class`: `"speech" | "music" | "other" | None`, set by the classifier (3.8), `None` straight from the probe,
   for non-audio and on a classifier failure.
 
-`core.probe.quick_hash` for collisions and copy identity. `core/media.py` and `core/probe.py` are owned by the
-files worker for the 2.0 piece (`ARCHITECTURE.md` 4).
+`core.probe.quick_hash` for collisions and copy identity. `core/media.py` and `core/probe.py` belong to the
+Files module (`ARCHITECTURE.md` 4).
 
 ## 5. State
 

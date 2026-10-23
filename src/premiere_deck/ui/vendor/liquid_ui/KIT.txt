@@ -1,5 +1,5 @@
 name: liquid_ui (Premiere Deck copy)
-forked_from: 3.1.0 (D:\Projects\_shared\liquid_ui)
+forked_from: 3.1.0 (the shared Liquid UI kit)
 owned_by_project_since: 2026-10-22
 
 This copy of the Liquid UI kit belongs to Premiere Deck and is edited here. It is never synced from

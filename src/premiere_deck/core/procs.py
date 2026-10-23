@@ -1,6 +1,6 @@
 """Child processes: hidden console, UTF-8, Win32 Job Object kill tree, progress pipe parsing.
 
-Rules from `_workspace/RECIPES.md` section 2: `CREATE_NO_WINDOW`, `stdin=DEVNULL` unless the caller feeds the
+Rules: `CREATE_NO_WINDOW`, `stdin=DEVNULL` unless the caller feeds the
 process, arguments as argv items, decode with `errors="replace"`, cancel kills the whole tree through a Job Object
 with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` (`taskkill /T /F` only as a fallback).
 """

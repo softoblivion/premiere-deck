@@ -179,7 +179,7 @@ class PremiereApi:
         if connected:
             self._send(message)
 
-    # Aliases of the hooks above under the names the host worker listed (same behaviour).
+    # Aliases of the hooks above under their alternative names (same behaviour).
     def set_event_handler(self, callback: EventCallback) -> None:
         self.on_event(callback)
 

@@ -1,5 +1,6 @@
 # Releases
 
-One file per release, `vX.Y.Z.md`, in the layout of `D:\Projects\_workspace\CONVENTIONS.md`, "Release notes
-template" (`## ⪩ <App> vX.Y.Z ⪨` header, summary, `---`, sections `### ⤷ Added / Changed / Fixed / Removed ˎˊ˗`).
-Every change in exactly one section, written for users. The newest file is the GitHub Release text as it is.
+One file per release, `vX.Y.Z.md`: a `## ⪩ Premiere Deck vX.Y.Z ⪨` header, one or two sentences on what the
+release means for the user, `---`, then the sections `### ⤷ Added / Changed / Fixed / Removed ˎˊ˗` in that order
+(a section without entries is left out). Every change in exactly one section, written for users. Each file is the
+text of its GitHub Release as it is.

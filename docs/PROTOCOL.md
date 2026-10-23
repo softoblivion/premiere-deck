@@ -1,8 +1,8 @@
 # Host <-> panel protocol
 
-Owner: integrator. The only definition of what the host and the CEP extension say to each other. The host side
+The only definition of what the host and the CEP extension say to each other. The host side
 is `src/premiere_deck/host/protocol.py` (types, validation) and `host/server.py` (transport); the panel side is
-`src/premiere_deck/panel/js/*.js`. Both code against this document; a change here is a change for both workers.
+`src/premiere_deck/panel/js/*.js`. Both code against this document; a change here is a change for both sides.
 
 ## 1. Transport
 
@@ -163,7 +163,7 @@ host (`host.open`, `host.settings`). The display never interprets ids.
 ### 6.3 `toast` (host -> display)
 
 `{"type": "toast", "tone": "ok", "text": "Filed pленка.mp4 into Overlays", "ms": 3500}`. Transient line at the
-bottom of the panel; a click on it closes it at once (2.1, `_workspace\CONVENTIONS.md` "Notices"). At most one visible; a new one replaces the old. Since 2.0 the toast carries cross-cutting
+bottom of the panel; a click on it closes it at once (2.1). At most one visible; a new one replaces the old. Since 2.0 the toast carries cross-cutting
 notices only (automatic filing, host notices); the outcome of a pressed control is an `action_result` (6.6).
 
 ### 6.4 Paging
@@ -225,7 +225,7 @@ activity feed.
 ## 8. Premiere events
 
 The agent registers handlers for the names in `subscribe` and forwards them as `event`. Names and the `data` the
-agent attaches (verified against Premiere 2026 by the panel worker; the exact `app.bind` names per event are the
+agent attaches (verified against Premiere 2026; the exact `app.bind` names per event are the
 table in `PREMIERE_API.md` 6, which is the only place that lists them):
 
 | Name | When | `data` |

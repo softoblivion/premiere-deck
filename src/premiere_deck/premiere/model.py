@@ -1,6 +1,6 @@
 """Data model of the Premiere facade (docs/PREMIERE_API.md, section 1).
 
-Owner: integrator. Plain frozen dataclasses built from the JSON the jsx scripts return; field names equal the keys
+Plain frozen dataclasses built from the JSON the jsx scripts return; field names equal the keys
 the scripts produce (snake_case). `PremiereLike` is the interface modules code against; the real implementation
 is `premiere.api.PremiereApi`, the test double is `modules.base.FakePremiere`.
 """

@@ -5,7 +5,7 @@ Threads: the server thread delivers agent and display messages; the hub only pos
 thread from there. The window bridge calls the hub from pywebview threads; methods that touch modules go through
 `registry.thread.call(...)`. Window events leave through `emit(name, payload)` (the bridge's event pump).
 
-The Premiere facade (`premiere.api.PremiereApi`, written by the panel worker) is imported lazily. While it is not
+The Premiere facade (`premiere.api.PremiereApi`) is imported lazily. While it is not
 part of the build, `StubPremiere` stands in: modules see `PremiereUnavailable` for every operation and the host
 still starts. Facade hooks the hub uses when present: `bind_module_thread(thread, submit)`, `on_event(callback)`
 (then the facade derives `project.*` from hello / heartbeat / events), `set_events(names)` (then the facade owns

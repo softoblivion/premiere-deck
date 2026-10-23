@@ -1,6 +1,6 @@
 """Host <-> panel protocol types and validation (docs/PROTOCOL.md).
 
-Owner: integrator. The server (host/server.py) and the facade (premiere/api.py) build and parse messages with
+The server (host/server.py) and the facade (premiere/api.py) build and parse messages with
 these helpers; modules build UI nodes through modules/base.py, which calls `validate_tree` before a tree is sent.
 Nothing here touches sockets.
 """

@@ -1,7 +1,6 @@
 # Premiere facade (`PremiereApi`)
 
-Owner: panel worker (implementation and jsx), integrator (this contract and `premiere/model.py`). The only way
-modules reach Premiere. Every operation is a Python method backed by one jsx file; the method serialises the call
+The only way modules reach Premiere. Every operation is a Python method backed by one jsx file; the method serialises the call
 over the agent connection (`PROTOCOL.md` 4, 7), one script at a time, and converts the result into the
 dataclasses of `premiere/model.py`. Known Premiere quirks are recorded in section 7, nowhere else.
 
@@ -70,7 +69,7 @@ the snapshot of a big project up to a few seconds), raise `PremiereError` on a s
 | `script(path) -> str` | | the cached text of a jsx file |
 
 Operations of the quick actions that need QE (`app.enableQE()`) or Media Encoder (`app.encoder`) live in the
-module's own jsx (`QUICK_ACTIONS.md`); a second module that needs one asks the integrator to promote it here.
+module's own jsx (`QUICK_ACTIONS.md`); one is promoted to the facade when a second module needs it.
 
 ## 3. Serialisation and queueing
 
@@ -121,7 +120,7 @@ the modules (`MODULES.md` 2).
 
 ## 6. Verified event names
 
-Verified by the panel worker on Premiere Pro 2026, `app.version` = `26.5.2` (CEP 12.0, PlugPlug 12.0.1.2), on
+Verified on Premiere Pro 2026, `app.version` = `26.5.2` (CEP 12.0, PlugPlug 12.0.1.2), on
 2026-10-21/22, by triggering each case from a script and recording what reached the host
 (`tests/panel/live_server.py`). The binding table lives in `panel/js/agent.js` (`EVENT_BINDINGS`); the payloads
 are built in `panel/host.jsx` (`__deckBindingData`) from the current state, because no handler gets arguments.

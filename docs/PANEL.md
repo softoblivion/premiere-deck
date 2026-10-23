@@ -1,6 +1,5 @@
 # The panel (CEP extension)
 
-Owner: panel worker (code), integrator (this contract where it meets `PROTOCOL.md` and `ARCHITECTURE.md` 6).
 The extension is a thin client: it renders the UI tree the host sends, runs the scripts the host sends and
 forwards Premiere events. It knows no module and no business rule. Source: `src/premiere_deck/panel/`; it is
 shipped inside the exe as data and installed by the host (section 4).
@@ -29,7 +28,7 @@ panel/
 ```
 
 The 1.x files `glyph.svg` and `fonts/Unbounded-latin.woff2` are gone (the glyph is the symbol `glyph-pr`). The
-sprite is a subset of `reports\mockups\icons.svg` plus `undo`; a test (`tests/panel/run.js`) checks that every
+sprite is a subset of the project's icon drawings plus `undo`; a test (`tests/panel/run.js`) checks that every
 `icon = "..."` of the modules exists in it. Icon names the host uses: `folder` and `actions` (the tabs), `open-folder`, `sort`, `sync-all`, `sync-used`, `zip`,
 `journal`, `undo`, `check`, `cross`, `info`, `warn`, `chevron`, `power` (start host), `open` (Open host) and one
 icon per quick action (`QUICK_ACTIONS.md` 1). Symbols added in 2.1 for the new quick actions (the modules use
@@ -89,7 +88,7 @@ against the stray window at Premiere's start (5.1): the agent is never shown, so
   and scales out, a check with a mint glow for `ok`, a cross with a rose glow for `error`, the warn mark with an
   amber glow for `warn`, the check without glow for `neutral` spring in), then returns to its icon. The group
   that holds the button keeps a result line under its items, "<text> · <HH:MM>" in the outcome's colour (it
-  survives re-renders). 2.1 timers and click-dismiss (`_workspace\CONVENTIONS.md` "Notices"): the line hides itself
+  survives re-renders). 2.1 timers and click-dismiss: the line hides itself
   after 3 s (`ok`, `neutral`) or 10 s (`warn`, `error`; a warn carries a reason to read, so it gets the error
   time), or with the next result of the group, or when the group leaves the tree. Every line is a button: a click
   closes it; a line with `detail` has a chevron and the same click opens the detail as its own line under it,
@@ -163,8 +162,8 @@ or copied as code; it shares the theme token VALUES only.
   tiles). Measured with Sora in a Chromium tab (2026-10-23): a tile needs about 78 px for the longest codes
   (`SETUP` 39.3 px beside its icon, `COPY` / `SOLO` 35 px beside the 20 px capsule, `CLR` beside the 14 px menu
   chevron); four columns give 77.5 px at 360 px with the 8 px scroll bar of the Actions tab (63 px at 300 px, where
-  `CONS`, `SLOW`, `SYNC`, `SOLO` and more were clipped), so the brief's "three below 300 px" became "three below
-  360 px". Every code of `reports\REDESIGN_2_1.md` 4 and `FILES.md` 6 fits from 280 to 420 px. The switch capsule
+  `CONS`, `SLOW`, `SYNC`, `SOLO` and more were clipped), so "three below 300 px" became "three below
+  360 px". Every code of `QUICK_ACTIONS.md` 1 and `FILES.md` 6 fits from 280 to 420 px. The switch capsule
   is 20 x 12 px with a 9 px knob, mint while on. Plain buttons are pills (30 px high minimum, 12.5 px / 600, 12 px side padding; a label
   too long for its cell wraps). Small pills (24 px high, 11.5 px) for the confirmation, the input's submit button,
   list row actions, Stop and the footer link.
@@ -235,9 +234,9 @@ or copied as code; it shares the theme token VALUES only.
   busy / disabled / offline, optimistic flip, the host's tree winning, a refusal's glow and line), the result line
   timers (3 s / 10 s with fake timers) and click-dismiss of lines, details, the toast, the restart notice and the
   connecting hints.
-- Live verification (the panel worker, on this machine's Premiere): connect, handshake, `ui` render of a sample
+- Live verification (manual, on a machine with Premiere Pro): connect, handshake, `ui` render of a sample
   tree, every node kind, `script` round trip with an error, events of `PREMIERE_API.md` 6, reload on file update,
-  the "Start Premiere Deck" button. The report lists what was verified with the Premiere version.
+  the "Start Premiere Deck" button. The record in 5.1 lists what was verified with the Premiere version.
 
 ### 5.1 Live verification record
 
@@ -286,7 +285,7 @@ windows of `Adobe Premiere Pro.exe` listed every 250 ms with `EnumWindows`):
   the stale token before the file was rewritten; the display rejoined 0.5 s later through the `deck.json` poll
   (`PROTOCOL.md` 2).
 
-Idle load, 2026-10-23 (2.1 round, `reports\REDESIGN_2_1.md` 3): Premiere Pro 26.5.2 with the 2.1 panel docked,
+Idle load, 2026-10-23 (2.1): Premiere Pro 26.5.2 with the 2.1 panel docked,
 visible and connected (Actions tab, 28 tiles, no running animation), the agent polling every 2 s. CPU time of the
 process trees per 60 s (`Get-Process` `TotalProcessorTime`, the panel's CEPHtmlEngine with its renderer and GPU
 children, the agent's likewise): panel 0.62, 0.29, 1.61 and 0.47 % of one core in four runs (the 1.61 run and

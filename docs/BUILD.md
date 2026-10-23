@@ -1,6 +1,6 @@
 # Build, run, test, release
 
-Owner: host worker (sections 1-4, 6), integrator (release procedure).
+Toolchain, running from source, tests, the build, the release procedure and troubleshooting.
 
 ## 1. Toolchain
 
@@ -60,7 +60,7 @@ the user's CEP folder, the registry or the network:
 - the probe tests generate their media with ffmpeg (H.264 + AAC mp4, VP9 WebM with alpha, ProRes 4444 with alpha,
   RGBA PNG, WAV) and skip when ffmpeg is not on PATH.
 
-The live checks of `PANEL.md` 5 are manual and recorded in the panel worker's report.
+The live checks of `PANEL.md` 5 are manual.
 
 ## 4. Build
 
@@ -84,10 +84,11 @@ The live checks of `PANEL.md` 5 are manual and recorded in the panel worker's re
 
 ## 5. Release
 
-Workspace procedure (`D:\Projects\_workspace\GITHUB.md` and `CONVENTIONS.md`, "Versioning and releases"): release notes `docs\releases\vX.Y.Z.md`, tests and
-build green, `_tools\check-publish.ps1` clean, tag `vX.Y.Z`, GitHub Release with `PremiereDeck.exe` and
-`SHA256SUMS`. The end-to-end self-update test of `RECIPES.md` section 1 runs before every release that touches
-the update path or the panel installer (the panel update rides on it).
+Release notes `docs\releases\vX.Y.Z.md`, tests and build green, the pre-publish check clean (no tooling files,
+private paths or e-mail addresses in the tracked files and the history), tag `vX.Y.Z`, GitHub Release with
+`PremiereDeck.exe` and `SHA256SUMS`. The end-to-end self-update test (an older build updates itself from a test
+release source, `PREMIERE_DECK_RELEASE_URL`) runs before every release that touches the update path or the panel
+installer (the panel update rides on it).
 
 ## 6. Troubleshooting
 

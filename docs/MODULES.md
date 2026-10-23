@@ -1,6 +1,6 @@
 # Module contract
 
-Owner: integrator. Every function of Premiere Deck is a module: a Python package under `src/premiere_deck/modules/<name>/`
+Every function of Premiere Deck is a module: a Python package under `src/premiere_deck/modules/<name>/`
 with a `module.py` that defines one subclass of `Module` (`src/premiere_deck/modules/base.py`). The host discovers
 modules from the registry list (`host/registry.py`, `MODULES = ["files", "quick_actions"]`), creates
 them at start and routes everything by the module `id`. A module never imports another module; shared needs go
@@ -105,7 +105,7 @@ thread and from a job thread (marshalled like `toast`). Rules:
   outcome `warn`, a failure `error` with the reason in `text` or `detail`.
 
 Copy rules: neutral, factual sentences; no exclamation marks, no emoji; labels of two or three words; hints one
-sentence (`_workspace\CONVENTIONS.md`, UI copy).
+sentence.
 
 ## 5. Settings
 
@@ -125,8 +125,8 @@ value that is stored as a list is shown joined with ", ".
 
 Module jsx files live in `modules/<id>/jsx/`. `ctx.premiere.eval(name, code_or_path, args)` runs them with the
 conventions of `PREMIERE_API.md` 5; `ctx.premiere.script(path)` loads a file once (cached text). Prefer the typed
-facade operations; write module jsx only for operations the facade does not offer, and ask the integrator to
-promote a script into the facade when a second module needs it.
+facade operations; write module jsx only for operations the facade does not offer. Such a script is promoted
+to the facade when a second module needs it.
 
 ## 7. Tests
 

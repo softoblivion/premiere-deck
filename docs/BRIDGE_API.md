@@ -1,6 +1,6 @@
 # Host window bridge (JS <-> Python)
 
-Owner: host worker. The only definition of what the host window's page (`src/premiere_deck/ui/`) and the Python
+The only definition of what the host window's page (`src/premiere_deck/ui/`) and the Python
 side (`src/premiere_deck/shell/bridge.py`, backed by `host/hub.py`) say to each other. The mock
 (`ui/js/mock.js`, `index.html?mock=1`) implements the same contract with canned data. Same shape as Media Forge's
 `docs/BRIDGE_API.md`; the update control follows the Liquid UI kit contract (kit docs, section 11), the themes are
