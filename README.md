@@ -16,11 +16,11 @@
 
 **Premiere Deck is a Windows application and a small panel inside Adobe Premiere Pro. It sorts project media into folders and bins by content, syncs outside media into the project folder, packs the project into a ZIP, and adds one-button versions of routine timeline and project operations. One portable exe, no installer, no account; it installs the panel itself and updates from GitHub Releases.**
 
-<img src="docs/assets/screenshot.png" alt="Premiere Deck main window on the Files tab in Crystal Black: Sort project, Sync all media, Sync used media, Make ZIP and the Auto copy and Auto sort switches" width="860">
+<img src="docs/assets/screenshot.png" alt="Premiere Deck main window, version 3.0.0, on the Files tab in Crystal Black: the Premiere card, Sort project, Sync all media, Sync used media and Make ZIP, and the Auto copy and Auto sort switches" width="860">
 
-<img src="docs/assets/idle.png" alt="Premiere Deck start screen with the Launch Premiere Pro button and the recent projects" width="36%">&nbsp;<img src="docs/assets/settings.png" alt="Premiere Deck settings sheet with the Crystal Black and Crystal Sky theme cards and the Scale setting" width="62%">
+<img src="docs/assets/panel.png" alt="The Premiere Deck panel inside Premiere Pro on the Actions tab in Crystal Black: the pinned row ADJ, CLR, DUP and EXP above the lanes TIME, TRKS, SEL, CLIP, PROJ, SEQ, OUT and KEYS" width="28%">&nbsp;<img src="docs/assets/idle.png" alt="Premiere Deck start screen with the Launch Premiere Pro button and the recent projects" width="36%">
 
-<sub>Launch Premiere Pro from the Deck · open the panel once · sort and sync project media, run quick actions from the panel.</sub>
+<sub>Launch Premiere Pro from the window · open the panel once · run actions from the tiles · let the Files tab keep the media sorted.</sub>
 
 </div>
 
