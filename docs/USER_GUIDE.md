@@ -161,9 +161,9 @@ How a few of the actions work:
 
 <div align="center">
 
-<img src="assets/files.png" alt="The Actions tab in Crystal Sky: one switch per quick action, in the eight groups Timeline, Tracks, Selection, Clips, Project, Sequence, Export and Keys" width="860">
+<img src="assets/files.png" alt="Premiere Deck window on the Actions tab in Crystal Sky: one visibility switch per quick action, in the eight groups Timeline, Tracks, Selection, Clips, Project, Sequence, Export and Keys" width="860">
 
-<sub>The Actions tab in Crystal Sky: every quick action can be shown in or hidden from the panel; the Tracks, Export and Keys groups are in the second column.</sub>
+<sub>The Actions tab in Crystal Sky: every quick action can be shown in or hidden from the panel; the Project, Sequence, Export and Keys groups are in the second column.</sub>
 
 </div>
 
