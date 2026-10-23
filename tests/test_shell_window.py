@@ -47,6 +47,13 @@ class SizeMathTests(unittest.TestCase):
         # Unknown work area: the centre only.
         self.assertEqual(winutil.rect_toward((10, 100, 420, 560), (720, 560), None), (-140, 100, 720, 560))
 
+    def test_a_rect_larger_than_the_work_area_keeps_its_top_left_inside(self):
+        # 200 % on a 1080p work area: 840 x 1120 does not fit the height; the title bar stays on screen.
+        self.assertEqual(winutil.rect_toward((750, 240, 420, 560), (840, 1120), (0, 0, 1920, 1040)),
+                         (540, 0, 840, 1120))
+        self.assertEqual(winutil.rect_toward((750, 240, 420, 560), (2000, 1120), (0, 0, 1920, 1040)),
+                         (0, 0, 2000, 1120))
+
     def test_frames_end_exactly_on_the_target(self):
         frames = winutil.resize_frames((100, 100, 420, 560), (-50, 100, 720, 560), 300)
         self.assertEqual(len(frames), 18)
@@ -118,6 +125,22 @@ class SizeAnimatorTests(unittest.TestCase):
         self.assertTrue(sizer.set_mode("wide", animate=False))
         self.assertEqual(native.calls, [(0, 100, 1080, 840)], "moved inside the work area")
         self.assertEqual(native.locked, (1080, 840))
+
+    def test_rescale_multiplies_the_locked_size_and_keeps_the_centre(self):
+        native = FakeNative((1070, 416, 420, 560))
+        sizer = self.make(native)
+        sizer.mode = "compact"
+        self.assertEqual(sizer.rescale(1.5), (965, 276, 630, 840))
+        self.assertEqual((native.rect, native.locked), ((965, 276, 630, 840), (630, 840)))
+        self.assertTrue(native.ui_thread_ok)
+        self.assertTrue(sizer.set_mode("wide", animate=False))
+        self.assertEqual(native.rect, (740, 276, 1080, 840), "the other locked size at the same factor")
+        sizer.rescale(1.0)
+        self.assertEqual(native.rect, (920, 416, 720, 560))
+        self.assertEqual((sizer.mode, sizer.zoom, sizer.animating), ("wide", 1.0, False))
+        sized = self.make(FakeNative((0, 0, 420, 560)), scale=1.25)
+        sized.mode = "compact"
+        self.assertEqual(sized.rescale(1.5)[2:], (788, 1050), "DPI scale times the Scale factor")
 
     def test_a_new_change_starts_from_the_current_rect(self):
         native = FakeNative((1070, 416, 420, 560))

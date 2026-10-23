@@ -247,6 +247,8 @@ class Bridge:
         self._resize: Optional[Callable[..., bool]] = None
         self._can_animate: Callable[[], bool] = lambda: True
         self._mode_gen = 0
+        # The shell's function that applies a Scale percentage to the window (zoom factor and the locked size).
+        self._scale_applier: Optional[Callable[[int], None]] = None
         hub.emit = self._emit
 
     # -- wiring (underscore names are not exposed to JS)
@@ -273,6 +275,17 @@ class Bridge:
     def _attach_resizer(self, resize: Callable[..., bool], can_animate: Callable[[], bool] = lambda: True) -> None:
         self._resize = resize
         self._can_animate = can_animate
+
+    def _attach_scale(self, applier: Callable[[int], None]) -> None:
+        self._scale_applier = applier
+
+    def _apply_scale(self, percent: int) -> None:
+        if self._scale_applier is None:
+            return
+        try:
+            self._scale_applier(int(percent))
+        except Exception:  # noqa: BLE001 - the setting is saved; the window keeps its size
+            log.exception("scale could not be applied")
 
     def _window_payload(self, ms: int = 0) -> dict:
         return {"mode": self._mode, "focused": self._focused, "ms": int(ms)}
@@ -513,7 +526,14 @@ class Bridge:
                 self._on_update_status(status)
         if "premiere_exe" in patch:
             self._emit("premiere", self._hub.premiere_state())
+        if "ui_scale" in patch and after.get("ui_scale") != before.get("ui_scale"):
+            self._apply_scale(after.get("ui_scale", 100))
         return after
+
+    @_api
+    def set_scale(self, value):
+        """The Scale setting (BRIDGE_API.md 3.3 `ui_scale`): saves the step and applies it to the window at once."""
+        return self.set_settings({"ui_scale": value})
 
     @_api
     def launch_premiere(self, project=None):
@@ -732,8 +752,8 @@ def _need_id(value: Any) -> None:
 
 # The public names of Bridge must be exactly the contract methods (checked by tests/test_shell_bridge.py).
 CONTRACT_METHODS = (
-    "ready", "get_state", "get_settings", "set_settings", "launch_premiere", "pick_project", "pick_premiere_exe",
-    "recent_projects", "modules", "set_module_enabled", "module_page", "module_action", "module_settings",
+    "ready", "get_state", "get_settings", "set_settings", "set_scale", "launch_premiere", "pick_project",
+    "pick_premiere_exe", "recent_projects", "modules", "set_module_enabled", "module_page", "module_action", "module_settings",
     "set_module_setting", "panel_status", "panel_reinstall", "panel_check_update", "panel_remove", "panel_debug_mode",
     "ffmpeg_status", "ffmpeg_download", "answer_confirm", "open_data_folder", "reveal", "open_path", "open_url", "window_minimize",
     "window_close", "quit", "update_status", "check_updates", "download_update", "apply_update", "fake_premiere",

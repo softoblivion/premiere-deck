@@ -16,6 +16,7 @@ const VERSION = '2.0.0';
 const DATA_DIR = 'D:\\Apps\\PremiereDeck\\premiere-deck_data';
 const EXE = 'C:\\Program Files\\Adobe\\Adobe Premiere Pro 2026\\Adobe Premiere Pro.exe';
 const THEMES = ['black', 'sky'];
+const SCALE_STEPS = [100, 125, 150, 175, 200];
 const WIDEN_DELAY_MS = 450;
 const RESIZE_MS = 300;
 
@@ -85,6 +86,7 @@ export function createMock({ params, dispatch }) {
     theme: THEMES.includes(params.get('theme')) ? params.get('theme') : THEMES.includes(cachedTheme) ? cachedTheme : 'black',
     auto_download_updates: true,
     show_activity: params.get('activity') === '1',
+    ui_scale: 100,
     recent_projects: [],
     debug_mode_written: [],
   };
@@ -356,13 +358,20 @@ export function createMock({ params, dispatch }) {
     async get_settings() { return clone(settings); },
     async set_settings(patch) {
       await delay(60);
-      const allowed = ['premiere_exe', 'keep_running_with_premiere', 'theme', 'auto_download_updates', 'show_activity'];
+      const allowed = ['premiere_exe', 'keep_running_with_premiere', 'theme', 'auto_download_updates', 'show_activity', 'ui_scale'];
       for (const k of Object.keys(patch || {})) if (!allowed.includes(k)) return fail(`The setting "${k}" cannot be changed here.`);
       if (patch.theme !== undefined && !THEMES.includes(patch.theme)) return fail('Unknown theme.');
+      if (patch.ui_scale !== undefined) {
+        const n = Number(patch.ui_scale);
+        if (typeof patch.ui_scale === 'boolean' || !Number.isFinite(n) || n <= 0) return fail('The scale needs a percentage.');
+        patch = { ...patch, ui_scale: SCALE_STEPS.reduce((best, s) => (Math.abs(s - n) < Math.abs(best - n) || (Math.abs(s - n) === Math.abs(best - n) && s > best) ? s : best), SCALE_STEPS[0]) };
+      }
       Object.assign(settings, patch);
       emit('settings', settings);
       return clone(settings);
     },
+    // The browser has no window to scale: the mock stores the step only (the shell sets the zoom factor).
+    async set_scale(value) { return api.set_settings({ ui_scale: value }); },
     async launch_premiere(project) {
       await delay(150);
       if (premiere.running && !project) return fail('Premiere Pro is already running.');

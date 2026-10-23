@@ -102,6 +102,23 @@ class SettingsTests(unittest.TestCase):
         self.file.write_text(json.dumps({"show_activity": "on"}), "utf-8")
         self.assertIs(Settings(self.file).get("show_activity"), False)  # a bad stored value falls back to the default
 
+    def test_ui_scale_snaps_to_a_step_and_is_patchable(self):
+        settings = Settings(self.file)
+        self.assertEqual(settings.get("ui_scale"), 100)
+        self.assertEqual(settings.public()["ui_scale"], 100)
+        self.assertEqual(settings.patch({"ui_scale": 150})["ui_scale"], 150)
+        self.assertEqual(Settings(self.file).get("ui_scale"), 150)
+        for value, step in ((112.5, 125), (130, 125), ("175", 175), (1000, 200), (1, 100)):
+            self.assertEqual(settings.patch({"ui_scale": value})["ui_scale"], step, repr(value))
+        for bad in ("big", None, True, 0, -50, float("nan")):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                settings.patch({"ui_scale": bad})
+        self.assertEqual(settings.get("ui_scale"), 100)
+        self.file.write_text(json.dumps({"ui_scale": "huge"}), "utf-8")
+        self.assertEqual(Settings(self.file).get("ui_scale"), 100)  # a bad stored value falls back to the default
+        self.file.write_text(json.dumps({"ui_scale": 160}), "utf-8")
+        self.assertEqual(Settings(self.file).get("ui_scale"), 150)  # a hand-edited number snaps to its step
+
     def test_theme_names_of_1x_fall_back_to_black(self):
         for old in ("dusk", "nova", "frost", "bloom", "", None, 7):
             self.file.write_text(json.dumps({"theme": old}), "utf-8")

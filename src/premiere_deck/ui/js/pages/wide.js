@@ -1,6 +1,7 @@
 // The main state in the wide window (docs/HOST_UI.md 3.3): the left column (Premiere card at the top, the activity
-// strip at the bottom, growing upwards) and the right pane, a glass panel with one tab per module (kit Segmented,
-// module icon and title) whose content is laid out at a fixed 430 px so it never reflows while the window widens.
+// strip at the bottom, growing upwards) and the right pane, a glass panel showing one module whose content is laid
+// out at a fixed 430 px so it never reflows while the window widens. The module tabs (kit Segmented, module icon
+// and title) sit in the title bar's centre slot (`tabsHost`).
 
 import { Lens } from '../../vendor/liquid_ui/js/glass.js';
 import { Segmented } from '../../vendor/liquid_ui/js/controls.js';
@@ -25,7 +26,8 @@ function rememberedTab() {
   }
 }
 
-export function mountWide(host) {
+/** @param {{tabsHost: HTMLElement}} o  the title bar's centre slot */
+export function mountWide(host, { tabsHost }) {
   // ---- left column ----------------------------------------------------------------------------
   const prState = h('div', 'pr-state', null, h('span', 'dot'), h('span', 'pr-state-t'));
   const prVer = h('div', 'pr-ver');
@@ -45,7 +47,9 @@ export function mountWide(host) {
   const tabsHold = h('div', 'tabs-hold');
   const headHint = h('span', 'pane-hint');
   const scroller = h('div', 'pane-scroll', { 'data-sk': 'pane' });
-  const paneIn = h('div', 'pane-in', null, h('div', 'pane-head', null, tabsHold, h('span', 'spacer'), headHint), scroller);
+  const paneHead = h('div', 'pane-head', { hidden: true }, h('span', 'spacer'), headHint);
+  const paneIn = h('div', 'pane-in', null, paneHead, scroller);
+  tabsHost.append(tabsHold);
   const pane = h('section', 'pane', { 'aria-label': 'Modules' }, paneIn);
   const paneLens = new Lens(pane, 'panel');
 
@@ -119,6 +123,11 @@ export function mountWide(host) {
     if (active !== (current && current.id)) selectTab(active, { fromSeg: false });
   }
 
+  function setHeadHint(text) {
+    headHint.textContent = text || '';
+    paneHead.hidden = !text;
+  }
+
   function selectTab(id, { fromSeg = true } = {}) {
     if (!id) return;
     store.tab = id;
@@ -130,8 +139,8 @@ export function mountWide(host) {
     if (current) current.destroy();
     scroller.replaceChildren();
     scroller.scrollTop = 0;
-    headHint.textContent = '';
-    current = mountModuleTab(scroller, id, { setHeadHint: (t) => (headHint.textContent = t || '') });
+    setHeadHint('');
+    current = mountModuleTab(scroller, id, { setHeadHint });
   }
 
   /** The strip exists only while the setting `show_activity` is on (HOST_UI.md 3.3). */
@@ -203,6 +212,7 @@ export function mountWide(host) {
       prLens.destroy();
       paneLens.destroy();
       grid.remove();
+      tabsHold.remove();
     },
   };
 }

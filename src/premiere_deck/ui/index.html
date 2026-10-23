@@ -15,6 +15,7 @@
   <link rel="stylesheet" href="vendor/liquid_ui/css/scene.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/glass.css">
   <link rel="stylesheet" href="vendor/liquid_ui/css/components.css">
+  <link rel="stylesheet" href="vendor/liquid_ui/css/titlebar.css">
   <!-- Premiere Deck host window (docs/HOST_UI.md). -->
   <link rel="stylesheet" href="css/app.css">
   <script type="module" src="js/main.js"></script>
@@ -27,32 +28,14 @@
   <svg id="lg-defs" aria-hidden="true" width="0" height="0" style="position:absolute;width:0;height:0;overflow:hidden"><defs></defs></svg>
 
   <div id="app">
-    <!-- Title bar: compact = the window capsule only; main = brand, version pill, capsule (HOST_UI.md 2). -->
-    <header id="titlebar" class="titlebar">
-      <div class="tb-drag pywebview-drag-region"></div>
-      <div class="tb-brand pywebview-drag-region">
-        <span id="tb-glyph" class="tb-glyph pywebview-drag-region"></span>
-        <span class="tb-name pywebview-drag-region">Premiere Deck</span>
-      </div>
-      <span id="tb-pill-slot" class="pill-slot"></span>
-      <div class="tb-space pywebview-drag-region"></div>
-      <div id="tb-cluster" class="tb-cluster">
-        <button type="button" id="btn-settings" class="tb-btn tb-gear" aria-label="Settings" aria-haspopup="dialog"></button>
-        <span class="tb-sep" aria-hidden="true"></span>
-        <button type="button" id="win-min" class="tb-btn" aria-label="Minimize"></button>
-        <button type="button" id="win-close" class="tb-btn tb-close" aria-label="Close"></button>
-      </div>
-    </header>
+    <!-- Title bar (kit js/titlebar.js): glyph, name and version pill left (main only), the module tabs in the
+         centre (main only), settings | minimize, close right (docs/HOST_UI.md 2). -->
+    <header id="titlebar"></header>
 
     <!-- Idle and waiting (compact window), js/pages/compact.js. -->
     <main id="compact" class="compact" tabindex="-1"></main>
     <!-- Main (wide window): the left column and the module tabs, js/pages/wide.js. -->
     <div id="wide" class="wide" hidden></div>
-  </div>
-
-  <!-- The version pill of the kit's update control; moved between the hero block and the title bar. -->
-  <div id="pill-park" class="pill-park" aria-hidden="true">
-    <button type="button" id="ver-pill" class="ver-pill" aria-haspopup="dialog"><span class="ver-dot" aria-hidden="true"></span><span class="ver-text"></span></button>
   </div>
 
   <!-- Overlays grow out of the control that opened them (kit js/overlay.js). -->

@@ -1,6 +1,6 @@
 /* Design tokens of the Premiere Deck kit copy (project-owned since 2026-10-22, KIT.txt): fonts,
-   type roles, radii, spacing, CSS transitions, layout and the colours that are the same in every
-   theme. Every theme colour (inks, fills, strokes, tints, shadows, scene, accent, state inks and the
+   the type scale, control heights, radii, spacing, CSS transitions, layout and the colours that
+   are the same in every theme. Every theme colour (inks, fills, strokes, tints, shadows, scene, accent, state inks and the
    kit surface tokens) lives in src/premiere_deck/ui/themes.json and is generated into
    css/themes.css by build/gen_themes.py; never write a theme colour here. */
 
@@ -35,46 +35,51 @@
 :root {
   /* ---- Type ---------------------------------------------------------------------------- */
   --font-text: "Sora", "Segoe UI", system-ui, sans-serif;
-  /* cv05 = lowercase l with a tail, ss03 = round quotes (Inter features; change with the face). */
   --ff-text: normal;
   --font-display: var(--font-text);
   --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
   /* Mono: no ligatures. */
   --ff-mono: "liga" 0, "calt" 0;
 
-  /* A light geometric face: body 450, controls 550, cards 600, titles 650. */
+  /* Weights of the face: body 450, emphasised 550, strong 600, titles 650. */
   --w-body: 450;
   --w-medium: 550;
-  --w-strong: 620;
+  --w-strong: 600;
   --w-title: 650;
   --w-display: 650;
 
-  /* Roles: weight size / line-height family. */
-  --t-display: 650 22px / 1.2 var(--font-display);    /* sheet title */
+  /* The type scale (the kit's documentation, "Typography"): seven roles with fixed pixel sizes,
+     each a `font` shorthand (weight size / line-height family) with its tracking --tr-<role>.
+     Every text in the kit and in an app is one of these roles; no rule carries its own size.
+       display  sheet titles
+       title    panel titles, empty states, the hero pill
+       section  group headers, captions, chips, tags, badges, kbd (uppercase, tracked)
+       body     text, toasts, hints, notes
+       label    buttons, segmented options, setting labels, card names
+       caption  meta lines: sizes, ETA, counters, secondary lines
+       mono     paths, versions, codes
+     Size variants: label-s (xs buttons, compact segments), mono-s (the version pill). */
+  --t-display: var(--w-display) 20px / 1.2 var(--font-display);
   --tr-display: -0.02em;
-  --t-title: 650 19px / 1.25 var(--font-display);      /* empty state title */
-  --tr-title: -0.016em;
-  --t-headline: 600 15px / 1.3 var(--font-display);    /* popover titles, primary pill */
-  --tr-headline: -0.01em;
-  --t-card: 600 14px / 1.3 var(--font-text);           /* list item names, setting labels */
-  --tr-card: -0.006em;
-  --t-body: 450 13.5px / 1.45 var(--font-text);        /* body, toasts */
-  --tr-body: -0.004em;
-  --t-callout: 450 13px / 1.4 var(--font-text);        /* secondary lines, errors */
-  --tr-callout: -0.002em;
-  --t-control: 550 13px / 1 var(--font-text);          /* buttons, segmented options */
-  --t-control-s: 550 12.5px / 1 var(--font-text);
-  --t-control-xs: 550 12px / 1 var(--font-text);
-  --tr-control: -0.003em;
-  --t-meta: 450 12px / 1.35 var(--font-text);          /* sizes, ETA, counters (tabular) */
-  --tr-meta: 0em;
-  --t-caption: 600 11px / 1.3 var(--font-text);        /* control captions */
-  --tr-caption: 0.04em;
-  --t-micro: 600 10.5px / 1.4 var(--font-text);        /* chips, tags, kbd */
-  --tr-micro: 0.02em;
-  --t-mono: 450 12.5px / 1.4 var(--font-mono);                      /* paths */
-  --t-mono-s: 450 12px / 1.35 var(--font-mono);                     /* versions, codecs */
-  --t-mono-xs: 500 11px / 1.3 var(--font-mono);                     /* the version pill */
+  --t-title: var(--w-title) 16px / 1.25 var(--font-display);
+  --tr-title: -0.015em;
+  --t-section: var(--w-strong) 11px / 1.3 var(--font-text);
+  --tr-section: 0.06em;
+  --t-body: var(--w-body) 13px / 1.45 var(--font-text);
+  --tr-body: 0em;
+  --t-label: var(--w-medium) 12.5px / 1.3 var(--font-text);
+  --tr-label: -0.004em;
+  --t-label-s: var(--w-medium) 11.5px / 1.3 var(--font-text);
+  --t-caption: var(--w-body) 11.5px / 1.35 var(--font-text);
+  --tr-caption: 0em;
+  --t-mono: var(--w-body) 12px / 1.4 var(--font-mono);
+  --t-mono-s: var(--w-body) 11px / 1.3 var(--font-mono);
+
+  /* ---- Density: control heights (the kit's documentation, "Density") -------------------- */
+  --h-l: 40px;    /* large buttons */
+  --h-m: 32px;    /* buttons, fields, glyph buttons (large) */
+  --h-s: 28px;    /* small buttons, segmented options, glyph buttons, select */
+  --h-xs: 24px;   /* xs buttons, small glyph buttons, switches, the version pill */
 
   /* ---- Colours that do not change with the theme ------------------------------------------
      (theme colours: css/themes.css, generated from ui/themes.json) */
@@ -86,6 +91,7 @@
 
   /* Radii: concentric (inner = outer - padding) */
   --r-6: 6px;
+  --r-8: 8px;
   --r-10: 10px;
   --r-14: 14px;
   --r-18: 18px;
@@ -115,7 +121,8 @@
   --t-fast: var(--d-2);   /* kept for older app CSS */
   --t-med: var(--d-3);
 
-  /* Layout: page gutter and the title bar height (sheets and toasts sit below the title bar) */
-  --gutter: clamp(14px, 3vw, 20px);
-  --titlebar-h: 50px;
+  /* Layout: page gutter, the title bar height (sheets and toasts sit below the title bar) and the hero pill */
+  --gutter: clamp(12px, 3vw, 18px);
+  --titlebar-h: 44px;
+  --hero-h: 48px;
 }

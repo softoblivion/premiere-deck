@@ -2,8 +2,8 @@
 
 The window of `PremiereDeck.exe`: the project-owned copy of
 the Liquid UI kit (`ui/vendor/liquid_ui`, edited in place, never synced), frameless with the kit's title bar,
-fixed size with two locked sizes (compact 420 x 560 logical px, 3:4; wide 720 x 560), tray icon while Premiere
-runs. Copy is neutral and factual, friendlier through hierarchy, spacing and feedback,
+fixed size with two locked sizes (compact 420 x 560 logical px, 3:4; wide 720 x 560) times the Scale setting,
+tray icon while Premiere runs. Copy is neutral and factual, friendlier through hierarchy, spacing and feedback,
 never through exclamation marks.
 
 ## 1. Shell
@@ -16,7 +16,9 @@ never through exclamation marks.
 - Closing the window hides to the tray while Premiere runs (`keep_running_with_premiere`, default on) and exits
   otherwise; the tray menu: Open, Launch Premiere Pro, Quit.
 - Size: compact in the idle and waiting states, wide in main (2). The user never resizes the window; the shell
-  changes the size itself (`BRIDGE_API.md` 4 `window`, 6).
+  changes the size itself (`BRIDGE_API.md` 4 `window`, 6). Scale (setting `ui_scale`, 100 / 125 / 150 / 175 /
+  200 %, default 100) multiplies both locked sizes and the page's density on top of the Windows display scaling;
+  the logical layout stays the same (3.4, 7).
 - Theme: two project themes, setting `theme`: `black` (Crystal Black, default) and `sky` (Crystal Sky) (7).
 - Never opens the Premiere panel: there is no "Open panel" control anywhere and the host sends no `open_display`
   (`PROTOCOL.md` 3).
@@ -27,9 +29,20 @@ The window shows one home page whose state follows `PremiereState.state` (`BRIDG
 
 | Window state | `PremiereState.state` | Size | Title bar |
 |---|---|---|---|
-| idle | `not_running` | compact | the window capsule only (gear, minimize, close); the app name and the version pill sit in the hero block |
+| idle | `not_running` | compact | the window cluster only (settings, minimize, close); the app name and the version pill sit in the hero block |
 | waiting | `starting`, `waiting` | compact | as idle |
-| main | `connected` | wide | brand at the left (22 px glyph, "Premiere Deck", the version pill with the kit's update popover and sheet), the capsule at the right |
+| main | `connected` | wide | the left cluster (20 px glyph, "Premiere Deck", the version pill with the kit's update popover and sheet), the module tabs in the centre slot, the window cluster at the right |
+
+The title bar is the kit copy's component (`vendor/liquid_ui/js/titlebar.js`, `css/titlebar.css`), the same layout
+as every other app of the family: 44 px high, a grid of three columns (`1fr auto 1fr`, 10 px side padding, 10 px
+gap) so the centre slot is centred on the window. Left (gap 8): the glyph with the `--glyph-glow` shadow, the name
+in the label role, the version pill (24 px capsule lens, mono-s). Centre: the module tabs (3.3). Right: one 34 px
+capsule lens holding settings | separator | minimize, close as 30 x 28 fills (icons 15, the gear 17 and turning 60
+degrees on hover and while the sheet is open; close turns red on hover); no maximize. The drag layer lies under
+everything; the left cluster lets the pointer through to it except the pill. In compact the left cluster and the
+centre slot are hidden (`visibility`, so the columns keep their places). Every window button presses with the
+kit's gel (`gel(btn, { amount: 0.7 })`). The buttons keep the window sprite's icons (`settings`, `minimize`,
+`close`).
 
 There is no left rail and no page list: the module pages are the tabs of the main state (3.3), Settings is the
 sheet of the gear (3.4). The `navigate` event (`BRIDGE_API.md` 4): `deck` shows the home page, `settings` opens the
@@ -76,11 +89,13 @@ ends. With reduced motion (Windows' animation effects off) the size and the layo
     `State.activity` as fit; the icon is a check, warning or cross for the line's tone, else the module's icon; the
     time is `HH:MM`). The strip exists only while the setting `show_activity` is on (default off, 6, row "Show
     activity" in 3.4); with it off the left column holds the Premiere card only, and a change of the setting shows
-    or hides the strip at once (the activity events are still received and kept). Right pane: a glass panel with the tabs, one per module in `order` (`modules()`; the kit's
-    segmented control with the module icon and title, "Actions" for Quick actions; the order is the modules'
-    `order`, so with Quick actions at 5 and Files at 10 the tabs read Actions | Files and Actions is the tab shown
-    until another one is chosen; the chosen tab is remembered in `localStorage` `pd.tab`); each tab is one screen, its remaining blocks below the
-    fold scroll inside the pane. The page draws a module page with the narrow-pane rules of `BRIDGE_API.md` 5.
+    or hides the strip at once (the activity events are still received and kept). Right pane: a glass panel showing one module, chosen by the tabs in the title bar's centre slot,
+    one per module in `order` (`modules()`; the kit's segmented control with the module icon and title, "Actions"
+    for Quick actions; the order is the modules' `order`, so with Quick actions at 5 and Files at 10 the tabs read
+    Actions | Files and Actions is the tab shown until another one is chosen; the chosen tab is remembered in
+    `localStorage` `pd.tab`); each tab is one screen, its remaining blocks below the fold scroll inside the pane. A
+    module's head hint (the Actions page's "Shown in the panel") is the pane's first line, right-aligned; without a
+    hint the line is not drawn. The page draws a module page with the narrow-pane rules of `BRIDGE_API.md` 5.
     - **Files**: `FILES.md` 7: the root path with the "Open project folder" icon button, the Set up project button with the two
       `switch` nodes Auto copy and Auto sort beside it (drawn by `blocks.js` as a pill with the icon, the label and a
       capsule; a change sends the node id with the new value), the three status chips
@@ -98,7 +113,10 @@ ends. With reduced motion (Windows' animation effects off) the size and the layo
 3.4 **Settings** (a sheet, `ui/js/settings.js`, not a page): the kit's modal sheet (`Overlay`, preset `sheet`) that
     grows out of the title-bar gear, with kit rows and its own scroll. Groups in this order: Appearance (the theme
     as two large cards, Crystal Black and Crystal Sky, each with a mini preview of its scene, a glass card and an
-    accent pill; the selected card carries the accent rim), Behaviour ("Keep running with Premiere"; "Show activity": the activity strip of the main screen, 3.3), Updates (the
+    accent pill; the selected card carries the accent rim; below them the Scale row of the kit copy,
+    `js/scale.js` `mountScaleControl`: "Scale", "Size of the window and its text", a segmented control 100 % ..
+    200 %, stacked in the narrow sheet so the five steps take the row's width; a choice calls `set_scale` and the
+    window changes at once), Behaviour ("Keep running with Premiere"; "Show activity": the activity strip of the main screen, 3.3), Updates (the
     host version with the kit's update rows and "Check now"; the panel's installed and bundled versions with
     "Check now" (`panel_check_update()`) and "Reinstall"), Premiere (executable with Choose file / Use detected,
     version), then below the fold Panel (target folder, debug-mode fallback state, Remove the panel), Modules (one
@@ -124,12 +142,14 @@ models, module actions, launch Premiere, panel install and check, update methods
 ## 6. Settings file (`settings.json`)
 
 `premiere_exe` (auto / path), `keep_running_with_premiere` (true), `theme` (`black`), `auto_download_updates`
-(true), `show_activity` (false), `debug_mode_written` (list of CSXS keys the host wrote), `recent_projects` (list), `recent_opened`
+(true), `show_activity` (false), `ui_scale` (100), `debug_mode_written` (list of CSXS keys the host wrote), `recent_projects` (list), `recent_opened`
 (`{path: ISO 8601 UTC}` of the last open through Deck, pruned with the list; the "time ago" of a Deck row), `modules.<id>.*`
 (module host settings), `modules_enabled.<id>` (bool).
 
 Stored values: `theme` is `black` or `sky` (default `black`; the 1.x kit names `dusk`, `nova`, `frost`, `bloom` and
-any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a path ending in `.exe`; `show_activity` is a bool (a patch with another type is
+any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a path ending in `.exe`; `ui_scale` is one of 100, 125, 150, 175, 200 (a number
+between the steps snaps to the nearest, the larger on a tie; anything that is not a positive number is refused with
+"The scale needs a percentage." and falls back to 100 on load); `show_activity` is a bool (a patch with another type is
 refused with "The setting needs on or off."); a bad or
 hand-edited value falls back to its default on load (`core/settings.py`); keys of newer versions are kept.
 
@@ -176,7 +196,25 @@ hand-edited value falls back to its default on load (`core/settings.py`); keys o
   scene retints underneath. Reduced motion: an instant switch. Without the API the switch is instant.
 - Font: Sora (SIL OFL, latin subset, variable woff2 with its licence text in the kit copy's `fonts/`) for all text;
   Geist Mono for numbers, paths and times. The kit copy's `css/tokens.css` is the only place that names the text
-  font. Unbounded is gone.
+  font. Weights: body 450, medium 550, strong 600, title 650.
+- Type scale: every text of the window is one of the named roles of the kit copy's `css/tokens.css`
+  (`font: var(--t-<role>)` with its tracking `--tr-<role>`); no other rule carries a font size, and
+  `tests/test_ui_type_scale.py` fails on one or on an unknown role. Roles (weight size / line-height, tracking):
+  display 650 20 / 1.2, -0.02em (sheet titles); title 650 16 / 1.25, -0.015em (popover titles, empty states, the
+  hero pill, the project name, card values); section 600 11 / 1.3, +0.06em, uppercase (group headers, captions,
+  table heads, tags, badges); body 450 13 / 1.45 (text, toasts, hints, status lines); label 550 12.5 / 1.3,
+  -0.004em (buttons, tabs, setting labels, row titles, the app name); caption 450 11.5 / 1.35 (meta lines, chips,
+  times, counters); mono 450 12 / 1.4 (paths, versions); label-s 550 11.5 / 1.3 (xs buttons, key caps); mono-s
+  450 11 / 1.3 (the version pill, table codes, inline code).
+- Density: compact controls on the kit copy's height tokens `--h-l` 40, `--h-m` 32, `--h-s` 28, `--h-xs` 24
+  (buttons 40 / 32 / 28 / 24, icon buttons 32 / 28 / 24, segmented options 28, switch 40 x 24, field 32, select 28,
+  setting rows 46 with radius-18 cards, the sheet 560 wide at most, popover 352, hero pill 48, title bar 44); radii
+  28 / 22 / 18 / 14 / 10 / 8, spacing on the 4 px grid.
+- Scale: the shell sets the WebView2 zoom factor to `ui_scale / 100` and locks the window at the logical size x
+  the factor x the Windows DPI scale, so text and glass render at the new density while the page keeps its 420 /
+  720 x 560 CSS viewport (`BRIDGE_API.md` 6). The saved step is applied with the size lock before the page shows
+  anything; `set_scale` applies a change at once and keeps the window's centre, inside the work area. A window
+  larger than the work area (200 % on a 1080p screen) keeps its top-left corner on the work area's.
 - Notices: every notice of the window closes on a
   click anywhere on it, except on a control inside it (a button, link or field does its own thing and the notice
   stays). Helpers: `ui/js/ui.js` `closeOnClick(el, close)` and `noticeMs(tone)`.

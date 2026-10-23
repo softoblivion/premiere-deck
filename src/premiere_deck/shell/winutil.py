@@ -1,5 +1,6 @@
 """Windows helpers used by the shell: the fixed-size frameless window (size lock, no maximize, DWM corners and
-border colour), the animated change between its two locked sizes, Explorer, single instance, message box.
+border colour), the animated change between its two locked sizes, the Scale setting (WebView2 zoom factor),
+Explorer, single instance, message box.
 
 Everything here is ctypes / stdlib only and degrades to a harmless no-op on non-Windows hosts, so the module can be
 imported by the unit tests on any machine. The size math (`pick_window_size`, `centered_rect`, `rect_toward`,
@@ -376,17 +377,16 @@ def cubic_bezier(x1: float, y1: float, x2: float, y2: float) -> Callable[[float]
 
 def rect_toward(rect: Rect, size: tuple[int, int], work: Optional[tuple[int, int, int, int]]) -> Rect:
     """The rect of `size` with the centre of `rect`, moved inside the work area (left, top, right, bottom) when it
-    fits there. Physical px."""
+    fits there; a rect larger than the work area keeps its left / top edge on the work area's, so the title bar
+    stays reachable. Physical px."""
     x, y, w, h = rect
     nw, nh = size
     nx = x + (w - nw) // 2
     ny = y + (h - nh) // 2
     if work is not None:
         left, top, right, bottom = work
-        if nw <= right - left:
-            nx = min(max(nx, left), right - nw)
-        if nh <= bottom - top:
-            ny = min(max(ny, top), bottom - nh)
+        nx = min(max(nx, left), right - nw) if nw <= right - left else left
+        ny = min(max(ny, top), bottom - nh) if nh <= bottom - top else top
     return nx, ny, nw, nh
 
 
@@ -416,6 +416,8 @@ class SizeAnimator:
       hook (which replaces every size proposal by its locked size) never fights the animation;
     - `get_rect()` the window's current physical rect, `get_work()` the work area of its monitor, `get_scale()` its
       DPI scale.
+    `zoom` is the Scale setting as a factor (1.0 = 100 %): the locked sizes are logical size x zoom x DPI scale;
+    `rescale(zoom)` moves the window to the current mode's size at the new factor at once.
     A change during an animation starts from the current rect; `set_mode` returns at once (a daemon thread steps).
     """
 
@@ -436,13 +438,14 @@ class SizeAnimator:
         self._lock = threading.Lock()
         self._gen = 0
         self.mode: Optional[str] = None
+        self.zoom = 1.0
         self.animating = False
         self.last_run: Optional[dict] = None  # measurements of the last change (tests, log)
         self._done = threading.Event()
         self._done.set()
 
     def target_rect(self, mode: str, start: Optional[Rect] = None) -> Rect:
-        size = physical_size(WINDOW_SIZES[mode], self._get_scale())
+        size = physical_size(WINDOW_SIZES[mode], self._get_scale() * self.zoom)
         if start is None:
             start = self._get_rect()
         if start is None:
@@ -471,6 +474,23 @@ class SizeAnimator:
         threading.Thread(target=self._run, args=(gen, previous, mode, start, end, ms), daemon=True,
                          name="window-resize").start()
         return True
+
+    def rescale(self, zoom: float) -> Rect:
+        """Apply a new Scale factor: the current mode's size at `zoom`, at once, keeping the centre and the work area
+        (a running animation stops and its target is taken). Returns the new physical rect."""
+        with self._lock:
+            self.zoom = float(zoom)
+            self._gen += 1
+            gen = self._gen
+            mode = self.mode or "compact"
+            self.mode = mode
+            self.animating = False
+            self._done.clear()
+        start = self._get_rect()
+        end = self.target_rect(mode, start)
+        self._step(end)
+        self._finish(gen, mode, mode, start, end, 0.0, 1)
+        return end
 
     def wait(self, timeout: Optional[float] = None) -> bool:
         return self._done.wait(timeout)
@@ -627,6 +647,23 @@ def animations_enabled() -> bool:
     return True
 
 
+def set_zoom_factor(window, factor: float) -> bool:
+    """The WebView2 zoom factor of a pywebview window (edgechromium backend): `window.native.webview` is the
+    WinForms WebView2 control, which keeps the value until CoreWebView2 is ready. Zoom is a device-scale change: the
+    page keeps its logical viewport and text stays crisp. Call it on the UI thread. False when the control is not
+    reachable."""
+    native = getattr(window, "native", None)
+    control = getattr(native, "webview", None)
+    if control is None:
+        return False
+    try:
+        control.ZoomFactor = float(factor)
+        return True
+    except Exception:  # noqa: BLE001 - a backend without the property
+        log.exception("zoom factor %.2f could not be set", factor)
+        return False
+
+
 def window_scale(hwnd) -> float:
     """DPI scale of the window (1.0 at 96 dpi)."""
     if not IS_WINDOWS or not hwnd:
@@ -678,11 +715,12 @@ class FixedSizeHook:
         self.size = (int(width), int(height))
 
     def lock(self, width: int, height: int,
-             apply: Optional[Callable[[int, int, int, int], None]] = None) -> tuple[int, int, int, int]:
-        """Fix the window at `width` x `height` logical px, centred on the work area. `apply(x, y, w, h)` performs
-        the move (pass the form's SetBounds so WinForms keeps its own bounds in sync); the default is SetWindowPos.
-        Returns the physical rect (x, y, w, h)."""
-        scale = window_scale(self.hwnd)
+             apply: Optional[Callable[[int, int, int, int], None]] = None,
+             zoom: float = 1.0) -> tuple[int, int, int, int]:
+        """Fix the window at `width` x `height` logical px times `zoom` (the Scale setting), centred on the work
+        area. `apply(x, y, w, h)` performs the move (pass the form's SetBounds so WinForms keeps its own bounds in
+        sync); the default is SetWindowPos. Returns the physical rect (x, y, w, h)."""
+        scale = window_scale(self.hwnd) * float(zoom)
         self.size = (int(round(width * scale)), int(round(height * scale)))
         x, y, w, h = centered_rect(self.size, monitor_work_area(self.hwnd))
         if apply is not None:

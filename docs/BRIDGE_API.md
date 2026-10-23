@@ -24,6 +24,7 @@ the project's own two (3.3, `HOST_UI.md` 6).
 | `get_state()` | `State` | |
 | `get_settings()` | `Settings` (3.3) | |
 | `set_settings(patch)` | `Settings` | keys of 3.3 only; refused patch -> rejection with the sentence; a `settings` event re-sends the confirmed values |
+| `set_scale(value)` | `Settings` | the Scale setting (3.3 `ui_scale`): saves the step (a number between the steps snaps to the nearest) and applies it to the window at once (section 6); a patch of `ui_scale` through `set_settings` does the same |
 | `launch_premiere(project)` | `PremiereState` (3.2) | `project` = `.prproj` path or `null`. Premiere already running + project: opened through the panel; already running without a project: rejection "Premiere Pro is already running." |
 | `pick_project()` | path or `null` | file dialog, `*.prproj` |
 | `pick_premiere_exe()` | `Settings` or `null` | file dialog for `Adobe Premiere Pro.exe`; stores `premiere_exe` |
@@ -89,7 +90,10 @@ connected agent without a display is `waiting`, never `connected`.
 ### 3.3 `Settings`
 
 `{"premiere_exe": "auto" or path, "keep_running_with_premiere": true, "theme": "black", "auto_download_updates": true,
-"show_activity": false, "recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable: the first five.
+"show_activity": false, "ui_scale": 100, "recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable:
+the first six. `ui_scale` (host scope, default 100) is one of 100, 125, 150, 175, 200: the size of the window and
+its text on top of the Windows display scaling (`HOST_UI.md` 3.4, 7); a number between the steps snaps to the
+nearest (the larger on a tie), anything else is refused ("The scale needs a percentage.").
 `show_activity` (bool, default `false`, host scope) turns the activity strip of the main screen on (`HOST_UI.md` 3.3);
 a patch with a value that is not a bool is refused ("The setting needs on or off."). Themes: `black`
 (Crystal Black) and `sky` (Crystal Sky), default `black`; a stored value that is not one of them (including the
@@ -204,16 +208,24 @@ its title, state and error only. `render_host()` is pure and called on the modul
 - `Bridge` exposes exactly the methods of section 2 as public names (`CONTRACT_METHODS`, checked by
   `tests/test_shell_bridge.py`); everything else starts with an underscore (pywebview exposes every public
   attribute of the js_api object).
-- The window has two locked sizes, compact 420 x 560 and wide 720 x 560 logical px; it is frameless and never
-  resizable or maximizable by the user (`shell/winutil.FixedSizeHook`), DWM rounded corners and border colour =
+- The window has two locked sizes, compact 420 x 560 and wide 720 x 560 logical px, times the Scale factor
+  (`ui_scale / 100`); it is frameless and never resizable or maximizable by the user (`shell/winutil.FixedSizeHook`), DWM rounded corners and border colour =
   page background (the theme's `--bg-mid`, retinted on a theme change). The shell changes the size itself when
   `PremiereState.state` enters or leaves `connected`: it sends the `window` event with `ms` 300, then moves
   `SetBounds` in steps on the UI thread over 300 ms (one step per 60 Hz frame, timed from the start, on the page's
   curve `cubic-bezier(0.2, 0.8, 0.2, 1)`; the window keeps its centre and stays inside the monitor's work area) and
   updates the size hook's locked size before every step, so the hook never fights the animation
   (`shell/winutil.SizeAnimator`; the log has the physical rect at the start and the end). A new change during an
-  animation starts from the current rect. The page is served by pywebview's HTTP server on a port from
+  animation starts from the current rect. A rect larger than the work area keeps its top-left corner on the work
+  area's. The page is served by pywebview's HTTP server on a port from
   42301..42340 so the origin (and its `localStorage`) stays stable.
+- Scale: `ui_scale / 100` is the WebView2 `ZoomFactor` of the window's control (`window.native.webview`, set on
+  the UI thread; `shell/winutil.set_zoom_factor`) and multiplies the locked sizes (`FixedSizeHook.lock(..., zoom=)`,
+  `SizeAnimator.zoom`). Zoom is a device-scale change: the page keeps its logical CSS viewport (420 / 720 x 560),
+  `devicePixelRatio` becomes the factor times the DPI scale, text and glass stay crisp. The saved value sets the
+  first size of the window, the zoom and the size lock in the native setup, before the page is shown; `set_scale`
+  sets the zoom and the new size in one UI-thread call (`SizeAnimator.rescale`: the current mode's size at the new
+  factor, the centre kept, inside the work area; a running size animation stops at its target).
 - Close: hide to the tray while Premiere runs and `keep_running_with_premiere` is on; otherwise quit. The tray menu:
   Open, Launch Premiere Pro, Quit. The process exits with `os._exit(0)` after a clean shutdown.
 - `--fake`: an in-process fake agent (`host/fake_agent.py`) connects over the real WebSocket and answers scripts with
