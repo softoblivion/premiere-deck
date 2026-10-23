@@ -89,6 +89,19 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(again.get("theme"), "sky")
         self.assertFalse(again.get("keep_running_with_premiere"))
 
+    def test_show_activity_defaults_off_and_is_patchable(self):
+        settings = Settings(self.file)
+        self.assertIs(settings.get("show_activity"), False)
+        self.assertIs(settings.public()["show_activity"], False)
+        self.assertIs(settings.patch({"show_activity": True})["show_activity"], True)
+        self.assertIs(Settings(self.file).get("show_activity"), True)
+        for bad in ("yes", 1, None, "true"):
+            with self.assertRaises(ValueError, msg=repr(bad)):
+                settings.patch({"show_activity": bad})
+        self.assertIs(settings.get("show_activity"), True)
+        self.file.write_text(json.dumps({"show_activity": "on"}), "utf-8")
+        self.assertIs(Settings(self.file).get("show_activity"), False)  # a bad stored value falls back to the default
+
     def test_theme_names_of_1x_fall_back_to_black(self):
         for old in ("dusk", "nova", "frost", "bloom", "", None, 7):
             self.file.write_text(json.dumps({"theme": old}), "utf-8")

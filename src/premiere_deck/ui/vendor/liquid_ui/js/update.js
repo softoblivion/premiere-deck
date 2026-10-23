@@ -254,6 +254,7 @@ export function mountUpdateControl({ pill, popoverHost, sheetHost, call, on, opt
       readyToasted = u.latest;
       toast('success', `${product} ${u.latest} is ready`, {
         sticky: true,
+        onClick: openSheet, // a click anywhere else on the toast opens the update sheet and closes the toast
         action: u.can_apply ? { label: 'Restart', run: restart } : { label: 'View', run: () => openPopover() },
       });
     }

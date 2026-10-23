@@ -7,7 +7,8 @@ from premiere_deck.modules.quick_actions.results import count
 class SelectOffline(Action):
     id = "select_offline"
     label = "Select offline clips"
-    short = "Offline clips"
+    title = "Offline clips"
+    short = "OFF"
     icon = "select-offline"
     hint = "Selects every clip of the active sequence whose media is offline."
     group = "Selection"

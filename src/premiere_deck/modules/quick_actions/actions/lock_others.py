@@ -9,22 +9,17 @@ from premiere_deck.modules.quick_actions.results import count, value
 class LockOthers(Action):
     id = "lock_others"
     label = "Lock other tracks"
-    short = "Lock others"
+    title = "Lock others"
+    short = "LOCK"
     icon = "lock-others"
-    active_label = "Restore locks"
-    active_short = "Restore locks"
-    hint = "Locks every track without a selected clip; press again to restore the locks."
+    hint = "Locks every track without a selected clip; switch off to restore the locks."
     group = "Tracks"
+    switch = True
     feasibility = (
         "Track.isLocked() and Track.setLocked(0 | 1) (undocumented, present in 25.x and 26.x; the script fails "
         "with a clear sentence where they are missing). The lock states before are kept in the module and "
-        "restored by the second press."
+        "restored when the switch is turned off."
     )
-
-    def button(self, module) -> dict:
-        if self.id in module.toggles:
-            return {"label": self.active_label, "short": self.active_short, "tone": "accent"}
-        return {}
 
     def run(self, ctx, module):
         state = module.toggles.pop(self.id, None)

@@ -6,7 +6,8 @@ from premiere_deck.modules.quick_actions.action import Action, require_project
 class ConsolidateDuplicates(Action):
     id = "consolidate_duplicates"
     label = "Consolidate duplicates"
-    short = "Consolidate"
+    title = "Consolidate"
+    short = "CONS"
     icon = "consolidate"
     hint = "Merges project items that point to the same media file."
     group = "Project"

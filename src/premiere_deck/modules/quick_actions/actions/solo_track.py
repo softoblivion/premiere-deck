@@ -9,22 +9,16 @@ from premiere_deck.modules.quick_actions.results import value
 class SoloTrack(Action):
     id = "solo_track"
     label = "Solo audio track"
-    short = "Solo track"
+    short = "SOLO"
     icon = "solo-track"
-    active_label = "Restore audio"
-    active_short = "Restore audio"
-    hint = "Mutes every audio track except the selected clip's; press again to restore the mutes."
+    hint = "Mutes every audio track except the selected clip's; switch off to restore the mutes."
     group = "Tracks"
+    switch = True
     feasibility = (
         "Sequence.audioTracks, Track.isMuted() and Track.setMute(0 | 1) (documented, ppro-scripting, Premiere "
-        "14+). The mute states before the solo are kept in the module (not in the project) and restored by the "
-        "second press."
+        "14+). The mute states before the solo are kept in the module (not in the project) and restored when the "
+        "switch is turned off."
     )
-
-    def button(self, module) -> dict:
-        if self.id in module.toggles:
-            return {"label": self.active_label, "short": self.active_short, "tone": "accent"}
-        return {}
 
     def run(self, ctx, module):
         state = module.toggles.pop(self.id, None)

@@ -31,6 +31,7 @@ DEFAULTS: dict[str, Any] = {
     "keep_running_with_premiere": True,
     "theme": DEFAULT_THEME,
     "auto_download_updates": True,
+    "show_activity": False,  # the activity strip of the main screen (docs/HOST_UI.md 3.3)
     "debug_mode_written": [],
     "recent_projects": [],
     "recent_opened": {},  # {path: ISO 8601 UTC of the last open through Deck}
@@ -39,7 +40,7 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Keys the window may change through set_settings (the rest is written by the host itself).
-PATCHABLE = ("premiere_exe", "keep_running_with_premiere", "theme", "auto_download_updates")
+PATCHABLE = ("premiere_exe", "keep_running_with_premiere", "theme", "auto_download_updates", "show_activity")
 
 
 def _normalise(key: str, value: Any) -> Any:

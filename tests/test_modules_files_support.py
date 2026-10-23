@@ -210,7 +210,9 @@ class FilesCase(unittest.TestCase):
         remove_tree(self.scratch)
 
     # helpers
-    def make_module(self, cls=None, *, enabled: bool = False, **project_settings):
+    def make_module(self, cls=None, *, enabled: bool = False, auto: bool = True, **project_settings):
+        """`enabled` runs Setup; `auto` then turns both import switches on (Setup leaves them off) unless the test
+        names `auto_copy` / `auto_sort` itself."""
         from premiere_deck.modules.files.module import FilesModule
 
         cls = cls or FilesModule
@@ -223,6 +225,9 @@ class FilesCase(unittest.TestCase):
         if enabled:
             self.module.on_action("files.setup")
             self.assertEqual(self.host.ui.results[-1][:2], ("setup", "ok"), self.host.ui.results[-1])
+            for key in ("auto_copy", "auto_sort"):
+                if key not in project_settings:
+                    self.host.settings.project.values[key] = auto
         return self.module
 
     def press(self, action: str, value=None, row: Optional[str] = None) -> tuple:

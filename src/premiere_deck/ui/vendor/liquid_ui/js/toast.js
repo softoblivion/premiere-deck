@@ -1,5 +1,8 @@
 // Toasts: glass capsules dropping from the top centre with a spring, at most three on screen.
 // Host: the element passed to initToasts(), else the page's `#toasts` (looked up on first use).
+// A click anywhere on a toast closes it (docs/HOST_UI.md 7); `opts.onClick` runs first when the toast also does
+// something on a click (an update toast that opens the update sheet), `opts.action` is a button that does the same
+// for its own click. Sticky toasts close on a click as well.
 
 import { springAnimate, SPRINGS, whenDone } from './motion.js';
 import { Lens, gel } from './glass.js';
@@ -17,7 +20,7 @@ export function initToasts(el = document.getElementById('toasts')) {
 /**
  * @param {'info'|'success'|'warning'|'error'} level
  * @param {string} text one short English sentence
- * @param {{action?:{label:string, run:Function}, ms?:number, sticky?:boolean}} opts
+ * @param {{action?:{label:string, run:Function}, onClick?:Function, ms?:number, sticky?:boolean}} opts
  */
 export function toast(level, text, opts = {}) {
   if (!root) root = document.getElementById('toasts');
@@ -26,6 +29,7 @@ export function toast(level, text, opts = {}) {
   for (const t of root.children) {
     if (t.dataset.text === text && !t.classList.contains('is-leaving')) {
       t.__gel && t.__gel.pulse();
+      if (opts.onClick) t.__onClick = opts.onClick;
       clearTimeout(t.__timer);
       if (!t.__sticky) t.__timer = setTimeout(() => dismiss(t), opts.ms || 3800);
       return t;
@@ -48,7 +52,17 @@ export function toast(level, text, opts = {}) {
     });
     el.appendChild(b);
   }
-  el.addEventListener('click', () => dismiss(el));
+  el.__onClick = opts.onClick || null;
+  el.addEventListener('click', () => {
+    if (el.__onClick) {
+      try {
+        el.__onClick();
+      } catch (err) {
+        console.error('[toast] click handler failed', err);
+      }
+    }
+    dismiss(el);
+  });
   const live = Array.from(root.children).filter((t) => !t.classList.contains('is-leaving'));
   if (live.length >= MAX) dismiss(live.filter((t) => !t.__sticky).pop() || live[live.length - 1]);
   flip(() => root.prepend(el));

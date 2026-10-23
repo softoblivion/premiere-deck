@@ -16,6 +16,7 @@ from tests.test_modules_files_support import FilesCase, info, write_file
 
 BLOCK_TYPES = {"cards", "table", "list", "form", "actions", "text", "progress", "chips"}
 TILES = ["files.sort", "files.sync_all", "files.sync_used", "files.zip"]
+SWITCHES = ["files.auto_copy", "files.auto_sort"]
 
 
 def check_block(test, block):
@@ -127,7 +128,7 @@ class RenderStates(Base):
         self.make_module()
         sec = self.check_render()
         self.assertEqual(sec["status"], {"text": "Set up this project", "tone": "warn"})
-        self.assertEqual(node_ids(sec["items"]), ["files.setup"])
+        self.assertEqual(node_ids(sec["items"]), ["files.setup", "files.auto_copy", "files.auto_sort"])
         clip = self.ext("clip.mp4")
         self.user_import(clip)
         self.assertEqual(self.pr.calls_named("relink"), [])
@@ -139,7 +140,8 @@ class RenderStates(Base):
         self.assertEqual(self.host.host.opened, [self.root])
         self.assertFalse(os.path.exists(os.path.join(self.root, ".premiere-deck", "journal.jsonl")))
         page = self.module.render_host()
-        self.assertEqual([b["id"] for b in page["blocks"][:2]], ["setup_actions", "status_chips"])
+        self.assertEqual([b["id"] for b in page["blocks"][:2]], ["setup_actions", "auto"])
+        self.assertEqual([b["id"] for b in page["blocks"][:3]][2], "status_chips")
         self.assertEqual(page["subtitle"], self.root)
         self.assertEqual(page["header_actions"][0]["id"], "files.open_folder")
 
@@ -204,10 +206,10 @@ class RenderStates(Base):
         self.assertEqual((group["kind"], group["id"], group["tiles"], group["columns"], group["title"]),
                          ("group", "files.actions", True, 2, None))
         tiles = {t["id"]: t for t in group["items"]}
-        self.assertEqual(list(tiles), TILES)
+        self.assertEqual(list(tiles), TILES + SWITCHES)
         self.assertEqual([(t["icon"], t["short"]) for t in tiles.values()],
-                         [("sort", "Sort project"), ("sync-all", "Sync all media"), ("sync-used", "Sync used media"),
-                          ("zip", "Make ZIP")])
+                         [("sort", "SORT"), ("sync-all", "SYNC"), ("sync-used", "USED"), ("zip", "ZIP"),
+                          ("sync-all", "AUTO COPY"), ("sort", "AUTO SORT")])
         self.assertTrue(all(t["hint"] for t in tiles.values()))
         self.assertEqual(tiles["files.sort"]["meta"], "1 item to file")
         self.assertEqual(tiles["files.sort"]["confirm"],
@@ -220,10 +222,10 @@ class RenderStates(Base):
         self.assertEqual(tiles["files.zip"]["meta"], "Checks offline first")
         self.assertNotIn("confirm", tiles["files.zip"])
         bottom = items[4]["items"]
-        self.assertEqual(bottom[0]["id"], "files.journal")
-        self.assertTrue(bottom[0]["label"].startswith("Journal · "))
-        self.assertEqual((bottom[1]["id"], bottom[1]["variant"], bottom[1]["icon"]), ("files.undo_last", "icon", "undo"))
-        self.assertTrue(bottom[1]["disabled"])  # setup itself is not undoable
+        self.assertEqual([b["id"] for b in bottom], ["files.undo_last"])  # no Journal tile in the panel (2.1)
+        self.assertEqual((bottom[0]["variant"], bottom[0]["icon"]), ("icon", "undo"))
+        self.assertTrue(bottom[0]["disabled"])  # setup itself is not undoable
+        self.assertNotIn("files.journal", node_ids(items))
         offline = items[5]
         self.assertEqual((offline["kind"], offline["id"], offline["title"], offline["collapsible"]),
                          ("group", "files.offline", "Offline", True))
@@ -272,6 +274,7 @@ class RenderStates(Base):
         tiles = {t["id"]: t for t in find(sec["items"], "files.actions")["items"]}
         self.assertTrue(tiles["files.sort"]["busy"])
         self.assertTrue(all(tiles[t]["disabled"] for t in TILES[1:]))
+        self.assertFalse(any(tiles[t].get("disabled") for t in SWITCHES))
         progress = next(n for n in walk(sec["items"]) if n["kind"] == "progress")
         self.assertEqual(progress["cancel"], "files.stop")
         self.assertEqual(sec["status"]["tone"], "accent")
@@ -742,9 +745,9 @@ class MakeZip(Base):
         self.place(ProjectItem("x", "ext.mp4", "clip", media_path=self.ext("ext.mp4")))
         result = self.press("files.zip")
         self.assertEqual(result, ("zip", "warn", "Sync all media first · 1 file outside the folder", None))
-        self.assertFalse(os.path.exists(self.root + ".zip"))
+        self.assertFalse(os.path.exists(self.in_root("Exports", "Sample.zip")))
 
-    def test_zip_beside_the_root_with_report_and_offline(self):
+    def test_zip_in_exports_with_report_and_offline(self):
         import zipfile
 
         inside = write_file(self.in_root("Footage", "a.mp4"), 2000)
@@ -752,17 +755,23 @@ class MakeZip(Base):
         result = self.press("files.zip")
         self.assertEqual(result[:2], ("zip", "ok"))
         self.assertTrue(result[2].startswith("ZIP ready · "), result)
-        self.assertEqual(result[3], self.root + ".zip")
-        with zipfile.ZipFile(self.root + ".zip") as archive:
+        archive_path = self.in_root("Exports", "Sample.zip")
+        self.assertEqual(result[3], archive_path)
+        self.assertFalse(os.path.exists(self.root + ".zip"))  # nothing is written beside the root any more
+        with zipfile.ZipFile(archive_path) as archive:
             names = archive.namelist()
         self.assertIn("Sample/Footage/a.mp4", names)
-        self.assertIn("Sample/.premiere-deck/pack-report.txt", names)
+        self.assertFalse([n for n in names if n.startswith("Sample/Exports/")], names)  # the Exports folder stays out
+        self.assertTrue(os.path.isfile(self.in_root("Exports", "Sample report.txt")))  # the report sits beside it
         entry = self.journal()[-1]
-        self.assertEqual((entry["op"], entry["status"], entry["to"]), ("zipped", "done", self.root + ".zip"))
+        self.assertEqual((entry["op"], entry["status"], entry["to"]), ("zipped", "done", archive_path))
         self.place(ProjectItem("o", "b.wav", "clip", media_path=self.in_root("Audio", "b.wav"), is_offline=True))
         result = self.press("files.zip")
         self.assertEqual(result[:3], ("zip", "warn", "ZIP ready · 1 offline: b.wav"))
-        self.assertTrue(os.path.isfile(self.root + " (2).zip"))
+        self.assertTrue(os.path.isfile(self.in_root("Exports", "Sample (2).zip")))
+        self.assertTrue(os.path.isfile(self.in_root("Exports", "Sample (2) report.txt")))
+        with zipfile.ZipFile(self.in_root("Exports", "Sample (2).zip")) as archive:
+            self.assertFalse([n for n in archive.namelist() if "Sample.zip" in n or "report.txt" in n])  # no nesting
         self.assertEqual(self.press("files.undo_last")[1], "neutral")  # zipped entries are not undoable
 
     def test_write_failure_and_stop(self):
@@ -777,7 +786,7 @@ class MakeZip(Base):
         self.host.jobs.step()
         self.assertEqual(self.host.ui.results[-1][:2], ("zip", "neutral"))
         self.assertTrue(self.host.ui.results[-1][2].startswith("ZIP stopped · "))
-        self.assertFalse(any(name.endswith(".part") for name in os.listdir(os.path.dirname(self.root))))
+        self.assertFalse(any(name.endswith(".part") for name in os.listdir(self.in_root("Exports"))))
 
 
 class Undo(Base):
@@ -1279,7 +1288,7 @@ class Actions(Base):
         self.assertEqual((page["title"], page["subtitle"]), ("Files", self.root))
         self.assertEqual(page["header_actions"][0]["variant"], "icon")
         ids = [b["id"] for b in page["blocks"]]
-        self.assertEqual(ids[:2], ["status_chips", "main"])
+        self.assertEqual(ids[:3], ["status_chips", "main", "auto"])
         self.assertEqual(self.block("last_result")["rows"][0]["title"], "Project set up · 13 folders")
         for block_id in ("journal", "journal_actions", "layout", "layout_folders", "layout_rules", "overrides",
                          "override_add"):

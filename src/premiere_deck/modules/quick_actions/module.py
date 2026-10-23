@@ -1,21 +1,19 @@
 """Quick actions module (docs/QUICK_ACTIONS.md): renders the actions as collapsible tile groups, routes clicks, runs
 long actions as jobs with a busy tile, reports every press through `ctx.ui.result`, and keeps only the choices of
-the tile menus, the visibility setting and the state of the two toggle actions (solo, lock)."""
+the tile menus and inputs, the visibility setting and the state of the two switch actions (solo, lock)."""
 
 from __future__ import annotations
 
 import dataclasses
 import threading
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from premiere_deck.modules.base import ActionResult, Module, ModuleContext
-from premiere_deck.modules.quick_actions import presets as presets_mod
 from premiere_deck.modules.quick_actions.action import (
-    GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence, plural,
+    GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence,
 )
 from premiere_deck.modules.quick_actions.actions import ACTION_CLASSES
-from premiere_deck.premiere.model import PremiereError, PremiereUnavailable, ProjectInfo
+from premiere_deck.premiere.model import PremiereError, PremiereUnavailable
 
 HIDDEN_KEY = "hidden"
 CHOICES_KEY = "choices"
@@ -52,7 +50,7 @@ class QuickActionsModule(Module):
     title = "Actions"
     icon = "actions"
     description = "Buttons for routine timeline and project operations."
-    order = 20
+    order = 5
     events = ()
     requires = ()
 
@@ -62,23 +60,16 @@ class QuickActionsModule(Module):
         for cls in ACTION_CLASSES:
             action = cls()
             self.actions[action.id] = action
+        # State of the switch actions while applied: action id -> what the restore needs.
         self.toggles: dict[str, dict] = {}
-        self.presets: list[presets_mod.Preset] = []
-        self.preset_roots: Optional[list[Path]] = None  # None: the installed Premiere / Media Encoder
         self._running: dict[str, Any] = {}
         self._local = threading.local()
 
     # --- lifecycle -------------------------------------------------------------------------------------------
 
-    def start(self) -> None:
-        self.refresh_presets()
-
     def stop(self) -> None:
         self._cancel_jobs()
         self.toggles.clear()
-
-    def project_opened(self, project: ProjectInfo) -> None:
-        self.refresh_presets()
 
     def project_closed(self) -> None:
         self._cancel_jobs()
@@ -123,29 +114,21 @@ class QuickActionsModule(Module):
         menu = self._menu(action, name)
         if menu is None or not isinstance(value, str) or value not in [v for v, _ in menu.options]:
             return False
-        choices = self._choices()
-        choices[f"{action.id}.{name}"] = value
-        self.ctx.settings.set(CHOICES_KEY, choices)
+        self.store(f"{action.id}.{name}", value)
         return True
 
     def _menu(self, action: Action, name: str) -> Optional[Menu]:
         menu = action.menu(self)
         return menu if menu is not None and menu.name == name else None
 
-    # --- presets ---------------------------------------------------------------------------------------------
+    def stored(self, key: str) -> Any:
+        """A raw remembered value of `choices` (`create_custom.size`); the action validates it on read."""
+        return self._choices().get(key)
 
-    def user_presets_dir(self) -> Path:
-        return Path(self.ctx.paths.root) / "presets"
-
-    def refresh_presets(self) -> None:
-        try:
-            self.presets = presets_mod.available_presets(self.user_presets_dir(), system_roots=self.preset_roots)
-        except OSError as exc:
-            self.log.warning("export presets could not be read: %s", exc)
-            self.presets = []
-
-    def preset(self, preset_id: str) -> Optional[presets_mod.Preset]:
-        return next((preset for preset in self.presets if preset.id == preset_id), None)
+    def store(self, key: str, value: Any) -> None:
+        choices = self._choices()
+        choices[key] = value
+        self.ctx.settings.set(CHOICES_KEY, choices)
 
     # --- actions ---------------------------------------------------------------------------------------------
 
@@ -154,10 +137,23 @@ class QuickActionsModule(Module):
         if local.startswith(HOST_PREFIX):
             return self._host_action(local[len(HOST_PREFIX):], value)
         if local in self.actions:
+            action = self.actions[local]
+            if action.switch and isinstance(value, bool) and value == action.is_on(self):
+                return None  # already in the requested state; the next tree shows it
             return self.trigger(local)
         action_part, _, name = local.partition(".")
         if action_part in self.actions and name:
-            self.set_choice(self.actions[action_part], name, value)
+            action = self.actions[action_part]
+            field = action.field(self)
+            if field is not None and field.get("name") == name:
+                refused = action.submit(self, name, value)
+                if refused is not None:
+                    self._report(action, refused)
+                    return None
+                return self.trigger(action_part)
+            menu = self._menu(action, name)
+            if self.set_choice(action, name, value) and menu is not None and menu.runs:
+                return self.trigger(action_part)
             return None
         return super().on_action(action_id, value, row)
 
@@ -226,14 +222,6 @@ class QuickActionsModule(Module):
             if action_id in self.actions:
                 self.set_visible(action_id, bool(value))
                 return None
-        elif name == "open_presets":
-            folder = self.user_presets_dir()
-            folder.mkdir(parents=True, exist_ok=True)
-            self.ctx.host.open_path(str(folder))
-            return None
-        elif name == "refresh_presets":
-            self.refresh_presets()
-            return ActionResult(toast=("neutral", f"{plural(len(self.presets), 'export preset')} found"))
         return ActionResult(toast=("warn", f"{self.title}: unknown action {name}"), rerender=False)
 
     # --- rendering -------------------------------------------------------------------------------------------
@@ -251,9 +239,23 @@ class QuickActionsModule(Module):
         for group in GROUPS:
             members = [action for action in visible if action.group == group]
             if members:
-                nodes.append(self.group(group, [self._button(action) for action in members],
-                                        id=group.lower(), tiles=True, collapsible=True))
+                # Inputs follow the tiles, so they never split the tile grid.
+                items = [self._tile(action) for action in members]
+                items += [self._field(action) for action in members if action.field(self) is not None]
+                nodes.append(self.group(group, items, id=group.lower(), tiles=True, collapsible=True))
         return nodes
+
+    def _tile(self, action: Action) -> dict:
+        if action.switch:
+            return self.switch(action.id, action.label, action.is_on(self), short=action.short, icon=action.icon,
+                               hint=action.hint, busy=action.id in self._running)
+        return self._button(action)
+
+    def _field(self, action: Action) -> dict:
+        spec = action.field(self) or {}
+        return self.input(f"{action.id}.{spec['name']}", spec.get("label", action.label), spec.get("value", ""),
+                          placeholder=spec.get("placeholder", ""), submit_label=spec.get("submit_label"),
+                          disabled=action.id in self._running)
 
     def _button(self, action: Action) -> dict:
         state = action.button(self)
@@ -262,7 +264,8 @@ class QuickActionsModule(Module):
         if menu is not None:
             current = self.choice(action, menu.name)
             kw["menu"] = self.menu(f"{action.id}.{menu.name}", current,
-                                   [{"value": value, "label": label} for value, label in menu.options],
+                                   [dict({"value": value, "label": label}, **menu.swatch(value))
+                                    for value, label in menu.options],
                                    menu.badge(current))
         return self.button(action.id, state.get("label", action.label), hint=action.hint,
                            tone=state.get("tone", "neutral"), busy=action.id in self._running,
@@ -277,22 +280,14 @@ class QuickActionsModule(Module):
 
     def render_host(self) -> Optional[dict]:
         hidden = self.hidden_ids()
-        rows = [{"id": action.id, "title": action.label, "subtitle": f"{action.group} · {action.hint}",
+        rows = [{"id": action.id, "title": action.title or action.label, "icon": action.icon,
+                 "subtitle": f"{action.group} · {action.hint}",
                  "toggle": {"id": self._id(f"{HOST_PREFIX}visible.{action.id}"), "value": action.id not in hidden}}
                 for action in self.actions.values()]
-        preset_rows = [{"id": preset.id, "title": preset.label,
-                        "subtitle": {"shipped": "Shipped with Premiere Deck", "system": "Adobe system preset",
-                                     "user": "Your preset"}[preset.source]}
-                       for preset in self.presets]
         return {
             "title": self.title,
             "blocks": [
                 {"type": "list", "id": "visibility", "title": "Actions in the panel",
                  "hint": "Hidden actions are not shown in the panel.", "rows": rows},
-                {"type": "list", "id": "presets", "title": "Export presets",
-                 "hint": f"Add your own .epr files to {self.user_presets_dir()}.", "rows": preset_rows,
-                 "empty": "No export presets found.",
-                 "actions": [{"id": self._id(f"{HOST_PREFIX}open_presets"), "label": "Open folder"},
-                             {"id": self._id(f"{HOST_PREFIX}refresh_presets"), "label": "Rescan"}]},
             ],
         }

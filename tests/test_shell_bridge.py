@@ -142,6 +142,17 @@ class BridgeTests(unittest.TestCase):
         with self.assertRaises(BridgeError):
             self.bridge.set_settings("theme")
 
+    def test_show_activity_setting_through_the_bridge(self):
+        self.assertIs(self.bridge.get_settings()["show_activity"], False)
+        self.assertIs(self.bridge.ready()["settings"]["show_activity"], False)
+        after = self.bridge.set_settings({"show_activity": True})
+        self.assertIs(after["show_activity"], True)
+        events = [payload for name, payload in self.pump.pending() if name == "settings"]
+        self.assertIs(events[-1]["show_activity"], True)
+        with self.assertRaises(BridgeError):
+            self.bridge.set_settings({"show_activity": "on"})
+        self.assertIs(self.bridge.get_settings()["show_activity"], True)
+
     def test_module_calls(self):
         self.assertEqual(self.bridge.modules()[0]["state"], "running")
         self.assertEqual(self.bridge.module_action("plain", "plain.go"), {"ok": True, "toast": None})

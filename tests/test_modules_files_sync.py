@@ -261,6 +261,28 @@ class Zip(unittest.TestCase):
         with self.assertRaises(CopyError):
             make_zip(self.root, first)  # never overwrites
 
+    def test_pack_files_can_leave_one_folder_out(self):
+        exports = os.path.join(self.root, "Exports")
+        os.makedirs(os.path.join(exports, "Frames"))
+        for name in ("old.zip", os.path.join("Frames", "f.png")):
+            with open(os.path.join(exports, name), "wb") as handle:
+                handle.write(b"x")
+        self.assertEqual(sum(arc.startswith("Spring/Exports/") for _, arc, _ in pack_files(self.root)), 2)
+        names = [arc for _, arc, _ in pack_files(self.root, exclude_dir=exports)]
+        self.assertFalse([n for n in names if n.startswith("Spring/Exports")], names)
+        self.assertIn("Spring/Footage/a.mp4", names)
+
+    def test_zip_name_in_a_folder_gets_collision_suffixes(self):
+        exports = os.path.join(self.root, "Exports")
+        os.makedirs(exports)
+        first = free_zip_path(self.root, exports, "Spring")
+        self.assertEqual(first, os.path.join(exports, "Spring.zip"))
+        make_zip(self.root, first, files=pack_files(self.root, exclude_dir=exports))
+        self.assertEqual(free_zip_path(self.root, exports, "Spring"), os.path.join(exports, "Spring (2).zip"))
+        with open(os.path.join(exports, "Spring (2).zip.part"), "wb"):
+            pass  # a partial archive of that name also counts as taken
+        self.assertEqual(free_zip_path(self.root, exports, "Spring"), os.path.join(exports, "Spring (3).zip"))
+
     def test_report_lists_offline(self):
         inside = os.path.join(self.root, "Footage", "a.mp4")
         items = [ProjectItem("n1", "a.mp4", "clip", media_path=inside),

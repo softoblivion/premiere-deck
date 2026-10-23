@@ -1,5 +1,6 @@
 // Creates an auto-reframed copy of a sequence (Sequence.autoReframeSequence, documented) and sets its frame size;
-// Premiere keeps the source height (1920x1080 at 9:16 gives 607x1080), so the size is set after.
+// Premiere keeps the source height (1920x1080 at 9:16 gives 607x1080), so the size is set after. Shared by
+// create_16_9, create_9_16 and create_custom.
 // args: {sequence_id, numerator, denominator, motion ("slower" | "default" | "faster"), name, width, height}
 // returns: {name, sequence_id, width, height}
 var seq = deckSequenceById(__args.sequence_id) || deckActiveSequence();

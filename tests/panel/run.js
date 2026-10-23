@@ -307,6 +307,12 @@ function actionsSection() {
         ]},
         {kind: "group", id: "actions.export", title: "Export", columns: 3, tiles: true, collapsible: true, items: [
             {kind: "button", id: "actions.export_frame", label: "Export frame", short: "Export frame", icon: "export-frame"}
+        ]},
+        {kind: "group", id: "actions.tracks", title: "Tracks", columns: 3, tiles: true, collapsible: true, items: [
+            {kind: "button", id: "actions.add_video_track", label: "Add video track", short: "+V", icon: "track-video-add"},
+            {kind: "switch", id: "actions.solo_audio", label: "Solo audio", short: "SOLO", icon: "solo-track", value: false,
+                hint: "Mutes every other audio track."},
+            {kind: "switch", id: "actions.lock_others", label: "Lock other tracks", short: "LOCK", icon: "lock-others", value: true}
         ]}
     ]};
 }
@@ -598,32 +604,38 @@ test("the section status is the first line of its tab", function () {
     assert.strictEqual(byClass(byClass(rendered("actions"), "deck-tabpanel")[0], "deck-status").length, 0);
 });
 
-test("tile groups: three columns, icon over the short label, the full label for assistive text", function () {
+test("tile groups: four columns, the icon left of the code label in one line, the full label for assistive text", function () {
     var v = rendered("actions");
     var grids = byClass(v, "deck-grid");
-    assert.strictEqual(grids.length, 3);
+    assert.strictEqual(grids.length, 4);
     grids.forEach(function (grid) {
         assert.ok(hasClass(grid, "is-tiles"));
-        assert.strictEqual(grid.a["data-cols"], "3");
+        assert.strictEqual(grid.a["data-cols"], String(display.TILE_COLUMNS), "tiles take four columns whatever `columns` says");
     });
+    assert.strictEqual(display.TILE_COLUMNS, 4);
     var tile = byAction(v, "actions.razor_all")[0];
     assert.strictEqual(tile.t, "button");
     assert.ok(hasClass(tile, "deck-tile"));
     assert.strictEqual(tile.a["aria-label"], "Razor all tracks");
     assert.strictEqual(textOf(byClass(tile, "deck-tile-label")[0]), "Razor all");
     var face = byClass(tile, "deck-face")[0];
+    assert.deepStrictEqual(tile.c.map(function (c) { return c.a["class"]; }), ["deck-face", "deck-tile-text"], "icon first, then the label");
+    assert.strictEqual(byClass(tile, "deck-tile-label").length, 1, "one label line");
     assert.deepStrictEqual(findV(face, function (n) { return n.t === "use"; }).map(function (n) { return n.a.href; }),
         ["#i-razor-all", "#i-check", "#i-cross", "#i-warn"]);
     assert.ok(hasClass(byAction(v, "actions.solo_track")[0], "tone-accent"));
     assert.strictEqual(byClass(tile, "deck-tile-meta").length, 0);
 });
 
-test("a tile with a meta line is the wide Files tile; a tile without an icon draws no icon", function () {
+test("a tile's meta line goes into its tooltip; Files tiles are compact too; a tile without an icon draws no icon", function () {
     var v = rendered("files");
     var tile = byAction(v, "files.sort")[0];
-    assert.ok(hasClass(tile, "is-meta"));
-    assert.strictEqual(textOf(byClass(tile, "deck-tile-meta")[0]), "18 items to file");
-    assert.strictEqual(byClass(v, "deck-grid")[0].a["data-cols"], "2", "columns 2 stays two");
+    assert.ok(!hasClass(tile, "is-meta"));
+    assert.strictEqual(byClass(tile, "deck-tile-meta").length, 0, "no meta line on the tile");
+    assert.strictEqual(tile.a["data-tip-meta"], "18 items to file");
+    assert.strictEqual(byAction(v, "files.sync_all")[0].a["data-tip-meta"], "4 outside the root");
+    assert.strictEqual(byAction(v, "files.sync_all")[0].a["data-tip-label"], "Sync all media", "a meta line alone opens a tooltip");
+    assert.strictEqual(byClass(v, "deck-grid")[0].a["data-cols"], "4", "columns 2 of a tile group draws four columns");
     var tree = sampleTree();
     delete tree.sections[1].items[0].items[2].icon;
     var noIcon = byAction(display.renderTree(tree, local({tab: "actions"})), "actions.delete_empty_tracks")[0];
@@ -650,6 +662,8 @@ test("collapsible groups: caption button, count while collapsed, state per group
     var closedHead = byClass(closed, "deck-g-head")[0];
     assert.strictEqual(closedHead.a["aria-expanded"], "false");
     assert.strictEqual(textOf(byClass(closedHead, "deck-count")[0]), "4", "the item count while collapsed");
+    var tracks = rendered("actions", {collapsed: {"actions.tracks": true}});
+    assert.strictEqual(textOf(byClass(byClass(tracks, "deck-g-head")[3], "deck-count")[0]), "3", "switches count as items");
     assert.strictEqual(byAction(closed, "actions.razor_all").length, 0);
     assert.strictEqual(byAction(closed, "actions.duplicate_sequence").length, 1, "the other groups stay open");
     var group = byClass(closed, "deck-group")[0];
@@ -672,7 +686,7 @@ test("grid rules: runs of buttons, a text ends a run, a lone plain button is one
     var plain = display.renderTree({type: "ui", revision: 1, title: "", status: null, sections: [one]}, local({tab: "x"}));
     assert.strictEqual(byClass(plain, "deck-grid").length, 0, "one column draws no grid");
     var css = fs.readFileSync(path.join(PANEL, "css", "panel.css"), "utf8");
-    assert.ok(/@media \(max-width: 299px\)[\s\S]*is-tiles\[data-cols="3"\][\s\S]*repeat\(2/.test(css), "two tile columns below 300 px");
+    assert.ok(/@media \(max-width: 359px\) \{\s*\.deck-grid\.is-tiles\[data-cols="4"\] \{ grid-template-columns: repeat\(3/.test(css), "three tile columns below 360 px");
     assert.ok(/@media \(max-width: 299px\)[\s\S]*not\(\.is-tiles\)/.test(css), "one plain column below 300 px");
 });
 
@@ -757,8 +771,10 @@ test("tooltips come from hint: data attributes, never a title attribute", functi
     var empty = byAction(v, "actions.delete_empty_tracks")[0];
     assert.strictEqual(empty.a["data-tip-label"], "Delete empty tracks");
     assert.strictEqual(empty.a["data-tip-hint"], "");
-    // No hint and the short label is the label: no tooltip.
-    assert.strictEqual(byAction(rendered("files"), "files.sync_all")[0].a["data-tip"], undefined);
+    // No hint, no meta and the short label is the label: no tooltip.
+    var plainTile = sampleTree();
+    delete plainTile.sections[0].items[3].items[1].meta;
+    assert.strictEqual(byAction(display.renderTree(plainTile, local({tab: "files"})), "files.sync_all")[0].a["data-tip"], undefined);
     assert.strictEqual(byAction(rendered("misc"), "misc.a")[0].a["data-tip"], undefined);
     assert.strictEqual(byAction(rendered("misc"), "misc.collect")[0].a["data-tip-hint"], "Copies the files.");
     assert.strictEqual(byAction(rendered("misc"), "misc.watch")[0].a["data-tip-hint"], undefined, "the input inside carries no tip; the label does");
@@ -784,6 +800,10 @@ test("the tooltip card follows the data: label in bold over the hint, below when
     assert.ok(hasClass(card, "is-ready") && !hasClass(card, "is-below"));
     var onlyHint = byClass(display.renderTree(sampleTree(), local({tab: "files", tip: {key: "k", label: "", hint: "Only a hint."}})), "deck-tip")[0];
     assert.deepStrictEqual(onlyHint.c.map(function (c) { return c.t; }), ["span", "i"]);
+    var withMeta = byClass(display.renderTree(sampleTree(), local({tab: "files", tip: {key: "k", label: "Sort project", hint: "Files media.",
+        meta: "18 items to file"}})), "deck-tip")[0];
+    assert.deepStrictEqual(withMeta.c.map(function (c) { return c.a["class"] || c.t; }), ["b", "span", "deck-tip-meta", "deck-tip-arrow"]);
+    assert.strictEqual(textOf(withMeta.c[2]), "18 items to file");
     assert.ok(!hasClass(onlyHint, "is-ready"), "measured before it is shown");
     assert.strictEqual(byClass(rendered("files"), "deck-tip").length, 0);
 });
@@ -824,7 +844,9 @@ test("results: the tile shows the outcome, the group keeps the line, a detail op
     });
     assert.ok(/is-done/.test(classes[0]) && /is-failed/.test(classes[1]) && /is-warned/.test(classes[2]) && /is-noted/.test(classes[3]), classes.join(" | "));
     var line = byClass(v, "deck-g-result")[0];
-    assert.ok(hasClass(line, "tone-ok") && line.t === "div", "no detail: not a button");
+    assert.ok(hasClass(line, "tone-ok") && line.t === "button", "every line is clickable (a click closes it)");
+    assert.strictEqual(line.a["data-line"], "actions.timeline");
+    assert.ok(!hasClass(line, "has-detail"));
     assert.strictEqual(textOf(byClass(line, "deck-g-result-text")[0]), "Adjustment layer added · V3");
     assert.strictEqual(textOf(byClass(line, "deck-g-result-time")[0]), "12:03");
     assert.strictEqual(display.clock(at), "12:03");
@@ -836,11 +858,13 @@ test("results: the tile shows the outcome, the group keeps the line, a detail op
     var failed = byClass(rendered("actions", {lines: lines}), "deck-g-result")[0];
     assert.ok(failed.t === "button" && hasClass(failed, "has-detail") && hasClass(failed, "tone-error"));
     assert.strictEqual(failed.a["data-line"], "actions.timeline");
-    assert.strictEqual(failed.a["aria-expanded"], "false");
     assert.strictEqual(byClass(failed, "more").length, 1);
-    var open = rendered("actions", {lines: lines, detailOpen: {"actions.timeline": true}});
-    assert.strictEqual(byClass(open, "deck-g-result")[0].a["aria-expanded"], "true");
-    assert.strictEqual(textOf(byClass(open, "deck-g-why")[0]), "Premiere did not cut at the playhead.");
+    // The opened explanation is its own line (the result line closed with the click that opened it).
+    var open = rendered("actions", {lines: {}, detailOpen: {"actions.timeline": "Premiere did not cut at the playhead."}});
+    assert.strictEqual(byClass(open, "deck-g-result").length, 0);
+    var why = byClass(open, "deck-g-why")[0];
+    assert.strictEqual(textOf(why), "Premiere did not cut at the playhead.");
+    assert.ok(why.t === "button" && why.a["data-why"] === "actions.timeline");
     assert.strictEqual(byClass(rendered("actions", {lines: lines}), "deck-g-why").length, 0);
     // A result of a button outside any group is the section's line, at the foot of the tab.
     var section = rendered("files", {lines: {"~files": {outcome: "warn", text: "Set up this project first", detail: null, at: at}}});
@@ -883,7 +907,7 @@ test("Display.onResult: 2 s on the tile, the line stays, it goes with its group,
         clock.advance(2);
         assert.strictEqual(d.local.flash["actions.razor_all"], undefined, "the tile returns to its icon after 2 s");
         assert.ok(!/is-failed/.test(find(ctx.container, byAttr("data-action", "actions.razor_all")).className));
-        assert.ok(d.local.lines["actions.timeline"], "the line stays until the next result");
+        assert.ok(d.local.lines["actions.timeline"], "an error line stays 10 s (it outlives the tile's 2 s)");
         // The next result of the group replaces the line; a result for an id that is not in the tree changes nothing.
         d.onMessage({type: "action_result", id: "actions.adjustment_layer", outcome: "ok", text: "Adjustment layer added", detail: null, at: 1761000000000});
         assert.strictEqual(d.local.lines["actions.timeline"].text, "Adjustment layer added");
@@ -909,26 +933,43 @@ test("Display.onResult: 2 s on the tile, the line stays, it goes with its group,
     });
 });
 
-test("clicking a failed line toggles its detail; Escape closes it", function () {
-    var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
-    ctx.d.onState("connected", {});
-    ctx.d.onMessage(sampleTree());
-    ctx.d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "error", text: "Failed", detail: "Because.", at: 1});
-    assert.ok(!find(ctx.container, function (n) { return /deck-g-why/.test(n.className); }));
-    clickOn(ctx, byAttr("data-line", "actions.timeline"));
-    assert.strictEqual(find(ctx.container, function (n) { return /deck-g-why/.test(n.className); }).textContent, "Because.");
-    clickOn(ctx, byAttr("data-line", "actions.timeline"));
-    assert.ok(!find(ctx.container, function (n) { return /deck-g-why/.test(n.className); }), "a second click closes it");
-    clickOn(ctx, byAttr("data-line", "actions.timeline"));
-    fire(ctx.container, "keydown", {key: "Escape", target: ctx.container});
-    assert.ok(!find(ctx.container, function (n) { return /deck-g-why/.test(n.className); }), "Escape closes it");
+test("a click on a failed line opens its explanation and closes the line; the explanation closes on its click and on Escape", function () {
+    withTimers(function (clock) {
+        var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
+        var why = function () { return find(ctx.container, function (n) { return /deck-g-why/.test(n.className); }); };
+        ctx.d.onState("connected", {});
+        ctx.d.onMessage(sampleTree());
+        ctx.d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "error", text: "Failed", detail: "Because.", at: 1});
+        assert.ok(!why());
+        clickOn(ctx, byAttr("data-line", "actions.timeline"));
+        assert.strictEqual(why().textContent, "Because.");
+        assert.ok(!find(ctx.container, byAttr("data-line", "actions.timeline")), "the same click closed the line");
+        assert.strictEqual(ctx.d.local.lines["actions.timeline"], undefined);
+        clock.advance(display.LINE_ERROR_MS + 1);
+        assert.ok(why(), "the explanation has no timer; it stays until its own click");
+        clickOn(ctx, byAttr("data-why", "actions.timeline"));
+        assert.ok(!why(), "a click on the explanation closes it");
+        ctx.d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "error", text: "Failed", detail: "Again.", at: 1});
+        clickOn(ctx, byAttr("data-line", "actions.timeline"));
+        fire(ctx.container, "keydown", {key: "Escape", target: ctx.container});
+        assert.ok(!why(), "Escape closes it");
+        // The next result of the group replaces an open explanation.
+        ctx.d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "error", text: "Failed", detail: "Third.", at: 1});
+        clickOn(ctx, byAttr("data-line", "actions.timeline"));
+        ctx.d.onMessage({type: "action_result", id: "actions.adjustment_layer", outcome: "ok", text: "Added", detail: null, at: 1});
+        assert.ok(!why());
+        assert.ok(ctx.sent.length === 0, "closing notices sends nothing to the host");
+    });
 });
 
 test("menus: the badge on the tile, a menu of options with the current one checked", function () {
     var v = rendered("actions");
     var tile = byAction(v, "actions.social_copy")[0];
     var badge = byClass(tile, "deck-badge")[0];
-    assert.strictEqual(textOf(badge), "9:16");
+    assert.strictEqual(findV(badge, function (n) { return n.t === "use"; })[0].a.href, "#i-chevron", "a compact tile opens its menu from a chevron");
+    assert.strictEqual(badge.a["aria-label"], "9:16");
+    assert.strictEqual(tile.a["data-tip-meta"], "9:16", "the current choice is in the tooltip");
+    assert.strictEqual(tile.c[tile.c.length - 1], badge, "the handle sits at the right edge");
     assert.strictEqual(badge.a["data-menu-open"], "actions.social_copy");
     assert.strictEqual(byClass(byAction(v, "actions.razor_all")[0], "deck-badge").length, 0);
     assert.strictEqual(byClass(v, "deck-menu").length, 0);
@@ -942,6 +983,17 @@ test("menus: the badge on the tile, a menu of options with the current one check
     assert.strictEqual(findV(items[1], function (n) { return n.t === "use"; }).length, 0);
     assert.deepStrictEqual(items.map(function (i) { return i.a["data-menu-pick"]; }), ["9x16", "1x1", "4x5"]);
     assert.ok(items.every(function (i) { return i.a["data-menu-id"] === "actions.social_copy.format"; }));
+    // 2.1: an option's swatch is a dot before its label; a value that is not a hex colour draws none.
+    var tree = sampleTree();
+    var opts = tree.sections[1].items[1].items[1].menu.options;
+    opts[0].swatch = "#1aa3e0";
+    opts[1].swatch = "red; background-image: url(x)";
+    var swatched = byClass(display.renderTree(tree, local({tab: "actions", menu: {buttonId: "actions.social_copy", ready: true}})), "deck-menu")[0];
+    var dots = byClass(swatched, "deck-menu-swatch");
+    assert.strictEqual(dots.length, 1);
+    assert.strictEqual(dots[0].a.style, "background-color: #1aa3e0");
+    assert.deepStrictEqual(byClass(swatched, "deck-menu-item")[0].c.map(function (c) { return c.a["class"] || c.t; }),
+        ["deck-menu-mark", "deck-menu-swatch", "span"]);
     // A menu whose button left the tree is not drawn.
     assert.strictEqual(byClass(rendered("actions", {menu: {buttonId: "actions.gone", ready: true}}), "deck-menu").length, 0);
 });
@@ -1119,6 +1171,221 @@ test("section result and notices: restart pending, protocol, toast", function ()
     assert.strictEqual(findV(display.renderTree(empty, local({tab: "misc"})), function (n) { return n.x === "No results"; }).length, 1);
 });
 
+// --- display.js: 2.1 (tab order, switch, timers, click-dismiss) -------------------------------------------------
+
+function tree21() {
+    // The 2.1 host order: Actions first, Files second; the Files tab without the Journal tile.
+    var files = filesSection();
+    files.items.pop();
+    files.items.push({kind: "row", items: [
+        {kind: "button", id: "files.undo_last", label: "Undo last", icon: "undo", variant: "icon", hint: "Undoes the last change."}]});
+    files.items[3].items.push(
+        {kind: "switch", id: "files.auto_copy", label: "Auto copy", short: "COPY", value: true, hint: "Copies imports into the project."},
+        {kind: "switch", id: "files.auto_sort", label: "Auto sort", short: "SORT", value: false});
+    return sampleTree({sections: [actionsSection(), files]});
+}
+
+test("2.1 tab order: the tree's order, the first section is the default, the last tab is remembered", function () {
+    var v = display.renderTree(tree21(), local({tab: null}));
+    assert.deepStrictEqual(byClass(v, "deck-tab").map(function (t) { return t.a["data-tab"]; }), ["actions", "files"]);
+    assert.strictEqual(byClass(v, "deck-tabs")[0].a["data-on"], "actions", "Actions is the default tab");
+    var header = findV(v, function (n) { return n.t === "header"; })[0];
+    assert.deepStrictEqual(header.c.map(function (c) { return c.a["class"].split(" ")[0]; }), ["deck-glyph", "deck-tabs", "deck-conn"],
+        "glyph · tabs · connection dot");
+    var ctx = makeDisplay();
+    ctx.d.onState("connected", {});
+    ctx.d.onMessage(tree21());
+    clickOn(ctx, byAttr("data-tab", "files"));
+    assert.strictEqual(ctx.win.store["deck.tab"], "files");
+    var again = makeDisplay({storage: {"deck.tab": "files"}});
+    again.d.onState("connected", {});
+    again.d.onMessage(tree21());
+    assert.strictEqual(byClass(again.d.vnode, "deck-tabs")[0].a["data-on"], "files", "the last tab comes back");
+});
+
+test("the Files tab renders without the Journal tile; the undo row still docks", function () {
+    var v = display.renderTree(tree21(), local({tab: "files"}));
+    assert.strictEqual(byAction(v, "files.journal").length, 0);
+    var panel = byClass(v, "deck-tabpanel")[0];
+    var last = panel.c[panel.c.length - 1];
+    assert.ok(hasClass(last, "is-dock"));
+    assert.strictEqual(byAction(last, "files.undo_last").length, 1);
+    assert.deepStrictEqual(byClass(v, "deck-grid")[0].c.map(function (c) { return c.a["data-action"]; }),
+        ["files.sort", "files.sync_all", "files.sync_used", "files.zip", "files.auto_copy", "files.auto_sort"], "switches join the tile grid");
+});
+
+test("switch: a compact tile with a capsule in place of the icon, the code label, role switch", function () {
+    var v = rendered("actions");
+    var off = byAction(v, "actions.solo_audio")[0];
+    var on = byAction(v, "actions.lock_others")[0];
+    assert.strictEqual(off.t, "button");
+    assert.ok(hasClass(off, "deck-tile") && hasClass(off, "is-switch") && !hasClass(off, "is-on"));
+    assert.ok(hasClass(on, "is-on"));
+    assert.deepStrictEqual([off.a["data-kind"], off.a.role, off.a["aria-checked"], off.a["data-value"]], ["switch", "switch", "false", "false"]);
+    assert.deepStrictEqual([on.a["aria-checked"], on.a["data-value"]], ["true", "true"]);
+    assert.deepStrictEqual(off.c.map(function (c) { return c.a["class"]; }), ["deck-capsule", "deck-tile-text"], "the capsule sits in the icon slot");
+    assert.strictEqual(byClass(off, "deck-capsule-knob").length, 1);
+    assert.strictEqual(textOf(byClass(off, "deck-tile-label")[0]), "SOLO");
+    assert.strictEqual(off.a["aria-label"], "Solo audio");
+    assert.strictEqual(off.a["data-tip-label"], "Solo audio");
+    assert.strictEqual(off.a["data-tip-hint"], "Mutes every other audio track.");
+    assert.strictEqual(on.a["data-tip-label"], "Lock other tracks", "the code differs from the name: a tooltip");
+    var grid = byClass(v, "deck-grid")[3];
+    assert.deepStrictEqual(grid.c.map(function (c) { return c.a["data-action"]; }), ["actions.add_video_track", "actions.solo_audio", "actions.lock_others"]);
+    // busy greys it and blocks clicks; disabled and offline too; a short label falls back on the label.
+    var tree = sampleTree();
+    var items = tree.sections[1].items[3].items;
+    items[1].busy = true;
+    items[2].disabled = true;
+    delete items[2].short;
+    var states = display.renderTree(tree, local({tab: "actions"}));
+    assert.ok(hasClass(byAction(states, "actions.solo_audio")[0], "is-busy"));
+    assert.ok(hasClass(byAction(states, "actions.lock_others")[0], "is-disabled"));
+    assert.strictEqual(byAction(states, "actions.lock_others")[0].p.disabled, true);
+    assert.strictEqual(textOf(byClass(byAction(states, "actions.lock_others")[0], "deck-tile-label")[0]), "Lock other tracks");
+    var offline = display.renderTree(sampleTree(), local({tab: "actions", connection: "connecting"}));
+    assert.strictEqual(byAction(offline, "actions.solo_audio")[0].p.disabled, true);
+    // A switch outside a tile group is drawn the same way, full width.
+    var loose = {id: "x", title: "X", collapsed: false, items: [{kind: "switch", id: "x.s", label: "S", value: true}]};
+    var lv = display.renderTree({type: "ui", revision: 1, title: "", status: null, sections: [loose]}, local({tab: "x"}));
+    assert.ok(hasClass(byAction(lv, "x.s")[0], "is-switch") && hasClass(byAction(lv, "x.s")[0], "is-on"));
+});
+
+test("switch flow: the capsule flips at once, the action asks for the new value, the host's next tree wins", function () {
+    withTimers(function (clock) {
+        var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
+        var d = ctx.d;
+        var tile = function (id) { return find(ctx.container, byAttr("data-action", id)); };
+        d.onState("connected", {});
+        d.onMessage(sampleTree());
+        clickOn(ctx, byAttr("data-action", "actions.solo_audio"));
+        assert.deepStrictEqual(ctx.sent.pop(), {type: "action", id: "actions.solo_audio", value: true, revision: 3});
+        assert.strictEqual(tile("actions.solo_audio").getAttribute("aria-checked"), "true", "optimistic flip before the host answers");
+        assert.ok(/is-on/.test(tile("actions.solo_audio").className));
+        clickOn(ctx, byAttr("data-action", "actions.lock_others"));
+        assert.deepStrictEqual(ctx.sent.pop(), {type: "action", id: "actions.lock_others", value: false, revision: 3});
+        assert.strictEqual(tile("actions.lock_others").getAttribute("aria-checked"), "false");
+        // The host accepted SOLO and refused LOCK: the tree is the truth, the refusal comes as a result.
+        var next = sampleTree({revision: 4});
+        next.sections[1].items[3].items[1].value = true;
+        d.onMessage(next);
+        d.onMessage({type: "action_result", id: "actions.lock_others", outcome: "warn", text: "Lock others needs a selected clip",
+            detail: null, at: 1761000000000});
+        assert.deepStrictEqual(d.local.pending, {});
+        assert.strictEqual(tile("actions.solo_audio").getAttribute("aria-checked"), "true");
+        assert.strictEqual(tile("actions.lock_others").getAttribute("aria-checked"), "true", "the refused change is back at the old value");
+        assert.ok(/is-warned/.test(tile("actions.lock_others").className), "the tile glows with the outcome");
+        assert.strictEqual(d.local.lines["actions.tracks"].text, "Lock others needs a selected clip");
+        clock.advance(display.RESULT_MS + 1);
+        assert.ok(!/is-warned/.test(tile("actions.lock_others").className));
+        // A tree that comes back unchanged also resets the optimistic value.
+        clickOn(ctx, byAttr("data-action", "actions.solo_audio"));
+        assert.strictEqual(tile("actions.solo_audio").getAttribute("aria-checked"), "false");
+        d.onMessage(next);
+        assert.strictEqual(tile("actions.solo_audio").getAttribute("aria-checked"), "true");
+        ctx.sent.length = 0;
+        // Busy, disabled and offline switches send nothing and do not flip.
+        var busy = sampleTree({revision: 5});
+        busy.sections[1].items[3].items[1].busy = true;
+        busy.sections[1].items[3].items[2].disabled = true;
+        d.onMessage(busy);
+        clickOn(ctx, byAttr("data-action", "actions.solo_audio"));
+        clickOn(ctx, byAttr("data-action", "actions.lock_others"));
+        assert.strictEqual(ctx.sent.length, 0);
+        assert.deepStrictEqual(d.local.pending, {});
+        d.onMessage(sampleTree());
+        d.onState("connecting", {});
+        d.flipSwitch("actions.solo_audio", true);
+        assert.strictEqual(ctx.sent.length, 0, "nothing while the host is away");
+    });
+});
+
+test("result line timers: 3 s for ok and neutral, 10 s for warn and error; a new result restarts the timer", function () {
+    withTimers(function (clock) {
+        var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
+        var d = ctx.d;
+        var line = function () { return find(ctx.container, function (n) { return /deck-g-result/.test(n.className); }); };
+        d.onState("connected", {});
+        d.onMessage(sampleTree());
+        assert.strictEqual(display.LINE_MS, 3000);
+        assert.strictEqual(display.LINE_ERROR_MS, 10000);
+        [["ok", 3000], ["neutral", 3000], ["warn", 10000], ["error", 10000]].forEach(function (pair) {
+            d.onMessage({type: "action_result", id: "actions.razor_all", outcome: pair[0], text: pair[0], detail: null, at: 1});
+            clock.advance(pair[1] - 1);
+            assert.ok(line(), pair[0] + " still there at " + (pair[1] - 1) + " ms");
+            clock.advance(1);
+            assert.ok(!line(), pair[0] + " gone at " + pair[1] + " ms");
+            assert.strictEqual(d.local.lines["actions.timeline"], undefined);
+        });
+        d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "ok", text: "first", detail: null, at: 1});
+        clock.advance(2500);
+        d.onMessage({type: "action_result", id: "actions.adjustment_layer", outcome: "ok", text: "second", detail: null, at: 1});
+        clock.advance(2500);
+        assert.strictEqual(line().textContent.indexOf("second"), 0, "the new result of the group restarted the timer");
+        clock.advance(501);
+        assert.ok(!line());
+        // A line whose group leaves the tree takes its timer with it.
+        d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "error", text: "x", detail: null, at: 1});
+        var next = sampleTree();
+        next.sections[1].items.shift();
+        d.onMessage(next);
+        assert.deepStrictEqual(d.lineTimers, {});
+    });
+});
+
+test("click-dismiss: result lines, the toast, the restart notice and the connecting hints close on a click", function () {
+    withTimers(function (clock) {
+        var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
+        var d = ctx.d;
+        d.onState("connected", {});
+        d.onMessage(sampleTree());
+        d.onMessage({type: "action_result", id: "actions.razor_all", outcome: "ok", text: "Cut 3 tracks", detail: null, at: 1});
+        clickOn(ctx, byAttr("data-line", "actions.timeline"));
+        assert.ok(!find(ctx.container, byAttr("data-line", "actions.timeline")));
+        assert.deepStrictEqual(d.lineTimers, {}, "its timer is gone too");
+        // The toast.
+        d.onMessage({type: "toast", tone: "ok", text: "Filed a.mp4", ms: 3500});
+        clickOn(ctx, byAttr("data-dismiss", "toast"));
+        assert.strictEqual(d.local.toast, null);
+        assert.strictEqual(d.toastTimer, null);
+        // The restart notice: closed for this page, the panel keeps working.
+        d.onState("restart_pending", {});
+        assert.ok(find(ctx.container, byAttr("data-dismiss", "restart")));
+        clickOn(ctx, byAttr("data-dismiss", "restart"));
+        assert.ok(!find(ctx.container, byAttr("data-dismiss", "restart")));
+        assert.ok(find(ctx.container, byAttr("data-action", "actions.razor_all")));
+        assert.strictEqual(ctx.sent.length, 0, "closing a notice sends nothing");
+        // The connecting hints: the soft second line and the start result line.
+        var screen = makeDisplay();
+        screen.d.common = {readDeck: function () { return {host_exe: "C:\\PremiereDeck.exe"}; }, fileExists: function () { return true; },
+            isDevBrowser: function () { return false; }, startHost: function () { return "missing"; }};
+        screen.d.armLate();
+        screen.d.render();
+        clock.advance(display.LATE_MS + 1);
+        clickOn(screen, byAttr("data-dismiss", "hint"));
+        assert.strictEqual(screen.d.local.hintClosed, true);
+        assert.ok(!find(screen.container, byAttr("data-dismiss", "hint")));
+        assert.ok(find(screen.container, byAttr("data-start-host", "1")), "the start link is a control, it stays");
+        clickOn(screen, byAttr("data-start-host", "1"));
+        assert.ok(find(screen.container, byAttr("data-dismiss", "start")));
+        clickOn(screen, byAttr("data-dismiss", "start"));
+        assert.strictEqual(screen.d.local.startStatus, null);
+        screen.d.onState("connected", {});
+        assert.strictEqual(screen.d.local.hintClosed, false, "a new connection cycle shows the hint again");
+    });
+});
+
+test("panel.css: compact tiles 32 px high, the switch capsule, notices are clickable", function () {
+    var css = fs.readFileSync(path.join(PANEL, "css", "panel.css"), "utf8");
+    var below = css.slice(css.indexOf("/* END generated */"));
+    var tile = /\.deck-tile \{([^}]*)\}/.exec(below)[1];
+    assert.ok(/height: 32px/.test(tile) && /flex-direction: row/.test(tile) && /white-space: nowrap/.test(tile), tile);
+    assert.ok(/\.deck-grid\[data-cols="4"\] \{ grid-template-columns: repeat\(4/.test(below));
+    assert.ok(/\.deck-tile\.is-switch\.is-on \.deck-capsule \{ background: var\(--mint\)/.test(below));
+    assert.ok(!/\.deck-toast \{[^}]*pointer-events: none/.test(below), "the toast takes clicks");
+    assert.ok(!/is-meta/.test(below), "the 2.0 wide tile is gone");
+});
+
 // --- display.js: theme ----------------------------------------------------------------------------------------
 
 test("theme: normaliseTheme and the switch plan", function () {
@@ -1293,7 +1560,8 @@ test("panel.css: the classes the renderer emits are styled, nothing newer than C
     ["files", "actions", "misc"].forEach(function (tab) {
         var v = rendered(tab, {confirming: "files.sort", flash: {"actions.razor_all": "error", "actions.adjustment_layer": "ok"}, tip: {key: "k", label: "L", hint: "H"},
             menu: {buttonId: "actions.social_copy", ready: true}, toast: {text: "t", tone: "ok"}, connection: "restart_pending",
-            lines: {"actions.timeline": {outcome: "error", text: "t", detail: "d", at: 1}}, detailOpen: {"actions.timeline": true}});
+            lines: {"actions.timeline": {outcome: "error", text: "t", detail: "d", at: 1}}, detailOpen: {"actions.timeline": "d"},
+            pending: {"actions.solo_audio": true}});
         findV(v, function (n) {
             String(n.a["class"] || "").split(" ").forEach(function (name) { if (name) { seen[name] = true; } });
             return false;

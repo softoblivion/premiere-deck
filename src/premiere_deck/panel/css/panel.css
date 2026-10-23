@@ -386,7 +386,9 @@ button:disabled { cursor: default; }
     box-shadow: inset 0 0 0 0.5px var(--warn-rim);
     color: var(--warn-ink);
     font-size: 11.5px;
+    cursor: pointer;
 }
+.deck-soft.is-notice { cursor: pointer; }
 
 .deck-body {
     flex: 1;
@@ -487,46 +489,54 @@ button:disabled { cursor: default; }
 .deck-grid[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
 .deck-grid[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 .deck-grid[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.deck-grid[data-cols="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.deck-grid.is-tiles { gap: 6px; }
 .deck-grid > .deck-confirm { grid-column: 1 / -1; }
+/* Four tile columns need about 78 px per tile (the longest code, SETUP, beside its icon; a switch's capsule; a
+   menu's chevron), which a 360 px panel with its scroll bar just gives; narrower panels take three columns. */
+@media (max-width: 359px) {
+    .deck-grid.is-tiles[data-cols="4"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
 @media (max-width: 299px) {
-    .deck-grid.is-tiles[data-cols="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     .deck-grid:not(.is-tiles) { grid-template-columns: minmax(0, 1fr); }
 }
 
-/* ---- Tiles -------------------------------------------------------------------------------------------------- */
+/* ---- Tiles ----------------------------------------------------------------------------------------------- */
+/* 2.1 compact tile: 32 px high, the icon (the result slot) at the left, the code label in one line. */
 .deck-tile {
     display: flex;
-    flex-direction: column;
+    flex-direction: row;
     align-items: center;
-    justify-content: center;
-    gap: 5px;
+    justify-content: flex-start;
+    gap: 6px;
     min-width: 0;
-    min-height: 66px;
-    padding: 7px 6px 6px;
-    border-radius: var(--r-tile);
+    height: 32px;
+    padding: 0 7px 0 8px;
+    border-radius: 11px;
     color: var(--ink-1);
     font-size: 11.5px;
-    font-weight: 550;
-    line-height: 1.15;
-    text-align: center;
+    font-weight: 600;
+    line-height: 1;
+    letter-spacing: 0.02em;
+    text-align: left;
+    white-space: nowrap;
 }
-.deck-face { position: relative; width: 22px; height: 22px; flex: none; }
+.deck-face { position: relative; width: 16px; height: 16px; flex: none; }
 .deck-face .ic {
     position: absolute;
     left: 0;
     top: 0;
-    width: 22px;
-    height: 22px;
+    width: 16px;
+    height: 16px;
     color: var(--ink-2);
     transition: opacity var(--d-2) ease, transform 360ms var(--ease-spring);
 }
 .deck-face .ok, .deck-face .no, .deck-face .warn { opacity: 0; transform: scale(0.4) rotate(-40deg); }
-.deck-tile-text { position: relative; display: block; min-width: 0; max-width: 100%; }
-.deck-tile-label { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; overflow-wrap: anywhere; }
-.deck-tile-meta { display: block; margin-top: 1px; font-size: 11px; font-weight: 450; color: var(--ink-3); }
+.deck-tile-text { position: relative; display: block; flex: 1; min-width: 0; }
+.deck-tile-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deck-tile::before, .deck-tile::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity var(--d-2) ease; }
 .deck-tile::before { background: var(--tone-c, var(--mint)); }
-.deck-tile::after { box-shadow: inset 0 0 0 1px var(--tone-c, var(--mint)), 0 6px 22px -6px var(--tone-c, var(--mint)); }
+.deck-tile::after { box-shadow: inset 0 0 0 1px var(--tone-c, var(--mint)), 0 4px 16px -5px var(--tone-c, var(--mint)); }
 .deck-tile.tone-accent { color: var(--accent-ink); }
 .deck-tile.tone-accent .deck-face .main { color: var(--accent-ink); }
 .deck-tile.tone-accent::after { --tone-c: var(--accent); opacity: 0.5; }
@@ -543,33 +553,40 @@ button:disabled { cursor: default; }
 .deck-tile.is-failed .deck-face .no { opacity: 1; transform: none; color: var(--error-ink); }
 .deck-tile.is-warned .deck-face .warn { opacity: 1; transform: none; color: var(--warn-ink); }
 
-.deck-tile.is-busy { pointer-events: none; }
+/* Busy: the spinner in the icon slot and an accent rim. */
+.deck-tile.is-busy { pointer-events: none; --tone-c: var(--accent); }
+.deck-tile.is-busy::after { opacity: 0.55; box-shadow: inset 0 0 0 1px var(--accent), 0 4px 16px -6px var(--btn-glow); }
 .deck-tile.is-busy .deck-face .main { opacity: 0; }
-.deck-tile.is-busy .deck-face::after { content: ""; position: absolute; top: 2px; right: 2px; bottom: 2px; left: 2px; border-radius: 50%; border: 2px solid var(--spin-track); border-top-color: var(--spin-head); animation: deck-spin 0.8s linear infinite; }
+.deck-tile.is-busy .deck-face::after { content: ""; position: absolute; top: 1px; right: 1px; bottom: 1px; left: 1px; border-radius: 50%; border: 2px solid var(--spin-track); border-top-color: var(--spin-head); animation: deck-spin 0.8s linear infinite; }
 
+/* A tile with a menu: a chevron handle at its right edge opens the menu (the current choice is in the tooltip). */
 .deck-badge {
-    position: absolute;
+    position: relative;
     z-index: 2;
-    top: 5px;
-    right: 5px;
-    height: 16px;
-    padding: 0 5px;
+    display: grid;
+    place-items: center;
+    flex: none;
+    width: 14px;
+    height: 20px;
+    margin-right: -2px;
     border-radius: 6px;
     background: var(--fill-2);
     box-shadow: inset 0 0 0 0.5px var(--stroke-2);
-    font: 600 9.5px / 16px var(--font-mono);
     color: var(--ink-2);
     cursor: pointer;
 }
+.deck-badge .ic { width: 12px; height: 12px; }
 .deck-badge:hover { background: var(--fill-4); color: var(--ink-1); }
+.deck-tile.has-menu { padding-right: 5px; gap: 4px; }
 
-/* A tile with a meta line (the Files tiles): left aligned, the icon in a well, the label and the meta line. */
-.deck-tile.is-meta { align-items: flex-start; justify-content: flex-start; gap: 7px; min-height: 92px; padding: 11px 12px; border-radius: var(--r-card); text-align: left; }
-.deck-tile.is-meta .deck-face { width: 34px; height: 34px; border-radius: 11px; background: var(--well); box-shadow: inset 0 0 0 0.5px var(--stroke-1); }
-.deck-tile.is-meta .deck-face .ic { left: 7.5px; top: 7.5px; width: 19px; height: 19px; color: var(--ink-1); }
-.deck-tile.is-meta .deck-tile-label { font-size: 13px; font-weight: 600; line-height: 1.15; }
-.deck-tile.is-meta.is-busy::after { --tone-c: var(--accent); opacity: 0.55; box-shadow: inset 0 0 0 1px var(--accent), 0 6px 22px -8px var(--btn-glow); }
-.deck-tile.is-meta.is-busy .deck-face::after { top: 8px; right: 8px; bottom: 8px; left: 8px; }
+/* A switch tile (PROTOCOL 6.1 `switch`): the capsule in the icon slot, mint while on. */
+.deck-tile.is-switch { gap: 6px; padding: 0 6px 0 7px; }
+.deck-capsule { position: relative; width: 20px; height: 12px; flex: none; border-radius: 999px; background: var(--switch-track); box-shadow: var(--inset-well); transition: background-color var(--d-2) ease; }
+.deck-capsule-knob { position: absolute; top: 1.5px; left: 1.5px; width: 9px; height: 9px; border-radius: 50%; background: var(--hero-ink); box-shadow: var(--thumb-shadow); transition: transform var(--d-2) var(--ease-spring); }
+.deck-tile.is-switch.is-on .deck-capsule { background: var(--mint); }
+.deck-tile.is-switch.is-on .deck-capsule-knob { transform: translateX(8px); }
+.deck-tile.is-switch.is-busy .deck-capsule { opacity: 0.45; }
+.deck-tile.is-switch.is-busy::after { opacity: 0.4; }
 
 /* ---- Own tooltip and tile menu ---------------------------------------------------------------------------- */
 .deck-tip {
@@ -593,6 +610,7 @@ button:disabled { cursor: default; }
 .deck-tip b { display: block; font-size: 12px; font-weight: 620; color: var(--ink-1); }
 .deck-tip span { display: block; margin-top: 2px; font-size: 11.5px; font-weight: 450; line-height: 1.35; color: var(--ink-2); }
 .deck-tip b + span { margin-top: 2px; }
+.deck-tip .deck-tip-meta { color: var(--ink-3); }
 .deck-tip-arrow {
     position: absolute;
     top: 100%;
@@ -627,6 +645,7 @@ button:disabled { cursor: default; }
 .deck-menu-item:hover { background: var(--fill-3); }
 .deck-menu-mark { width: 14px; height: 14px; flex: none; }
 .deck-menu-mark .ic { width: 14px; height: 14px; color: var(--accent-ink); }
+.deck-menu-swatch { width: 10px; height: 10px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 0.5px var(--stroke-2); }
 
 /* ---- Result lines ------------------------------------------------------------------------------------------- */
 .deck-g-result {
@@ -646,12 +665,14 @@ button:disabled { cursor: default; }
 .deck-g-result .ic { width: 14px; height: 14px; color: var(--tone-ink); }
 .deck-g-result.tone-error { background: var(--error-wash); }
 .deck-g-result.tone-warn { background: var(--warn-wash); }
-.deck-g-result.has-detail:hover { background: var(--fill-1); }
+.deck-g-result:hover { background: var(--fill-1); }
+.deck-g-result.tone-error:hover, .deck-g-result.tone-warn:hover { background: var(--fill-2); }
 .deck-g-result-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deck-g-result-time { font: 500 10.5px / 1 var(--font-mono); color: var(--ink-3); }
-.deck-g-result .more { color: var(--ink-3); transition: transform var(--d-3) var(--ease-spring); }
-.deck-g-result .more.is-open { transform: rotate(180deg); }
-.deck-g-why { margin: -3px 0 0 29px; font-size: 11.5px; line-height: 1.35; color: var(--ink-2); }
+.deck-g-result .more { color: var(--ink-3); }
+.deck-g-result.has-detail { padding-right: 4px; }
+.deck-g-why { display: block; width: 100%; margin-top: 2px; padding: 4px 8px 4px 29px; border-radius: 9px; font-size: 11.5px; line-height: 1.35; color: var(--ink-2); text-align: left; }
+.deck-g-why:hover { background: var(--fill-1); }
 
 /* ---- Inline confirmation ------------------------------------------------------------------------------------ */
 .deck-confirm { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 11.5px; color: var(--ink-2); }
@@ -745,7 +766,7 @@ button:disabled { cursor: default; }
     font-size: 12px;
     text-align: left;
     color: var(--tone-ink, var(--ink-1));
-    pointer-events: none;
+    cursor: pointer;
 }
 .deck-toast.tone-neutral, .deck-toast.tone-accent { color: var(--ink-1); }
 .deck-toast.tone-error { background: var(--toast-error-tint); }

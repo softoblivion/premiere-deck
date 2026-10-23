@@ -56,6 +56,28 @@ export function failToast(err) {
   return null;
 }
 
+// ---- notices (docs/HOST_UI.md 7) ----------------------------
+
+/** How long a result line stays: success and neutral 3 s, a result that needs attention (warn, error) 10 s. */
+export const noticeMs = (tone) => (tone === 'error' || tone === 'warn' ? 10000 : 3000);
+
+const NOTICE_CONTROL = 'button, a[href], input, select, textarea, label, [role="button"], [role="switch"], [data-node]';
+
+/**
+ * A notice goes away on a click anywhere on it except on a control inside it (a button, a link, a field: the control
+ * does its own thing). `close(event)` removes or hides it; returns a function that detaches the handler.
+ */
+export function closeOnClick(el, close) {
+  el.classList.add('is-notice');
+  const onClick = (e) => {
+    const control = e.target instanceof Element ? e.target.closest(NOTICE_CONTROL) : null;
+    if (control && control !== el && el.contains(control)) return;
+    close(e);
+  };
+  el.addEventListener('click', onClick);
+  return () => el.removeEventListener('click', onClick);
+}
+
 const logged = new Set();
 /** Log a UI warning once per distinct message. */
 export function logOnce(level, message) {

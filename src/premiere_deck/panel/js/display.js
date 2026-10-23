@@ -17,6 +17,9 @@
     var SVG_TAGS = {svg: true, use: true};
     var LATE_MS = 15000;          // the soft second line of the connecting screen
     var RESULT_MS = 2000;         // an action result stays on its tile this long
+    var LINE_MS = 3000;           // a success or neutral result line hides itself after this long
+    var LINE_ERROR_MS = 10000;    // an error or warn result line
+    var TILE_COLUMNS = 4;         // tile grids: four columns, three below 360 px (panel.css)
     var TIP_DELAY_MS = 400;
     var FADE_MS = 300;            // the CSS crossfade of a theme switch where View Transitions are missing
     var RESIZE_DEBOUNCE_MS = 300;
@@ -30,6 +33,7 @@
     var FLASH_CLASS = {ok: "is-done", error: "is-failed", warn: "is-warned", neutral: "is-noted"};
     var OUTCOME_ICON = {ok: "check", error: "cross", warn: "warn", neutral: "info"};
     var PATH_TEXT = /^([A-Za-z]:[\\\/]|\\\\)/;
+    var SWATCH = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;   // a menu option's `swatch` colour (PROTOCOL 6.1)
 
     // --- vnodes ------------------------------------------------------------------------------------------------
 
@@ -94,6 +98,9 @@
         attrs["data-tip"] = key;
         attrs["data-tip-label"] = node.label ? String(node.label) : "";
         attrs["data-tip-hint"] = hint;
+        if (node.meta) {
+            attrs["data-tip-meta"] = String(node.meta);
+        }
         return attrs;
     }
 
@@ -132,14 +139,19 @@
             attrs["data-confirm"] = confirmKey;
         }
         if (isTile) {
+            // 2.1 compact tile: the icon (the result slot) at the left, the code label in one line; `meta` and the
+            // menu's badge (the current choice) go into the tooltip, the menu opens from a chevron at the right edge.
             var short = node.short ? String(node.short) : label;
-            attrs["class"] = cls("deck-node deck-tile", tone(node.tone), node.meta && "is-meta", node.busy && "is-busy",
+            var badge = node.menu && node.menu.badge !== undefined && node.menu.badge !== null ? String(node.menu.badge) : "";
+            attrs["class"] = cls("deck-node deck-tile", tone(node.tone), node.menu && "has-menu", node.busy && "is-busy",
                 disabled && "is-disabled", flash && FLASH_CLASS[flash]);
             attrs["aria-label"] = label;
-            tipAttrs(node, attrs, key, short !== label);
+            tipAttrs(node, attrs, key, short !== label || !!node.meta || !!badge);
+            var metaLine = [node.meta ? String(node.meta) : "", badge].filter(Boolean).join(" · ");
+            if (metaLine) {
+                attrs["data-tip-meta"] = metaLine;
+            }
             vnode = h("button", key, attrs, {disabled: disabled}, [
-                node.menu ? h("span", "badge", {"class": "deck-badge", "data-menu-open": node.id}, null,
-                    String(node.menu.badge === undefined || node.menu.badge === null ? "" : node.menu.badge)) : null,
                 h("span", "face", {"class": "deck-face"}, null, [
                     node.icon ? icon(node.icon, "main", "main") : null,
                     icon("check", "ok", "ok"),
@@ -147,9 +159,10 @@
                     icon("warn", "warn", "warn")
                 ]),
                 h("span", "text", {"class": "deck-tile-text"}, null, [
-                    h("span", "label", {"class": "deck-tile-label"}, null, short),
-                    node.meta ? h("span", "meta", {"class": "deck-tile-meta"}, null, String(node.meta)) : null
-                ])
+                    h("span", "label", {"class": "deck-tile-label"}, null, short)
+                ]),
+                node.menu ? h("span", "badge", {"class": "deck-badge", "data-menu-open": node.id, "aria-label": badge}, null,
+                    [icon("chevron", "", "icon")]) : null
             ]);
         } else if (isIcon) {
             attrs["class"] = cls("deck-node deck-icon-btn", tone(node.tone), node.busy && "is-busy", disabled && "is-disabled");
@@ -177,6 +190,33 @@
             out.push(ask);
         }
         return out;
+    }
+
+    /*
+     * A `switch` node (PROTOCOL 6.1, 2.1): a compact tile with a capsule in place of the icon and its code label.
+     * The capsule shows the optimistic value while a click waits for the host's next tree (`local.pending`). The
+     * vnode carries `btn: true`, so a switch joins the grid runs of its group like a tile.
+     */
+    function switchNode(node, ctx, key) {
+        var disabled = !!node.disabled || ctx.offline;
+        var pending = ctx.local.pending || {};
+        var on = pending.hasOwnProperty(node.id) ? !!pending[node.id] : !!node.value;
+        var flash = ctx.local.flash ? ctx.local.flash[node.id] : null;
+        var label = String(node.label || "");
+        var short = node.short ? String(node.short) : label;
+        var attrs = {"class": cls("deck-node deck-tile is-switch", on && "is-on", node.busy && "is-busy",
+            disabled && "is-disabled", flash && FLASH_CLASS[flash]),
+            "data-action": node.id, "data-kind": "switch", "data-value": on ? "true" : "false",
+            role: "switch", "aria-checked": on ? "true" : "false", "aria-label": label};
+        tipAttrs(node, attrs, key, short !== label);
+        var vnode = h("button", key, attrs, {disabled: disabled}, [
+            h("span", "cap", {"class": "deck-capsule"}, null, [h("i", "knob", {"class": "deck-capsule-knob"}, null, "")]),
+            h("span", "text", {"class": "deck-tile-text"}, null, [
+                h("span", "label", {"class": "deck-tile-label"}, null, short)
+            ])
+        ]);
+        vnode.btn = true;
+        return vnode;
     }
 
     function toggleNode(node, ctx, key) {
@@ -304,34 +344,43 @@
     }
 
     // The result line of a group or of a section (6.6): outcome icon, the text, the time, a chevron with a detail.
-    function resultLine(line, lineKey, ctx) {
-        var open = !!(ctx.local.detailOpen && ctx.local.detailOpen[lineKey]);
+    // Every line is a notice that closes on a click (CONVENTIONS "Notices"); a line with a detail opens the
+    // detail with the same click. The open detail stays until its own click, Escape or the group's next result.
+    function resultLine(line, lineKey) {
         var hasDetail = !!line.detail;
         var inner = [
             icon(OUTCOME_ICON[line.outcome] || "info", "", "icon"),
             h("span", "text", {"class": "deck-g-result-text"}, null, String(line.text || "")),
             h("time", "time", {"class": "deck-g-result-time"}, null, clock(line.at)),
-            hasDetail ? icon("chevron", cls("more", open && "is-open"), "more") : null
+            hasDetail ? icon("chevron", "more", "more") : null
         ];
-        var attrs = {"class": cls("deck-g-result", tone(line.outcome), hasDetail && "has-detail", open && "is-open")};
+        return h("button", "line", {"class": cls("deck-g-result", tone(line.outcome), hasDetail && "has-detail"),
+            "data-line": lineKey}, {}, inner);
+    }
+
+    // The explanation a failed line opened: one line, closed by a click on it.
+    function detailLine(text, lineKey) {
+        return h("button", "why", {"class": "deck-g-why", "data-why": lineKey}, {}, String(text));
+    }
+
+    // The result line and the open detail of a line key, as a list of vnodes.
+    function resultNodes(ctx, lineKey) {
         var out = [];
-        if (hasDetail) {
-            attrs["data-line"] = lineKey;
-            attrs["aria-expanded"] = open ? "true" : "false";
-            out.push(h("button", "line", attrs, {}, inner));
-            if (open) {
-                out.push(h("div", "why", {"class": "deck-g-why"}, null, String(line.detail)));
-            }
-        } else {
-            out.push(h("div", "line", attrs, null, inner));
+        var line = ctx.local.lines && ctx.local.lines[lineKey];
+        var why = ctx.local.detailOpen && ctx.local.detailOpen[lineKey];
+        if (line) {
+            out.push(resultLine(line, lineKey));
+        }
+        if (why) {
+            out.push(detailLine(why, lineKey));
         }
         return out;
     }
 
     /*
-     * A `group` (PROTOCOL 6.1): a caption and its items. With columns 2 or 3 (3 with `tiles`) every run of
-     * consecutive buttons becomes a grid of that many columns; any other node takes the full width and ends the
-     * run. With `collapsible` the caption is the collapse control (chevron, the item count while collapsed).
+     * A `group` (PROTOCOL 6.1): a caption and its items. With columns 2 or 3 every run of consecutive buttons
+     * (and switches) becomes a grid of that many columns; with `tiles` the grid has four columns (three below
+     * 360 px, CSS) whatever `columns` says; any other node takes the full width and ends the run. With `collapsible` the caption is the collapse control (chevron, the item count while collapsed).
      * Under the items the group keeps its result line.
      */
     function groupNode(node, ctx, key) {
@@ -358,7 +407,7 @@
                         buttons++;
                     }
                 }
-                var cols = !tiles && buttons < 2 ? 1 : columns;
+                var cols = tiles ? TILE_COLUMNS : (buttons < 2 ? 1 : columns);
                 body.push(h("div", "grid:" + run[0].k, {"class": cls("deck-grid", tiles && "is-tiles"), "data-cols": String(cols)}, null, run));
                 run = [];
             }
@@ -372,10 +421,7 @@
             }
         }
         flush();
-        var line = ctx.local.lines && ctx.local.lines[gid];
-        if (line) {
-            body = body.concat(resultLine(line, gid, ctx));
-        }
+        body = body.concat(resultNodes(ctx, gid));
         var title = node.title === undefined || node.title === null ? "" : String(node.title);
         var head = null;
         if (title && collapsible) {
@@ -413,6 +459,9 @@
             switch (node.kind) {
             case "button":
                 out = out.concat(buttonNodes(node, ctx, null, key, tiles));
+                break;
+            case "switch":
+                vnode = switchNode(node, ctx, key);
                 break;
             case "toggle":
                 vnode = toggleNode(node, ctx, key);
@@ -518,10 +567,9 @@
                 dock.a["class"] += " is-dock";
             }
         }
-        var line = ctx.local.lines && ctx.local.lines["~" + section.id];
         return h("div", "tab:" + section.id, {"class": "deck-tabpanel"}, null, [
             section.status ? statusLine(section.status) : null
-        ].concat(nodes, line ? resultLine(line, "~" + section.id, ctx) : [], dock ? [dock] : []));
+        ].concat(nodes, resultNodes(ctx, "~" + section.id), dock ? [dock] : []));
     }
 
     // The connecting screen (docs/PANEL.md 2): the glyph with a pulsing dot, the title, after 15 s a soft second
@@ -536,7 +584,10 @@
         } else {
             parts.push(h("h1", "title", {"class": "deck-h1"}, null, "Connecting to Host"));
             if (local.late) {
-                parts.push(h("p", "line", {"class": "deck-soft"}, null, "Start Premiere Deck on this computer"));
+                if (!local.hintClosed) {
+                    parts.push(h("p", "line", {"class": "deck-soft is-notice", "data-dismiss": "hint"}, null,
+                        "Start Premiere Deck on this computer"));
+                }
                 if (local.hostExe) {
                     parts.push(h("button", "start", {"class": "deck-btn has-icon deck-start", "data-start-host": "1"}, {}, [
                         icon("power", "", "icon"),
@@ -544,7 +595,8 @@
                     ]));
                 }
                 if (local.startStatus) {
-                    parts.push(h("p", "result", {"class": "deck-soft is-small"}, null, String(local.startStatus)));
+                    parts.push(h("p", "result", {"class": "deck-soft is-small is-notice", "data-dismiss": "start"}, null,
+                        String(local.startStatus)));
                 }
             }
         }
@@ -569,6 +621,8 @@
             items.push(h("button", "o:" + String(value), {"class": cls("deck-menu-item", on && "is-on"), role: "menuitemradio",
                 "aria-checked": on ? "true" : "false", "data-menu-pick": String(value), "data-menu-id": spec.id}, {}, [
                 h("span", "mark", {"class": "deck-menu-mark"}, null, [on ? icon("check", "", "icon") : null]),
+                SWATCH.test(String(options[i].swatch || "")) ? h("i", "sw", {"class": "deck-menu-swatch",
+                    style: "background-color: " + options[i].swatch}, null, "") : null,
                 h("span", "label", {}, null, String(options[i].label))
             ]));
         }
@@ -585,6 +639,7 @@
             style: tip.style || "left: 0px; top: 0px"}, null, [
             tip.label ? h("b", "label", {}, null, tip.label) : null,
             tip.hint ? h("span", "hint", {}, null, tip.hint) : null,
+            tip.meta ? h("span", "meta", {"class": "deck-tip-meta"}, null, tip.meta) : null,
             h("i", "arrow", {"class": "deck-tip-arrow", style: "left: " + (tip.arrow || 24) + "px"}, null, "")
         ]);
     }
@@ -612,8 +667,11 @@
      *   tab          id of the selected section (the tab), remembered in localStorage
      *   collapsed    {groupId: bool} remembered per collapsible group
      *   flash        {buttonId: outcome} the tiles that show a result right now (2 s)
-     *   lines        {groupId | "~" + sectionId: {outcome, text, detail, at}} the result lines
-     *   detailOpen   {line key: true} the result lines whose detail is open
+     *   lines        {groupId | "~" + sectionId: {outcome, text, detail, at}} the result lines (3 s / 10 s)
+     *   detailOpen   {line key: detail text} the explanations a click on a failed line opened
+     *   pending      {switchId: bool} the value a clicked switch shows until the host's next tree
+     *   hintClosed   the connecting screen's "Start Premiere Deck on this computer" line was clicked away
+     *   restartClosed the restart notice was clicked away
      *   confirming   key of the button whose confirmation is open, or null
      *   menu         {buttonId, style, ready, above} the open tile menu, or null
      *   tip          {label, hint, style, arrow, ready, below} the open tooltip, or null
@@ -646,8 +704,8 @@
                     h("i", "dot", {"class": "deck-conn-dot"}, null, "")
                 ])
             ]));
-            if (local.connection === "restart_pending") {
-                children.push(h("div", "notice", {"class": "deck-notice tone-warn"}, null,
+            if (local.connection === "restart_pending" && !local.restartClosed) {
+                children.push(h("div", "notice", {"class": "deck-notice tone-warn", "data-dismiss": "restart"}, null,
                     "Restart Premiere Pro to finish the Premiere Deck update"));
             }
             children.push(h("main", "body", {"class": cls("deck-body", !connected && "is-offline")}, null,
@@ -655,7 +713,8 @@
             children.push(footerNode(tree, local, connected));
         }
         if (local.toast) {
-            children.push(h("div", "toast", {"class": cls("deck-toast", tone(local.toast.tone))}, null, String(local.toast.text || "")));
+            children.push(h("div", "toast", {"class": cls("deck-toast", tone(local.toast.tone)), "data-dismiss": "toast"}, null,
+                String(local.toast.text || "")));
         }
         var menu = menuNode(local, tree);
         if (menu) {
@@ -670,8 +729,8 @@
 
     // --- tree lookups, results ---------------------------------------------------------------------------------
 
-    // The button node `id` with the section and group that hold it: {node, section, group} or null. A button in
-    // a list row is found as well (its group is null).
+    // The button or switch node `id` with the section and group that hold it: {node, section, group} or null. A
+    // button in a list row is found as well (its group is null).
     function findButton(tree, id) {
         var sections = (tree && tree.sections) || [];
         var found = null;
@@ -681,7 +740,7 @@
                 if (!node) {
                     continue;
                 }
-                if (node.kind === "button" && node.id === id) {
+                if ((node.kind === "button" || node.kind === "switch") && node.id === id) {
                     found = {node: node, section: section, group: group};
                 } else if (node.kind === "row") {
                     visit(node.items, section, group);
@@ -1056,6 +1115,9 @@
             flash: {},
             lines: {},
             detailOpen: {},
+            pending: {},
+            hintClosed: false,
+            restartClosed: false,
             confirming: null,
             menu: null,
             tip: null,
@@ -1070,6 +1132,7 @@
         this.resizeTimer = null;
         this.tipTimer = null;
         this.flashTimers = {};
+        this.lineTimers = {};
         this.fadeTimer = null;
         this.client = null;
     }
@@ -1214,6 +1277,7 @@
         this.local.hostVersion = info && info.host_version ? info.host_version : this.local.hostVersion;
         if (state === "connected" || state === "restart_pending") {
             this.local.late = false;
+            this.local.hintClosed = false;
             this.local.startStatus = null;
             if (this.lateTimer) {
                 clearTimeout(this.lateTimer);
@@ -1231,6 +1295,7 @@
     Display.prototype.onMessage = function (message) {
         if (message.type === "ui") {
             this.tree = message;
+            this.local.pending = {};   // the host's tree is the truth for every switch
             this.pruneResults();
             if (this.local.confirming && !this.confirmStillValid()) {
                 this.local.confirming = null;
@@ -1251,14 +1316,27 @@
         var name;
         for (name in this.local.lines) {
             if (this.local.lines.hasOwnProperty(name) && !keys[name]) {
-                delete this.local.lines[name];
+                this.closeLine(name);
+            }
+        }
+        for (name in this.local.detailOpen) {
+            if (this.local.detailOpen.hasOwnProperty(name) && !keys[name]) {
                 delete this.local.detailOpen[name];
             }
         }
     };
 
-    // `action_result` (PROTOCOL 6.6): the tile shows the outcome for 2 s, the group keeps the line. A result for a
-    // button that is not in the tree changes nothing.
+    // Removes a result line and its timer (the open detail, if any, stays).
+    Display.prototype.closeLine = function (key) {
+        if (this.lineTimers[key]) {
+            clearTimeout(this.lineTimers[key]);
+            delete this.lineTimers[key];
+        }
+        delete this.local.lines[key];
+    };
+
+    // `action_result` (PROTOCOL 6.6): the tile shows the outcome for 2 s, the group shows the line for 3 s (ok,
+    // neutral) or 10 s (warn, error). A result for a button that is not in the tree changes nothing.
     Display.prototype.onResult = function (message) {
         var self = this;
         var id = String(message.id || "");
@@ -1271,6 +1349,14 @@
         this.local.lines[key] = {outcome: outcome, text: String(message.text || ""), detail: message.detail ? String(message.detail) : null,
             at: Number(message.at) || Date.now()};
         delete this.local.detailOpen[key];
+        if (this.lineTimers[key]) {
+            clearTimeout(this.lineTimers[key]);
+        }
+        this.lineTimers[key] = setTimeout(function () {
+            delete self.lineTimers[key];
+            delete self.local.lines[key];
+            self.render();
+        }, outcome === "ok" || outcome === "neutral" ? LINE_MS : LINE_ERROR_MS);
         if (this.flashTimers[id]) {
             clearTimeout(this.flashTimers[id]);
         }
@@ -1305,6 +1391,28 @@
             visit(sections[s].items, null);
         }
         return found;
+    };
+
+    Display.prototype.closeToast = function () {
+        if (this.toastTimer) {
+            clearTimeout(this.toastTimer);
+            this.toastTimer = null;
+        }
+        this.local.toast = null;
+    };
+
+    // A click on a notice closes it (CONVENTIONS "Notices"): the toast, the restart notice, the connecting hints.
+    Display.prototype.dismiss = function (what) {
+        if (what === "toast") {
+            this.closeToast();
+        } else if (what === "restart") {
+            this.local.restartClosed = true;
+        } else if (what === "hint") {
+            this.local.hintClosed = true;
+        } else if (what === "start") {
+            this.local.startStatus = null;
+        }
+        this.render();
     };
 
     Display.prototype.showToast = function (message) {
@@ -1423,7 +1531,8 @@
                 return;
             }
             self.local.tip = {key: el.getAttribute("data-tip"), label: el.getAttribute("data-tip-label") || "",
-                hint: el.getAttribute("data-tip-hint") || "", ready: false, style: "left: 0px; top: 0px"};
+                hint: el.getAttribute("data-tip-hint") || "",
+                meta: el.getAttribute("data-tip-meta") || "", ready: false, style: "left: 0px; top: 0px"};
             self.render();
         }, TIP_DELAY_MS);
     };
@@ -1496,9 +1605,23 @@
                 return;
             }
             if ((el = closest(target, "data-line", box))) {
+                // A click closes the line; a line with a detail opens the detail in the same click.
                 var lineKey = el.getAttribute("data-line");
-                self.local.detailOpen[lineKey] = !self.local.detailOpen[lineKey];
+                var line = self.local.lines[lineKey];
+                self.closeLine(lineKey);
+                if (line && line.detail) {
+                    self.local.detailOpen[lineKey] = line.detail;
+                }
                 self.render();
+                return;
+            }
+            if ((el = closest(target, "data-why", box))) {
+                delete self.local.detailOpen[el.getAttribute("data-why")];
+                self.render();
+                return;
+            }
+            if ((el = closest(target, "data-dismiss", box))) {
+                self.dismiss(el.getAttribute("data-dismiss"));
                 return;
             }
             if ((el = closest(target, "data-start-host", box))) {
@@ -1528,10 +1651,14 @@
                 return;
             }
             var kind = el.getAttribute("data-kind");
-            if (kind !== "button" && kind !== "link") {
+            if (kind !== "button" && kind !== "link" && kind !== "switch") {
                 return;
             }
             if (el.disabled || el.className.indexOf("is-busy") >= 0 || el.className.indexOf("is-disabled") >= 0) {
+                return;
+            }
+            if (kind === "switch") {
+                self.flipSwitch(el.getAttribute("data-action"), el.getAttribute("data-value") !== "true");
                 return;
             }
             if (el.hasAttribute("data-confirm")) {
@@ -1633,6 +1760,17 @@
         });
     };
 
+    // A switch click (PROTOCOL 6.1): the capsule flips at once and the action asks for the new value; the host's
+    // next tree replaces the optimistic value (a refused change comes back as the old one).
+    Display.prototype.flipSwitch = function (id, value) {
+        if (this.isOffline()) {
+            return;
+        }
+        this.local.pending[id] = value;
+        this.render();
+        this.sendAction(id, value);
+    };
+
     Display.prototype.isOffline = function () {
         return this.local.connection !== "connected" && this.local.connection !== "restart_pending";
     };
@@ -1641,8 +1779,8 @@
     Display.prototype.closeDetails = function () {
         var any = false;
         for (var key in this.local.detailOpen) {
-            if (this.local.detailOpen.hasOwnProperty(key) && this.local.detailOpen[key]) {
-                this.local.detailOpen[key] = false;
+            if (this.local.detailOpen.hasOwnProperty(key)) {
+                delete this.local.detailOpen[key];
                 any = true;
             }
         }
@@ -1684,6 +1822,9 @@
         Display: Display,
         LATE_MS: LATE_MS,
         RESULT_MS: RESULT_MS,
+        LINE_MS: LINE_MS,
+        LINE_ERROR_MS: LINE_ERROR_MS,
+        TILE_COLUMNS: TILE_COLUMNS,
         TIP_DELAY_MS: TIP_DELAY_MS
     };
 

@@ -8,6 +8,7 @@ Nothing here touches sockets.
 from __future__ import annotations
 
 import json
+import re
 import secrets
 import time
 from dataclasses import dataclass, field
@@ -50,6 +51,7 @@ OUTCOMES = ("ok", "warn", "error", "neutral")  # action_result outcomes (docs/PR
 THEMES = ("black", "sky")  # docs/PROTOCOL.md 6.5
 DEFAULT_THEME = "black"
 SHORT_MAX = 16  # longest tile label (button `short`)
+SWATCH = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")  # menu option `swatch` (docs/PROTOCOL.md 6.1)
 
 # Premiere events a module may subscribe to (docs/PROTOCOL.md 8).
 EVENTS = (
@@ -220,9 +222,17 @@ def ui(revision: int, title: str, status: Optional[dict], sections: list, footer
 
 def menu(id: str, value: Any, options: list, badge: str) -> dict:
     """The choice a tile carries (docs/PROTOCOL.md 6.1 `button.menu`): `badge` is the current choice in short form;
-    a pick sends `action` with this `id` and the option's `value`."""
-    return {"id": id, "value": value, "badge": str(badge),
-            "options": [{"value": o["value"], "label": str(o["label"])} for o in options]}
+    a pick sends `action` with this `id` and the option's `value`. An option may carry `swatch` (2.1, a CSS hex
+    colour such as "#1aa3e0"), drawn as a dot before its label."""
+    def option(o: dict) -> dict:
+        out = {"value": o["value"], "label": str(o["label"])}
+        if o.get("swatch") is not None:
+            if not isinstance(o["swatch"], str) or not SWATCH.match(o["swatch"]):
+                raise ProtocolError(f"menu option swatch {o['swatch']!r} is not a #rgb or #rrggbb colour")
+            out["swatch"] = o["swatch"]
+        return out
+
+    return {"id": id, "value": value, "badge": str(badge), "options": [option(o) for o in options]}
 
 
 def node_button(id: str, label: str, *, hint: Optional[str] = None, tone: str = "neutral", busy: bool = False,
@@ -242,6 +252,16 @@ def node_button(id: str, label: str, *, hint: Optional[str] = None, tone: str = 
 
 def node_toggle(id: str, label: str, value: bool, *, hint: Optional[str] = None, disabled: bool = False) -> dict:
     return _strip({"kind": "toggle", "id": id, "label": label, "value": bool(value), "hint": hint, "disabled": disabled})
+
+
+def node_switch(id: str, label: str, value: bool, *, short: Optional[str] = None, icon: Optional[str] = None,
+                hint: Optional[str] = None, disabled: bool = False, busy: bool = False) -> dict:
+    """2.1 `switch` (docs/PROTOCOL.md 6.1): a tile with a capsule switch; a click sends `action` with `value` =
+    the opposite of `value`. `short` is the tile code (at most 16 characters), `busy` greys it while a job runs."""
+    if short is not None and len(short) > SHORT_MAX:
+        raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
+    return _strip({"kind": "switch", "id": id, "label": label, "value": bool(value), "short": short, "icon": icon,
+                   "hint": hint, "disabled": disabled, "busy": busy})
 
 
 def node_select(id: str, label: str, value: str, options: list, *, disabled: bool = False) -> dict:
@@ -326,8 +346,8 @@ def status(text: str, tone: str = "neutral") -> dict:
 
 # --- validation ------------------------------------------------------------------------------------------------
 
-_NODE_KINDS = {"button", "toggle", "select", "input", "text", "progress", "list", "row", "group", "divider"}
-_INTERACTIVE = {"button", "toggle", "select", "input", "list"}
+_NODE_KINDS = {"button", "switch", "toggle", "select", "input", "text", "progress", "list", "row", "group", "divider"}
+_INTERACTIVE = {"button", "switch", "toggle", "select", "input", "list"}
 
 
 def validate_tree(message: dict) -> None:
@@ -375,6 +395,8 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
                 raise ProtocolError("select needs options")
         if kind == "button":
             _validate_button(node, seen)
+        if kind == "switch":
+            _validate_switch(node)
         if kind == "text" and not isinstance(node.get("chip", False), bool):
             raise ProtocolError("text chip is a bool")
         if kind == "progress":
@@ -443,10 +465,29 @@ def _validate_button(node: dict, seen: Optional[set]) -> None:
     if not isinstance(options, list) or not options or not all(
             isinstance(o, dict) and "value" in o and isinstance(o.get("label"), str) for o in options):
         raise ProtocolError("a button menu needs options of {value, label}")
+    for o in options:
+        swatch = o.get("swatch")
+        if swatch is not None and (not isinstance(swatch, str) or not SWATCH.match(swatch)):
+            raise ProtocolError(f"menu option swatch {swatch!r} is not a #rgb or #rrggbb colour")
     if not isinstance(menu_value.get("badge", ""), str):
         raise ProtocolError("a button menu badge is a string")
     if seen is not None:
         _unique(seen, menu_value["id"])
+
+
+def _validate_switch(node: dict) -> None:
+    """2.1 switch fields (docs/PROTOCOL.md 6.1): `value` is a bool; `short` at most 16 characters."""
+    if not isinstance(node.get("value"), bool):
+        raise ProtocolError("switch value is a bool")
+    for field_name in ("label", "short", "icon", "hint"):
+        if node.get(field_name) is not None and not isinstance(node[field_name], str):
+            raise ProtocolError(f"switch {field_name} is a string or null")
+    short = node.get("short")
+    if isinstance(short, str) and len(short) > SHORT_MAX:
+        raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
+    for flag in ("disabled", "busy"):
+        if not isinstance(node.get(flag, False), bool):
+            raise ProtocolError(f"switch {flag} is a bool")
 
 
 def _unique(seen: set, key: str) -> None:

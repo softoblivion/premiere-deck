@@ -9,7 +9,8 @@ from premiere_deck.modules.quick_actions.results import count, text
 class SelectSameSource(Action):
     id = "select_same_source"
     label = "Select same source"
-    short = "Same source"
+    title = "Same source"
+    short = "SRC"
     icon = "select-same-source"
     hint = "Selects every clip that uses the same media as the selected clip."
     group = "Selection"

@@ -18,7 +18,7 @@ import { percent } from '../vendor/liquid_ui/js/format.js';
 import { call } from './api.js';
 import { askConfirm } from './confirm.js';
 import { ic, hasIcon } from './icons.js';
-import { h, toneClass, cellText, cellTone, safeImg, failToast, logOnce, bar, setBar } from './ui.js';
+import { h, toneClass, cellText, cellTone, safeImg, failToast, logOnce, bar, setBar, noticeMs, closeOnClick } from './ui.js';
 
 // ---------------------------------------------------------------------------------------------
 // Keyed reconciler
@@ -113,6 +113,44 @@ export class Keyed {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Result line of a module page (the list `last_result`): shown for a limited time after a `result` event of its
+// module (success and neutral 3 s, warn and error 10 s), closed at once by a click on it (HOST_UI.md 7).
+
+const resultLines = new Map(); // module id -> { until, timer }
+const resultSubs = new Set();
+
+const notifyResultLines = (moduleId) => resultSubs.forEach((fn) => fn(moduleId));
+
+/** A `result` event of `moduleId`: its result line shows again from now on. */
+export function noteResult(moduleId, outcome) {
+  const prev = resultLines.get(moduleId);
+  if (prev) clearTimeout(prev.timer);
+  const ms = noticeMs(outcome);
+  const entry = { until: Date.now() + ms, timer: setTimeout(() => notifyResultLines(moduleId), ms + 20) };
+  resultLines.set(moduleId, entry);
+  notifyResultLines(moduleId);
+}
+
+export function dismissResult(moduleId) {
+  const prev = resultLines.get(moduleId);
+  if (!prev) return;
+  clearTimeout(prev.timer);
+  resultLines.delete(moduleId);
+  notifyResultLines(moduleId);
+}
+
+const resultLineShown = (moduleId) => {
+  const e = resultLines.get(moduleId);
+  return !!e && e.until > Date.now();
+};
+
+/** Call `fn(moduleId)` whenever a result line appears or goes away; returns the unsubscribe function. */
+export function watchResultLines(fn) {
+  resultSubs.add(fn);
+  return () => resultSubs.delete(fn);
+}
+
+// ---------------------------------------------------------------------------------------------
 // Module action helper
 
 /** `act(nodeId, value, row)` for one module: module_action, rejection -> toast. Resolves to the result or null. */
@@ -130,7 +168,7 @@ export function makeAct(moduleId) {
 // ---------------------------------------------------------------------------------------------
 // Nodes
 
-const NODE_KINDS = new Set(['button', 'toggle', 'select', 'input', 'text', 'progress']);
+const NODE_KINDS = new Set(['button', 'switch', 'toggle', 'select', 'input', 'text', 'progress']);
 const kindOf = (n) => n.kind ?? n.type;
 const iconOf = (name) => (name && hasIcon(name) ? ic(name) : '');
 
@@ -264,7 +302,7 @@ function normField(f) {
   if (!f || typeof f !== 'object') return null;
   const kind = kindOf(f);
   if (f.id != null && NODE_KINDS.has(kind)) {
-    if (kind === 'toggle') return { t: 'toggle', nodeId: f.id, key: f.id, label: f.label, hint: f.hint, value: !!f.value, disabled: f.disabled };
+    if (kind === 'toggle' || kind === 'switch') return { t: 'toggle', nodeId: f.id, key: f.id, label: f.label, hint: f.hint, value: !!f.value, disabled: f.disabled };
     if (kind === 'select') return { t: 'select', nodeId: f.id, key: f.id, label: f.label, hint: f.hint, value: f.value, options: f.options || [], disabled: f.disabled };
     if (kind === 'input') return { t: 'text', nodeId: f.id, key: f.id, label: f.label, hint: f.hint, value: f.value ?? '', placeholder: f.placeholder, submitLabel: f.submit_label, disabled: f.disabled };
     return { t: 'node', node: f };
@@ -379,12 +417,37 @@ export function renderNode(node, ctx, controls, { row = null, size = 'btn-s' } =
   if (kind === 'button') return buttonEl(node, ctx, { row, size });
   if (kind === 'text') return textEl(node);
   if (kind === 'progress') return progressEl(node, ctx);
+  if (kind === 'switch') return switchEl(node, ctx, controls, row);
   if (kind === 'toggle' || kind === 'select' || kind === 'input') {
     const spec = normField(node);
     if (spec && spec.t !== 'node') return fieldRow(spec, buildField(spec, { send: async (v) => (await ctx.act(spec.nodeId, v, row)) !== null }, controls));
   }
   logOnce('warning', `Node kind "${kind}" is not supported and was skipped.`);
   return null;
+}
+
+/**
+ * A `switch` node (PROTOCOL.md 6.1) in a page block: a pill with the node's icon and label and a capsule switch.
+ * A click on the capsule sends the node id with the new value; a refused change puts the old value back.
+ */
+export function switchEl(node, ctx, controls, row = null) {
+  const label = node.label || node.short || '';
+  const sw = new Switch({
+    label,
+    checked: !!node.value,
+    onChange: async (v) => {
+      const ok = (await ctx.act(node.id, v, row)) !== null;
+      if (!ok) sw.set(!v);
+    },
+  });
+  sw.el.dataset.fk = `${node.id ?? ''}|${row ?? ''}`;
+  sw.setDisabled(!!node.disabled || !!node.busy);
+  controls.push(sw);
+  const glyphHtml = iconOf(node.icon);
+  return h('div', `sw-pill${node.disabled ? ' is-disabled' : ''}`, { 'data-node': node.id ?? null, title: node.hint || null },
+    glyphHtml ? h('span', 'ic-hold', { 'data-ic': '', html: glyphHtml }) : null,
+    h('span', 'sw-label', { text: label }),
+    sw.el);
 }
 
 function fieldRow(spec, field) {
@@ -514,6 +577,7 @@ function listRow(r, ctx, controls, { compact = false, result = false } = {}) {
   row.append(h('div', 'lst-main', null, h('div', 'lst-title', { text: r.title ?? '' }), sub));
   if (r.meta) row.append(h('div', 'lst-meta mono', { text: String(r.meta) }));
   if (r.actions && r.actions.length) row.append(h('div', 'lst-acts', null, r.actions.map((a) => renderNode(a, ctx, controls, { row: r.id, size: 'btn-xs' }))));
+  if (result) closeOnClick(row, () => dismissResult(ctx.moduleId));
   if (r.toggle && r.toggle.id) {
     // Optional row switch (BRIDGE_API.md 5): sends the toggle's id with the new value and row = the row id.
     const sw = new Switch({
@@ -637,8 +701,9 @@ function buildActions(b, ctx, controls) {
     const cols = Math.max(1, Math.min(3, Number(b.columns) || 2));
     const grid = h('div', 'ftiles', { style: `--cols:${cols}` });
     for (const a of b.items || []) {
-      if ((kindOf(a) || 'button') !== 'button') continue;
-      grid.append(tileEl(a, ctx));
+      const kind = kindOf(a) || 'button';
+      if (kind === 'switch') grid.append(switchEl(a, ctx, controls));
+      else if (kind === 'button') grid.append(tileEl(a, ctx));
     }
     return grid;
   }
@@ -709,7 +774,8 @@ export function createBlocks(container, ctx) {
     update(blocks) {
       const list = [];
       const seen = new Set();
-      const all = (blocks || []).filter((b) => b && typeof b === 'object');
+      const all = (blocks || []).filter((b) => b && typeof b === 'object'
+        && !((b.type ?? b.kind) === 'list' && b.id === 'last_result' && !resultLineShown(ctx.moduleId)));
       const merged = new Set();
       // An `actions` block named `<table id>_actions` goes into that table's title row.
       const heads = new Map();

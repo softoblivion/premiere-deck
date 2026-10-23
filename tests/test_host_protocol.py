@@ -159,6 +159,65 @@ class Fields20(unittest.TestCase):
             P.validate_tree(self.tree([P.node_list("a.l", [bad])]))
 
 
+class Switch21(unittest.TestCase):
+    """The 2.1 `switch` node (docs/PROTOCOL.md 6.1)."""
+
+    def tree(self, items):
+        return {"type": P.T_UI, "revision": 1, "title": "Deck", "status": None,
+                "sections": [P.section("actions", "Actions", items)], "footer": None}
+
+    def test_switch_fields(self):
+        node = P.node_switch("a.solo", "Solo track", True, short="SOLO", icon="solo", hint="Mutes the others",
+                             busy=True)
+        self.assertEqual(node, {"kind": "switch", "id": "a.solo", "label": "Solo track", "value": True,
+                                "short": "SOLO", "icon": "solo", "hint": "Mutes the others", "disabled": False,
+                                "busy": True})
+        plain = P.node_switch("a.lock", "Lock others", 0)
+        self.assertIs(plain["value"], False)
+        self.assertFalse({"short", "icon", "hint"} & set(plain), "absent fields are not sent")
+        P.validate_tree(self.tree([P.node_group("Tracks", [node, plain, P.node_button("a.add", "Add")],
+                                                tiles=True)]))
+
+    def test_switch_is_validated(self):
+        with self.assertRaises(P.ProtocolError):
+            P.node_switch("a.x", "X", True, short="x" * 17)
+        bad_nodes = [
+            {"kind": "switch", "label": "X", "value": True},
+            {"kind": "switch", "id": "a.x", "label": "X"},
+            {"kind": "switch", "id": "a.x", "label": "X", "value": "on"},
+            {"kind": "switch", "id": "a.x", "label": "X", "value": True, "short": "x" * 17},
+            {"kind": "switch", "id": "a.x", "label": "X", "value": True, "icon": 3},
+            {"kind": "switch", "id": "a.x", "label": "X", "value": True, "busy": "yes"},
+        ]
+        for node in bad_nodes:
+            with self.subTest(node=node), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([node]))
+        with self.assertRaises(P.ProtocolError):  # switch ids share the id space
+            P.validate_tree(self.tree([P.node_button("a.x", "X"), P.node_switch("a.x", "Y", False)]))
+
+
+class MenuSwatch21(unittest.TestCase):
+    """2.1: a menu option may carry a `swatch` colour (docs/PROTOCOL.md 6.1)."""
+
+    def tree(self, menu):
+        return {"type": P.T_UI, "revision": 1, "title": "Deck", "status": None, "footer": None,
+                "sections": [P.section("actions", "Actions", [P.node_button("a.colour", "Colour", menu=menu)])]}
+
+    def test_swatch_is_kept_and_validated(self):
+        menu = P.menu("a.colour.label", "iris", [{"value": "iris", "label": "Iris", "swatch": "#1aa3e0"},
+                                                 {"value": "none", "label": "None"}, {"value": "x", "label": "X", "swatch": "#abc"}],
+                      "Iris")
+        self.assertEqual(menu["options"][0], {"value": "iris", "label": "Iris", "swatch": "#1aa3e0"})
+        self.assertNotIn("swatch", menu["options"][1])
+        P.validate_tree(self.tree(menu))
+        for bad in ("blue", "#12345", "1aa3e0", 7, "url(x)"):
+            with self.subTest(bad=bad), self.assertRaises(P.ProtocolError):
+                P.menu("a.m", "a", [{"value": "a", "label": "A", "swatch": bad}], "A")
+            with self.subTest(tree=bad), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree({"id": "a.m", "value": "a", "badge": "A",
+                                           "options": [{"value": "a", "label": "A", "swatch": bad}]}))
+
+
 class Messages(unittest.TestCase):
     def test_theme_message(self):
         self.assertEqual(P.theme("sky"), {"type": "theme", "name": "sky"})

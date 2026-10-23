@@ -193,7 +193,15 @@ function build(content, update) {
     onChange: (v) => save('keep', { keep_running_with_premiere: v }, () => keepSw.set(!!(store.settings && store.settings.keep_running_with_premiere))),
   });
   controls.push(keepSw);
-  cardBehaviour.append(row('Keep running with Premiere', 'Closing the window hides it to the tray', keepSw.el));
+  const activitySw = new Switch({
+    label: 'Show activity',
+    checked: !!(store.settings && store.settings.show_activity),
+    onChange: (v) => save('activity', { show_activity: v }, () => activitySw.set(!!(store.settings && store.settings.show_activity))),
+  });
+  controls.push(activitySw);
+  cardBehaviour.append(
+    row('Keep running with Premiere', 'Closing the window hides it to the tray', keepSw.el),
+    row('Show activity', 'Recent results under the Premiere card', activitySw.el));
 
   // ---- Updates: the host (kit rows) and the panel -------------------------------------------------
 
@@ -456,6 +464,7 @@ function build(content, update) {
   const syncSettings = (s) => {
     if (!s) return;
     if (!busy('keep')) keepSw.set(!!s.keep_running_with_premiere);
+    if (!busy('activity')) activitySw.set(!!s.show_activity);
     if (!busy('theme')) theme.set(s.theme);
     paintPremiere();
   };
