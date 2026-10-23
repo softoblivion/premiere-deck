@@ -2,10 +2,11 @@
 
 A small `websockets` server implementing docs/PROTOCOL.md 1-3 for one agent and any number of displays, with a
 `PremiereApi` on top. It writes `deck.json` into the installed panel folder (the dev junction) and removes it on
-exit. The display gets a 2.1 sample tree in the host's tab order: the Actions tab (the compact tiles and codes,
-two `switch` tiles; with `--real-actions` the real Quick actions module on a fake host
-renders it instead), the Files tab (the tiles of docs/FILES.md 6 with the Auto copy / Auto sort switches, a job with
-Stop, the undo row) and a tab with every node kind. Its actions change the tree and send `action_result` / `toast`,
+exit. The display gets a 3.0 sample tree in the host's tab order: the Actions tab (one lane per group with its code,
+two `switch` tiles, the colour menu and the custom size prompt; with `--real-actions` the real Quick actions module on a fake host
+renders it instead), the Files tab (the row tiles of docs/FILES.md 6, SORT and SYNC with their AUTO capsule, a job with
+Stop, the undo row, the Offline group) and a tab with every node kind; the tree carries the pinned row (`pins`), which
+`panel.pin` / `panel.unpin` edit as the hub does. Its actions change the tree and send `action_result` / `toast`,
 so the round trip is visible in the panel; the host's `theme` message is sent right after `welcome`. A switch flip
 is stored and comes back in the next tree; `server.model["refuse"] = {"actions.lock_others"}` makes the host refuse
 that switch (the old value plus a `warn` result), for the optimistic flip.
@@ -71,113 +72,167 @@ class State:
                     "hellos": list(self.hellos)}
 
 
+PINS_MAX = 5
+
+
 def files_section(model: dict) -> dict:
-    """The Files tab as the Files module renders it (docs/FILES.md 6, 2.1): header, path, chips, the four tiles and
-    the two switches, the running job with Stop, the undo row (no Journal tile)."""
+    """The Files tab as the Files module renders it in 3.0 (docs/FILES.md 6): header, path, the three count chips, the
+    2 x 3 row tiles (SORT and SYNC with their AUTO capsule, SETUP after set-up), the running job with Stop, the undo
+    row and the Offline group; no status line, no Journal tile."""
     job = model["job"]
     running = job["id"] if job else None
 
-    def tile(local: str, label: str, code: str, icon: str, meta: str, confirm: str = None) -> dict:
-        return protocol.node_button(f"files.{local}", label, hint=f"{label}: what it does in one line.", icon=icon,
-                                    short=code, meta=job["tile_meta"] if running == local else meta, confirm=confirm,
-                                    busy=running == local, disabled=bool(running) and running != local)
+    def tile(local: str, label: str, code: str, icon: str, confirm: str = None, auto: tuple = None) -> dict:
+        node = protocol.node_button(f"files.{local}", label, hint=FILES_HINTS[local], icon=icon, short=code,
+                                    confirm=confirm, busy=running == local, disabled=bool(running) and running != local)
+        if auto:
+            auto_id, auto_label, auto_hint = auto
+            node["auto"] = {"id": auto_id, "label": auto_label, "hint": auto_hint, "value": model["switches"][auto_id]}
+        return node
 
     items = [
         protocol.node_row([protocol.node_text("spring-promo_v2"),
                            protocol.node_button("files.open_folder", "Open project folder", icon="open-folder",
                                                 variant="icon", hint="Opens the project folder in Explorer.")]),
         protocol.node_text("D:\\Footage\\spring-promo", small=True),
-        protocol.node_row([protocol.node_text("142 in the root", tone="ok", small=True, chip=True),
+        protocol.node_row([protocol.node_text("142 in the root", tone="neutral", small=True, chip=True),
                            protocol.node_text("4 outside", tone="warn", small=True, chip=True),
                            protocol.node_text("1 offline", tone="error", small=True, chip=True)]),
         protocol.node_group(None, [
-            tile("sort", "Sort project", "ORG", "sort", "18 items to file", "Sort 18 items into the layout folders?"),
-            tile("sync_all", "Sync all media", "SYNC", "sync-all", "4 outside the root"),
-            tile("sync_used", "Sync used media", "USED", "sync-used", "2 in sequences"),
-            tile("zip", "Make ZIP", "ZIP", "zip", "Checks offline first"),
-            protocol.node_switch("files.auto_copy", "Auto copy", model["switches"]["files.auto_copy"], short="COPY",
-                                 icon="sync-all", hint="Copies files imported from outside the project folder into "
-                                                       "Media and relinks them."),
-            protocol.node_switch("files.auto_sort", "Auto sort", model["switches"]["files.auto_sort"], short="SORT",
-                                 icon="sort", hint="Files new media of the project folder into the layout folders "
-                                                   "and bins."),
+            tile("sort", "Sort project", "SORT", "sort", "Sort 18 items into the layout folders?",
+                 ("files.auto_sort", "Auto sort", "Files new media of the project folder into the layout folders and bins.")),
+            tile("sync_all", "Sync all media", "SYNC", "sync-all", None,
+                 ("files.auto_copy", "Auto copy",
+                  "Copies files imported from outside the project folder into Media and relinks them.")),
+            tile("sync_used", "Sync used media", "USED", "sync-used"),
+            tile("zip", "Make ZIP", "ZIP", "zip"),
+            tile("setup", "Check project folders", "SETUP", "folder"),
         ], id="files.actions", columns=2, tiles=True),
     ]
     if job:
         items.append(protocol.node_progress(job["value"], job["label"], detail=job["detail"], cancel="files.stop"))
     items.append(protocol.node_row([
-        protocol.node_button("files.undo_last", "Undo last", icon="undo", variant="icon", hint="Undoes the last change."),
+        protocol.node_button("files.undo_last", "Undo last", icon="undo", variant="icon", hint="Undoes: Sorted 18 items."),
     ]))
-    status = protocol.status(job["label"], "accent") if job else protocol.status("Watching · spring-promo_v2", "ok")
-    return protocol.section("files", "Files", items, status=status, icon="folder")
+    rows = [protocol.list_row("o1", "C0042.MP4", subtitle="Footage\\Camera A", tone="warn",
+                              actions=[protocol.node_button("files.locate", "Locate"),
+                                       protocol.node_button("files.remove", "Remove",
+                                                            confirm="Remove C0042.MP4 from the project?")])]
+    items.append(protocol.node_group("Offline", [protocol.node_list("files.offline_list", rows, empty="")],
+                                     id="files.offline", collapsible=True))
+    return protocol.section("files", "Files", items, icon="folder")
 
 
-# The 2.1 Quick actions set in panel order: group, id, code, full name, icon, kind.
-ACTIONS_21 = [
-    ("Timeline", [("adjustment_layer", "ADJ", "Adjustment layer", "adjustment-layer"),
-                  ("razor_all", "RZR", "Razor all tracks", "razor-all"),
-                  ("delete_empty_tracks", "EMPT", "Delete empty tracks", "delete-empty-tracks")]),
-    ("Tracks", [("add_video_track", "+V", "Add video track", "track-video-add"),
-                ("add_audio_track", "+A", "Add audio track", "track-audio-add"),
-                ("remove_video_track", "\u2212V", "Remove video track", "track-video-remove"),
-                ("remove_audio_track", "\u2212A", "Remove audio track", "track-audio-remove"),
-                ("solo_track", "SOLO", "Solo track", "solo-track", "switch"),
-                ("lock_others", "LOCK", "Lock other tracks", "lock-others", "switch")]),
-    ("Selection", [("select_same_source", "SRC", "Select same source", "select-same-source"),
-                   ("select_offline", "OFF", "Select offline", "select-offline")]),
-    ("Clips", [("scale_to_frame", "FIT", "Scale to frame", "scale-to-frame"),
-               ("colour", "CLR", "Colour label", "colour", "menu"),
-               ("label_by_bin", "BIN", "Label by bin", "label-by-bin")]),
-    ("Project", [("save_version", "SAVE", "Save version", "save-version"),
-                 ("consolidate_duplicates", "CONS", "Consolidate duplicates", "consolidate"),
-                 ("open_project_folder", "DIR", "Open project folder", "open-folder"),
-                 ("reveal_clip", "REV", "Reveal clip", "reveal-clip")]),
-    ("Sequence", [("duplicate_sequence", "DUP", "Duplicate sequence", "duplicate-sequence"),
-                  ("create_16_9", "16:9", "Create 16:9 copy", "ratio-16-9"),
-                  ("create_9_16", "9:16", "Create 9:16 copy", "ratio-9-16"),
-                  ("create_custom", "CUST", "Create custom size copy", "ratio-custom")]),
-    ("Export", [("export_open", "EXP", "Export", "export"),
-                ("export_frame", "FRM", "Export frame", "export-frame")]),
-    ("Keys", [("ease_slow", "SLOW", "Ease slow", "ease-slow"),
-              ("ease_med", "MED", "Ease medium", "ease-med"),
-              ("ease_fast", "FAST", "Ease fast", "ease-fast"),
-              ("ease_linear", "LIN", "Linear keys", "ease-linear")]),
+FILES_HINTS = {
+    "sort": "Moves the media inside the project folder into the layout folders and bins.",
+    "sync_all": "Copies every file from outside the project folder into Media.",
+    "sync_used": "Copies the files used in sequences from outside the project folder into Media.",
+    "zip": "Writes the project folder as a ZIP archive into its Exports folder.",
+    "setup": "Creates the layout folders and bins again when any are missing.",
+}
+
+# The 3.0 Quick actions set in panel order (docs/QUICK_ACTIONS.md 1): group title, group code, then per action its
+# id, code, full name, icon, kind and hint.
+ACTIONS_30 = [
+    ("Timeline", "TIME", [
+        ("adjustment_layer", "ADJ", "Adjustment layer", "adjustment-layer", "button",
+         "Adds an adjustment layer over the selected clips, or for 5 seconds at the playhead."),
+        ("razor_all", "RZR", "Razor all tracks", "razor-all", "button", "Cuts every unlocked track at the playhead."),
+        ("delete_empty_tracks", "EMPT", "Delete empty tracks", "delete-empty-tracks", "button",
+         "Removes unlocked video and audio tracks that hold no clips.")]),
+    ("Tracks", "TRKS", [
+        ("add_video_track", "+V", "Add video track", "track-video-add", "button", "Adds one video track above the highest."),
+        ("add_audio_track", "+A", "Add audio track", "track-audio-add", "button",
+         "Adds one stereo audio track below the lowest."),
+        ("remove_video_track", "\u2212V", "Remove video track", "track-video-remove", "button",
+         "Removes the highest video track when it is empty and unlocked."),
+        ("remove_audio_track", "\u2212A", "Remove audio track", "track-audio-remove", "button",
+         "Removes the lowest audio track when it is empty and unlocked."),
+        ("solo_track", "SOLO", "Solo audio track", "solo-track", "switch",
+         "Mutes every audio track except the selected clip's; switch off to restore the mutes."),
+        ("lock_others", "LOCK", "Lock other tracks", "lock-others", "switch",
+         "Locks every track without a selected clip; switch off to restore the locks.")]),
+    ("Selection", "SEL", [
+        ("select_same_source", "SRC", "Select same source", "select-same-source", "button",
+         "Selects every clip that uses the same media as the selected clip."),
+        ("select_offline", "OFF", "Select offline clips", "select-offline", "button",
+         "Selects every clip of the active sequence whose media is offline.")]),
+    ("Clips", "CLIP", [
+        ("scale_to_frame", "FIT", "Set to frame size", "scale-to-frame", "button",
+         "Turns on Set to Frame Size for the selected video clips."),
+        ("colour", "CLR", "Colour label", "colour", "menu",
+         "Gives the selected clips or project items, and a marker at the playhead, the chosen label colour."),
+        ("label_by_bin", "BIN", "Colour labels by bin", "label-by-bin", "button",
+         "Gives every project item the colour of its top-level bin.")]),
+    ("Project", "PROJ", [
+        ("save_version", "SAVE", "Save version", "save-version", "button",
+         "Saves the project as the next numbered version and keeps editing the new file."),
+        ("consolidate_duplicates", "CONS", "Consolidate duplicates", "consolidate", "button",
+         "Merges project items that point to the same media file."),
+        ("open_project_folder", "DIR", "Open project folder", "open-folder", "button", "Opens the project folder in Explorer."),
+        ("reveal_clip", "REV", "Reveal clip file", "reveal-clip", "button", "Shows the selected clip's media file in Explorer.")]),
+    ("Sequence", "SEQ", [
+        ("duplicate_sequence", "DUP", "Duplicate sequence", "duplicate-sequence", "button",
+         "Copies the active sequence as the next numbered version."),
+        ("create_16_9", "16:9", "Reframe 16:9", "ratio-16-9", "button", "Creates an auto-reframed 16:9 copy of the active sequence."),
+        ("create_9_16", "9:16", "Reframe 9:16", "ratio-9-16", "button", "Creates an auto-reframed 9:16 copy of the active sequence."),
+        ("create_custom", "CUST", "Reframe custom size", "ratio-custom", "prompt",
+         "Creates an auto-reframed copy of the active sequence at the stored size.")]),
+    ("Export", "OUT", [
+        ("export_open", "EXP", "Export", "export", "button", "Opens Premiere's Export mode for the active sequence."),
+        ("export_frame", "FRM", "Export frame", "export-frame", "button",
+         "Saves the frame at the playhead as a PNG in Exports\\Frames and shows it in Explorer.")]),
+    ("Keys", "KEYS", [
+        ("ease_slow", "SLOW", "Ease slow", "ease-slow", "button", "Eases the keyframe pair around the playhead gently."),
+        ("ease_med", "MED", "Ease medium", "ease-med", "button",
+         "Eases the keyframe pair around the playhead with medium strength."),
+        ("ease_fast", "FAST", "Ease fast", "ease-fast", "button", "Eases the keyframe pair around the playhead strongly."),
+        ("ease_linear", "LIN", "Linear keys", "ease-linear", "button",
+         "Removes the keys an ease added around the playhead and sets the pair to linear.")]),
 ]
-COLOURS = ["Violet", "Iris", "Caribbean", "Lavender", "Cerulean", "Forest", "Rose", "Mango"]
+COLOURS = [("Violet", "#a28ae5"), ("Iris", "#8f8ef0"), ("Caribbean", "#2fd0b0"), ("Lavender", "#e08ee0"),
+           ("Cerulean", "#38a6e0"), ("Forest", "#6eb04a"), ("Rose", "#e06a9c"), ("Mango", "#e8a040"),
+           ("Purple", "#b048e0"), ("Blue", "#4a6ef0"), ("Teal", "#2aa8b8"), ("Magenta", "#e040b8"),
+           ("Tan", "#d0b090"), ("Green", "#48b048"), ("Brown", "#b0703a"), ("Yellow", "#e0d040")]
 
 
 def actions_section(model: dict) -> dict:
-    """The Actions tab with the 2.1 codes (no module behind it; the results are canned in `DevServer.on_action`)."""
+    """The Actions tab of 3.0: one lane per group with its code, SOLO / LOCK as switches, CLR with the colour menu,
+    CUST with its size prompt (no module behind it; the results are canned in `DevServer.on_action`)."""
     groups = []
-    for title, entries in ACTIONS_21:
+    for title, group_code, entries in ACTIONS_30:
         items = []
-        for entry in entries:
-            local, code, label, icon = entry[:4]
-            kind = entry[4] if len(entry) > 4 else "button"
+        for local, code, label, icon, kind, hint in entries:
             node_id = f"actions.{local}"
-            hint = f"{label}: what it does in one line."
             if kind == "switch":
                 items.append(protocol.node_switch(node_id, label, model["switches"].get(node_id, False), short=code,
                                                   icon=icon, hint=hint))
-            elif kind == "menu":
-                options = [{"value": name.lower(), "label": name} for name in COLOURS]
-                items.append(protocol.node_button(node_id, label, short=code, icon=icon, hint=hint,
-                                                  menu=protocol.menu(node_id + ".pick", model["colour"], options,
-                                                                     model["colour"].title())))
-            else:
-                items.append(protocol.node_button(node_id, label, short=code, icon=icon, hint=hint))
-        groups.append(protocol.node_group(title, items, id=f"actions.{title.lower()}", tiles=True, collapsible=True))
+                continue
+            node = protocol.node_button(node_id, label, short=code, icon=icon, hint=hint)
+            if kind == "menu":
+                node["menu"] = {"id": node_id + ".pick", "value": model["colour"], "badge": model["colour"].title(),
+                                "options": [{"value": name.lower(), "label": name, "swatch": swatch}
+                                            for name, swatch in COLOURS]}
+            elif kind == "prompt":
+                node["prompt"] = {"id": node_id + ".size", "label": "Custom size", "value": model["custom"],
+                                  "placeholder": "Width x height"}
+            items.append(node)
+        group = protocol.node_group(title, items, id=f"actions.{title.lower()}", tiles=True, collapsible=True)
+        group["short"] = group_code
+        groups.append(group)
     return protocol.section("actions", "Actions", groups, icon="actions")
 
 
 # Canned outcomes of the static Actions tab (button id -> outcome, text, detail).
 ACTION_RESULTS = {
-    "actions.adjustment_layer": ("ok", "Adjustment layer added · V3", None),
-    "actions.razor_all": ("ok", "Cut 3 tracks at 00:00:12:05", None),
+    "actions.adjustment_layer": ("ok", "Adjustment layer placed on V3", None),
+    "actions.razor_all": ("ok", "Cut 4 tracks at 00:00:12:08", None),
     "actions.delete_empty_tracks": ("neutral", "No empty tracks", None),
-    "actions.remove_video_track": ("warn", "V3 is not empty", "The highest video track holds 2 clips."),
-    "actions.select_same_source": ("error", "No clip with a source is selected",
-                                   "Select a clip in the timeline first."),
+    "actions.remove_video_track": ("warn", "V3 is not empty",
+                                   "The highest video track holds 2 clips; Deck removes only empty, unlocked tracks."),
+    "actions.select_same_source": ("error", "No clip with a source is selected", "Select a clip in the timeline first."),
+    "actions.create_16_9": ("ok", "Created Spring 16x9 \u00b7 1920x1080", None),
+    "actions.export_frame": ("error", "Export failed", "No sequence is open in the Timeline."),
 }
 
 
@@ -228,8 +283,10 @@ def sample_ui(model: dict, revision: int, actions: Optional[dict]) -> dict:
     if model.get("kinds", True):  # `server.model["kinds"] = False` leaves the two tabs of the product
         sections.append(kinds_section(model))
         sections[2]["status"] = protocol.status(f"revision {revision}", "ok")
-    return protocol.ui(revision, "Premiere Deck", protocol.status("Connected · dev server", "ok"), sections,
+    tree = protocol.ui(revision, "Premiere Deck", protocol.status("Connected · dev server", "ok"), sections,
                        {"text": f"Premiere Deck {__version__} (dev)", "link": {"label": "Open host", "action": "host.open"}})
+    tree["pins"] = {"items": list(model["pins"]), "max": PINS_MAX}
+    return tree
 
 
 class LiveUi(FakeUi):
@@ -286,7 +343,8 @@ class DevServer:
         self.presence: Callable[[bool, Optional[protocol.Hello]], None] = lambda connected, hello: None
         self.revision = 0
         self.model = {"busy": False, "toggle": True, "select": "b", "input": "", "last_input": "", "progress": 0.3,
-                      "job": None, "theme": "black", "colour": "violet", "refuse": set(),
+                      "job": None, "theme": "black", "colour": "rose", "custom": "1080x1350", "refuse": set(),
+                      "pins": ["actions.adjustment_layer", "actions.colour", "actions.duplicate_sequence", "actions.export_open"],
                       "switches": {"files.auto_copy": True, "files.auto_sort": False, "actions.solo_track": False,
                                    "actions.lock_others": True, "demo.switch": False},
                       "rows": [("r1", "First row", "subtitle one", "ok"), ("r2", "Second row", "subtitle two", "warn"),
@@ -414,6 +472,18 @@ class DevServer:
             self.broadcast(protocol.action_result("actions.colour", "ok", f"Coloured 4 clips {model['colour'].title()}"))
             self.push_ui()
             return
+        if action == "actions.create_custom.size":
+            model["custom"] = str(message.get("value") or model["custom"])
+            self.broadcast(protocol.action_result("actions.create_custom", "ok", f"Size stored \u00b7 {model['custom']}"))
+            self.push_ui()
+            return
+        if action == "actions.create_custom":
+            self.broadcast(protocol.action_result(action, "ok", f"Created Spring {model['custom']}"))
+            self.push_ui()
+            return
+        if action in ("panel.pin", "panel.unpin"):
+            self.on_pin(action, str(message.get("value")))
+            return
         if isinstance(action, str) and action.startswith("actions."):
             outcome = ACTION_RESULTS.get(action, ("ok", f"{action.split('.', 1)[1].replace('_', ' ').capitalize()} done", None))
             self.broadcast(protocol.action_result(action, *outcome))
@@ -463,6 +533,28 @@ class DevServer:
         elif action == "host.open":
             self.toast("host.open: the host window would come to the front", "neutral")
         self.push_ui()
+
+    def on_pin(self, action: str, target: str) -> None:
+        """`panel.pin` / `panel.unpin` as the hub handles them (docs/PROTOCOL.md 6.1 `pins`): the list changes and the
+        tree is sent again; a full row or an id that is no tile answers with a `panel.pins` result."""
+        pins = self.model["pins"]
+        if action == "panel.unpin":
+            if target in pins:
+                pins.remove(target)
+                self.push_ui()
+            return
+        if target in pins:
+            return
+        tree = sample_ui(self.model, self.revision, None)
+        known = {node.get("id") for section in tree["sections"] for group in section["items"] if group.get("kind") == "group"
+                 for node in group["items"] if node.get("kind") in ("button", "switch")}
+        if len(pins) >= PINS_MAX:
+            self.broadcast(protocol.action_result("panel.pins", "warn", "Five pins at most", None))
+        elif target not in known:
+            self.broadcast(protocol.action_result("panel.pins", "warn", "This control cannot be pinned", None))
+        else:
+            pins.append(target)
+            self.push_ui()
 
     async def connection(self, ws: ServerConnection) -> None:
         query = parse_qs(urlparse(ws.request.path).query)

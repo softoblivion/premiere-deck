@@ -218,6 +218,107 @@ class MenuSwatch21(unittest.TestCase):
                                            "options": [{"value": "a", "label": "A", "swatch": bad}]}))
 
 
+class Lanes30(unittest.TestCase):
+    """3.0: `group.short` / `group.icon`, `button.auto`, `button.prompt` and the tree's `pins` (docs/PROTOCOL.md
+    6.1)."""
+
+    def tree(self, items, pins=None):
+        tree = {"type": P.T_UI, "revision": 1, "title": "Deck", "status": None, "footer": None,
+                "sections": [P.section("files", "Files", items)]}
+        if pins is not None:
+            tree["pins"] = pins
+        return tree
+
+    def test_group_code_and_icon(self):
+        group = P.node_group("Timeline", [], id="a.timeline", tiles=True, short="TIME", icon="timeline")
+        self.assertEqual((group["short"], group["icon"]), ("TIME", "timeline"))
+        self.assertNotIn("short", P.node_group("Timeline", []))
+        self.assertNotIn("icon", P.node_group("Timeline", []))
+        P.validate_tree(self.tree([group]))
+        for bad in ("", "TOOLONG", 5):
+            with self.subTest(bad=bad), self.assertRaises(P.ProtocolError):
+                P.node_group("T", [], short=bad)
+            with self.subTest(tree=bad), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([{"kind": "group", "title": "T", "items": [], "short": bad}]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([{"kind": "group", "title": "T", "items": [], "icon": 3}]))
+
+    def test_auto_capsule(self):
+        auto = P.auto("files.auto_sort", "Auto sort", True, hint="Files new media.")
+        self.assertEqual(auto, {"id": "files.auto_sort", "label": "Auto sort", "hint": "Files new media.",
+                                "value": True})
+        self.assertNotIn("hint", P.auto("files.auto_copy", "Auto copy", False))
+        button = P.node_button("files.sort", "Sort project", short="SORT", auto=auto)
+        self.assertEqual(button["auto"], auto)
+        P.validate_tree(self.tree([button]))
+        with self.assertRaises(P.ProtocolError):
+            P.auto("files.auto_sort", "Auto sort", "yes")
+        with self.assertRaises(P.ProtocolError):
+            P.auto("", "Auto sort", True)
+        for bad in ({"id": "x.a", "label": "A", "value": 1}, {"id": "x.a", "value": True},
+                    {"id": "x.a", "label": "A", "value": True, "hint": 5}, {"label": "A", "value": True}, "auto"):
+            with self.subTest(bad=bad), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([dict(button, auto=bad)]))
+
+    def test_auto_and_prompt_ids_share_the_id_space(self):
+        auto = P.auto("files.sort", "Auto sort", False)
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([P.node_button("files.sort", "Sort", auto=auto)]))
+        prompt = P.prompt("files.zip", "Size", "1")
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([P.node_button("files.zip", "ZIP"),
+                                       P.node_button("files.custom", "Custom", prompt=prompt)]))
+
+    def test_prompt(self):
+        prompt = P.prompt("a.create_custom.size", "Custom size", "1080x1350", placeholder="Width x height")
+        self.assertEqual(prompt, {"id": "a.create_custom.size", "label": "Custom size", "value": "1080x1350",
+                                  "placeholder": "Width x height"})
+        self.assertEqual(P.prompt("a.p", "P")["value"], "")
+        button = P.node_button("a.create_custom", "Reframe custom size", short="CUST", prompt=prompt)
+        P.validate_tree(self.tree([button]))
+        menu = P.menu("a.m", "x", [{"value": "x", "label": "X"}], "X")
+        with self.assertRaises(P.ProtocolError):
+            P.node_button("a.b", "B", menu=menu, prompt=prompt)
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([dict(button, menu=menu)]))
+        with self.assertRaises(P.ProtocolError):
+            P.prompt("a.p", "P", 1080)
+        for bad in ({"id": "a.p", "label": "P", "value": 5, "placeholder": ""}, {"id": "a.p", "label": "P"},
+                    {"label": "P", "value": "", "placeholder": ""}):
+            with self.subTest(bad=bad), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([dict(button, prompt=bad)]))
+
+    def test_pins(self):
+        pins = P.pins(["files.sort", "files.zip"])
+        self.assertEqual(pins, {"items": ["files.sort", "files.zip"], "max": 5})
+        tree = P.ui(1, "Deck", None, [P.section("files", "Files", [])], None, pins)
+        self.assertEqual(tree["pins"], pins)  # an id with no node is accepted: the display skips it
+        self.assertNotIn("pins", P.ui(1, "Deck", None, [], None))
+        for bad in ({"items": ["a.b", "a.b"], "max": 5}, {"items": [f"a.{i}" for i in range(6)], "max": 5},
+                    {"items": ["a.b", "a.c"], "max": 1}, {"items": [""], "max": 5}, {"items": [3], "max": 5},
+                    {"items": "a.b", "max": 5}, {"items": [], "max": 0}, {"items": [], "max": 6},
+                    {"items": [], "max": True}, {"items": []}, ["a.b"]):
+            with self.subTest(bad=bad), self.assertRaises(P.ProtocolError):
+                P.validate_tree(self.tree([], bad))
+
+    def test_tile_ids_are_the_pinnable_nodes(self):
+        tiles = P.node_group(None, [P.node_button("a.one", "One"), P.node_switch("a.two", "Two", False),
+                                    P.node_button("a.icon", "Icon", variant="icon"),
+                                    P.node_row([P.node_button("a.three", "Three")])], id="a.g", tiles=True)
+        plain = P.node_group(None, [P.node_button("a.plain", "Plain")], id="a.p")
+        loose = P.node_button("a.loose", "Loose")
+        rows = P.node_list("a.list", [P.list_row("r", "Row", actions=[P.node_button("a.row", "Row")])])
+        sections = [P.section("a", "A", [tiles, plain, loose, rows]),
+                    P.section("b", "B", [P.node_group("B", [P.node_button("b.x", "X")], tiles=True)])]
+        self.assertEqual(P.tile_ids(sections), ["a.one", "a.two", "a.three", "b.x"])
+        self.assertEqual(P.tile_ids([]), [])
+
+    def test_section_status_is_still_accepted(self):
+        sec = P.section("files", "Files", [], status=P.status("Watching", "ok"))
+        P.validate_tree({"type": P.T_UI, "revision": 1, "title": "", "status": None, "footer": None,
+                         "sections": [sec]})
+
+
 class Messages(unittest.TestCase):
     def test_theme_message(self):
         self.assertEqual(P.theme("sky"), {"type": "theme", "name": "sky"})

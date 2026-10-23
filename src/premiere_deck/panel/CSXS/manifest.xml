@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<ExtensionManifest Version="7.0" ExtensionBundleId="com.softoblivion.premieredeck" ExtensionBundleVersion="2.2.0" ExtensionBundleName="Premiere Deck">
+<ExtensionManifest Version="7.0" ExtensionBundleId="com.softoblivion.premieredeck" ExtensionBundleVersion="3.0.0" ExtensionBundleName="Premiere Deck">
   <ExtensionList>
-    <Extension Id="com.softoblivion.premieredeck.panel" Version="2.2.0"/>
-    <Extension Id="com.softoblivion.premieredeck.agent" Version="2.2.0"/>
+    <Extension Id="com.softoblivion.premieredeck.panel" Version="3.0.0"/>
+    <Extension Id="com.softoblivion.premieredeck.agent" Version="3.0.0"/>
   </ExtensionList>
   <ExecutionEnvironment>
     <HostList>
@@ -37,8 +37,8 @@
               <Width>360</Width>
             </Size>
             <MinSize>
-              <Height>320</Height>
-              <Width>280</Width>
+              <Height>480</Height>
+              <Width>320</Width>
             </MinSize>
           </Geometry>
           <Icons/>

@@ -202,12 +202,13 @@ class Hub:
         self.registry = Registry(self._context_for, modules=self._modules, is_enabled=self.settings.module_enabled,
                                  set_enabled=self.settings.set_module_enabled, on_tree=self._send_tree,
                                  on_change=self._on_registry_change, toast=self.toast,
-                                 host_status=self.panel_status_line, version=self.version)
+                                 host_status=self.panel_status_line, version=self.version, pins=self.tree_pins)
         self.jobs = JobRunner(dispatch=self.registry.thread.post)
         self.jobs.on_job(self._on_job)
         self.premiere = self._build_facade()
         self.server.start()
         self.registry.load()
+        self._drop_unknown_pins()
         self.registry.start()
         self.registry.thread.call(self._send_subscriptions)
         if self._use_watch and not self.fake:
@@ -374,6 +375,10 @@ class Hub:
         if message.get("type") != P.T_ACTION:
             return
         action_id = str(message.get("id") or "")
+        if action_id in (P.PANEL_PIN, P.PANEL_UNPIN):
+            value = message.get("value")
+            self.registry.thread.post(lambda: self.pin_action(action_id, value))
+            return
         if action_id.startswith("host."):
             self._host_action(action_id)
             return
@@ -393,6 +398,58 @@ class Hub:
             self.on_open_window(page)
         except Exception:  # noqa: BLE001
             log.exception("opening the window failed")
+
+    # -- pinned row (docs/PROTOCOL.md 6.1 `pins`, docs/BRIDGE_API.md 3.3)
+    def tree_pins(self, sections: list) -> dict:
+        """The tree's `pins`: the stored ids that are tiles of this tree; a stored pin whose tile is not rendered
+        now (a module turned off, a project not set up) stays stored and is left out."""
+        tiles = set(P.tile_ids(sections))
+        return P.pins([pin for pin in self.settings.pins() if pin in tiles])
+
+    def _drop_unknown_pins(self) -> None:
+        """At start: pins of modules this host does not know are dropped from the setting."""
+        known = {entry.id for entry in self.registry.entries} if self.registry else set()
+        pins = self.settings.pins()
+        kept = [pin for pin in pins if pin.split(".", 1)[0] in known]
+        if kept != pins:
+            log.info("dropped unknown pins: %s", [pin for pin in pins if pin not in kept])
+            self.settings.set_pins(kept)
+
+    def pin_action(self, action_id: str, value: Any) -> None:
+        """`panel.pin` / `panel.unpin` from a display (module thread): store the change and send the tree again.
+        A pin whose id is no tile of the current tree, or that would make a sixth visible pin, is refused with an
+        `action_result` for `panel.pins`; a pin to make room for drops the oldest stored pins that are not shown."""
+        target = value if isinstance(value, str) else ""
+        pins = self.settings.pins()
+        if action_id == P.PANEL_UNPIN:
+            if target in pins:
+                self.settings.set_pins([pin for pin in pins if pin != target])
+                self.registry.invalidate()
+            return
+        if target in pins:
+            return
+        tree = self.registry.last_tree or self.registry._render()
+        tiles = set(P.tile_ids(tree.get("sections", [])))
+        if target not in tiles:
+            self._pins_result("warn", "This control cannot be pinned")
+            return
+        pins.append(target)
+        hidden = [pin for pin in pins if pin not in tiles]
+        while len(pins) > P.PINS_MAX and hidden:
+            pins.remove(hidden.pop(0))
+        if len(pins) > P.PINS_MAX:
+            self._pins_result("warn", "Five pins at most", "Unpin a tile to make room.")
+            return
+        self.settings.set_pins(pins)
+        self.registry.invalidate()
+
+    def _pins_result(self, outcome: str, text: str, detail: Optional[str] = None) -> None:
+        """The pinned row's result line: to the displays only (the row exists in the panel only)."""
+        if self.server is not None:
+            try:
+                self.server.displays.send(P.action_result(P.PANEL_PINS, outcome, text, detail))
+            except Exception:  # noqa: BLE001
+                log.debug("pins result failed", exc_info=True)
 
     def _send_tree(self, tree: dict) -> None:
         if self.server is not None:

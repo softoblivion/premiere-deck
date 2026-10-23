@@ -108,6 +108,35 @@ class GeneratedFilesTests(unittest.TestCase):
         self.assertTrue((PANEL / "fonts" / "LICENSE-Sora.txt").is_file())
         self.assertFalse(list((PANEL / "fonts").glob("Unbounded*")))
 
+    def test_panel_block_carries_the_type_roles_of_the_host(self):
+        css = (PANEL / "css" / "panel.css").read_text("utf-8")
+        block = css[css.index(gen.BEGIN_MARK):css.index(gen.END_MARK)]
+        tokens = (KIT / "css" / "tokens.css").read_text("utf-8")
+        for role in gen.TYPE_ROLES:
+            self.assertIn(f"--t-{role}", gen.TYPE_TOKENS)
+        for name in gen.TYPE_TOKENS:
+            kit = re.search(r"^\s*" + re.escape(name) + r"\s*:\s*([^;]+);", tokens, re.M)
+            panel = re.search(r"^\s*" + re.escape(name) + r"\s*:\s*([^;]+);", block, re.M)
+            self.assertIsNotNone(kit, f"{name} missing in tokens.css")
+            self.assertIsNotNone(panel, f"{name} missing in the panel block")
+            self.assertEqual(panel.group(1).strip(), kit.group(1).strip(), name)
+        # The pixel sizes of the roles, as the kit documents them (LIQUID_UI.md, Typography).
+        sizes = {role: re.search(r"(\d+(?:\.\d+)?)px", gen.type_tokens()[f"--t-{role}"]).group(1) for role in gen.TYPE_ROLES}
+        self.assertEqual(sizes, {"display": "20", "title": "16", "section": "11", "body": "13", "label": "12.5",
+                                 "label-s": "11.5", "caption": "11.5", "mono": "12", "mono-s": "11"})
+
+    def test_panel_css_has_no_ad_hoc_font_size(self):
+        # Below the generated block every text names a role: no `font-size: <n>px`, no `font:` shorthand with a pixel
+        # size, and every role it names exists.
+        css = (PANEL / "css" / "panel.css").read_text("utf-8")
+        rest = css[css.index(gen.END_MARK) + len(gen.END_MARK):]
+        ad_hoc = re.compile(r"font-size\s*:\s*\d+(\.\d+)?px|font\s*:\s*(?!var\(--t-)[^;]*\d+(\.\d+)?px", re.I)
+        hits = [line.strip() for line in rest.splitlines() if ad_hoc.search(line)]
+        self.assertEqual(hits, [])
+        used = set(re.findall(r"var\(--t-([a-z-]+)\)", rest))
+        self.assertTrue(used, "panel.css names no type role")
+        self.assertEqual(sorted(used - set(gen.TYPE_ROLES)), [])
+
     def test_splice_inserts_and_replaces(self):
         block = gen.BEGIN_MARK + "\nX\n" + gen.END_MARK
         first = gen.splice("/* head */\nbody {}\n", block)

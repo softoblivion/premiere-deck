@@ -28,6 +28,9 @@ COMMON_JSX = "_common"
 USER_ERROR_PREFIX = "deck: "
 
 GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Project", "Sequence", "Export", "Keys")
+# The group code drawn at the edge of the group's row in the panel (docs/QUICK_ACTIONS.md 1, group `short`).
+GROUP_CODES = {"Timeline": "TIME", "Tracks": "TRKS", "Selection": "SEL", "Clips": "CLIP", "Project": "PROJ",
+               "Sequence": "SEQ", "Export": "OUT", "Keys": "KEYS"}
 
 DEFAULT_TIMEOUT_MS = 30000
 
@@ -106,12 +109,12 @@ class Action:
         return self.id in module.toggles
 
     def field(self, module: "QuickActionsModule") -> Optional[dict]:
-        """An `input` node rendered after the tiles of the action's group: {name, label, value, placeholder,
-        submit_label}; a submit goes to `submit(module, name, value)`."""
+        """The stored text the action's tile carries as its `prompt` (docs/PROTOCOL.md 6.1): {name, label, value,
+        placeholder}; the prompt id is `<action id>.<name>` and a submit goes to `submit(module, name, value)`."""
         return None
 
     def submit(self, module: "QuickActionsModule", name: str, value: Any) -> Optional["Outcome"]:
-        """Stores an input value; returns None when stored (the module then runs the action) or the result to
+        """Stores a prompt value; returns None when stored (the module then runs the action) or the result to
         show when the value is refused."""
         return Outcome("warn", f"{self.label}: unknown field {name}")
 

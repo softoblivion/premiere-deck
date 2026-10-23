@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import copy
 import logging
+import re
 import threading
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -28,6 +29,9 @@ MAX_RECENT = 12
 SCALE_STEPS = (100, 125, 150, 175, 200)
 DEFAULT_SCALE = 100
 PROJECT_FILE = "project.json"
+# The pinned row of the panel (docs/BRIDGE_API.md 3.3 `pins`, docs/PROTOCOL.md 6.1): action ids `<module>.<action>`.
+PINS_MAX = 5
+PIN_ID = re.compile(r"^[a-z][a-z0-9_]*\.\S+$")
 
 DEFAULTS: dict[str, Any] = {
     "premiere_exe": "auto",
@@ -39,6 +43,7 @@ DEFAULTS: dict[str, Any] = {
     "debug_mode_written": [],
     "recent_projects": [],
     "recent_opened": {},  # {path: ISO 8601 UTC of the last open through Deck}
+    "pins": [],  # action ids of the panel's pinned row, in order (edited from the panel only)
     "modules": {},
     "modules_enabled": {},
 }
@@ -62,9 +67,23 @@ def normalize_scale(value: Any) -> int:
     return min(SCALE_STEPS, key=lambda step: (abs(step - number), -step))
 
 
+def normalize_pins(value: Any) -> list[str]:
+    """The stored pinned row: the action ids of a list in order, without repeats, entries that are not
+    `<module>.<action>` strings and anything past PINS_MAX; ValueError when the value is not a list."""
+    if not isinstance(value, (list, tuple)):
+        raise ValueError("The setting needs a list.")
+    pins: list[str] = []
+    for item in value:
+        if isinstance(item, str) and PIN_ID.match(item) and item not in pins:
+            pins.append(item)
+    return pins[:PINS_MAX]
+
+
 def _normalise(key: str, value: Any) -> Any:
     """The value as stored, or raise ValueError with a sentence for the user."""
     default = DEFAULTS[key]
+    if key == "pins":
+        return normalize_pins(value)
     if key == "theme":
         name = str(value or "").strip().lower()
         if name not in THEMES:
@@ -187,6 +206,21 @@ class Settings:
             opened[path] = datetime.now(timezone.utc).isoformat(timespec="seconds")
             self._data["recent_opened"] = opened
         self._changed()
+
+    # -- pinned row (docs/BRIDGE_API.md 3.3 `pins`)
+    def pins(self) -> list[str]:
+        with self._lock:
+            return list(self._data.get("pins") or [])
+
+    def set_pins(self, pins: Any) -> list[str]:
+        """Stores the pinned row (normalised: no repeats, at most PINS_MAX); saves only when it changed."""
+        stored = normalize_pins(pins)
+        with self._lock:
+            if stored == self._data.get("pins"):
+                return list(stored)
+            self._data["pins"] = stored
+        self._changed()
+        return list(stored)
 
     # -- modules
     def module_enabled(self, module_id: str, default: bool) -> bool:

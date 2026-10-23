@@ -7,7 +7,7 @@ from unittest import mock
 from premiere_deck.core import paths as paths_mod
 from premiere_deck.core.paths import AppPaths, atomic_write_json, read_json
 from premiere_deck.core.settings import (
-    DEFAULT_THEME, HostModuleSettings, ProjectModuleSettings, Settings, coerce_setting,
+    DEFAULT_THEME, HostModuleSettings, ProjectModuleSettings, Settings, coerce_setting, normalize_pins,
 )
 from tests.test_host_helpers import remove_tree, scratch_dir
 
@@ -88,6 +88,25 @@ class SettingsTests(unittest.TestCase):
         again = Settings(self.file)
         self.assertEqual(again.get("theme"), "sky")
         self.assertFalse(again.get("keep_running_with_premiere"))
+
+    def test_pins_are_normalised_stored_and_not_public(self):
+        settings = Settings(self.file)
+        self.assertEqual(settings.pins(), [])
+        self.assertEqual(settings.set_pins(["actions.colour", "files.sort", "actions.colour"]),
+                         ["actions.colour", "files.sort"])
+        self.assertEqual(Settings(self.file).pins(), ["actions.colour", "files.sort"])
+        self.assertNotIn("pins", settings.public())  # edited from the panel only
+        with self.assertRaises(ValueError):
+            settings.patch({"pins": []})
+        with self.assertRaises(ValueError):
+            settings.set_pins("files.sort")
+        self.assertEqual(normalize_pins([f"a.t{i}" for i in range(8)]), [f"a.t{i}" for i in range(5)])
+        self.assertEqual(normalize_pins(["files.sort", "", "nodot", 5, None, "Files.sort", "files.", "a.b c"]),
+                         ["files.sort"])
+        self.file.write_text(json.dumps({"pins": ["files.sort", 3, "files.sort", "bad", "actions.dup"]}), "utf-8")
+        self.assertEqual(Settings(self.file).pins(), ["files.sort", "actions.dup"])
+        self.file.write_text(json.dumps({"pins": "files.sort"}), "utf-8")
+        self.assertEqual(Settings(self.file).pins(), [])
 
     def test_show_activity_defaults_off_and_is_patchable(self):
         settings = Settings(self.file)

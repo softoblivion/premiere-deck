@@ -13,7 +13,8 @@ Everything about using the app. Installation and the first steps are in the [REA
 3. **Files:** open a project and press **Set up project** in the panel or on the Files tab. The app creates the 13
    layout folders and the matching bins (see [Files](#files)). Setting up does not turn the switches on.
 4. **Quick actions:** select clips or place the playhead in Premiere and press a tile in the panel; hover a tile for
-   its full name. Codes are short on purpose; [Quick actions](#quick-actions) lists them.
+   its full name. Codes are short on purpose; [The panel](#the-panel) shows the layout and [Quick actions](#quick-actions)
+   lists the codes.
 
 Closing the window hides the app to the tray while Premiere runs; it exits when Premiere exits or on **Quit**.
 
@@ -41,9 +42,59 @@ In the **Settings** sheet (the gear in the title bar):
 | **Data** | Location of the app's data, with **Open**. |
 | **About** | Version, licence and the GitHub link. |
 
-Module settings are on the module tabs: the Files tab has the **Auto copy** and **Auto sort** switches beside
-**Set up project**, and below the fold the layout editor (folders, rules, overrides) and the project switches
-(watch, enforce bins, mirror bins, import exports); the Actions tab holds the visibility of each quick action.
+Module settings are on the module tabs of the window: the Files tab has the **Auto copy** and **Auto sort** switches
+beside **Set up project** (the panel carries the same two automations as AUTO capsules, see [The panel](#the-panel)),
+and below the fold the layout editor (folders, rules, overrides) and the project switches (watch, enforce bins,
+mirror bins, import exports); the Actions tab holds the visibility of each quick action.
+
+## The panel
+
+The panel has two tabs, **Actions** and **Files**, a footer with the version, a scale slider and **Open host**, and
+one fixed layout: 360 x 640 px. When the panel is docked wider, the layout stays centred; when it is taller, the
+extra space goes to the bottom; when it is smaller, the panel scrolls. The layout does not reflow with the panel
+width. The dot at the top right is mint while the app is connected.
+
+**Actions tab**
+
+- Every group is one row with its code at the left edge: TIME, TRKS, SEL, CLIP, PROJ, SEQ, OUT and KEYS. Hover the
+  code for the group's name. Tiles have one size, the icon over a short code, and the last tile of a row keeps its
+  shape. Hover a tile for its full name and one line of what it does.
+- **SOLO** and **LOCK** are switches: the whole tile is the switch, and a lamp dot in its corner is lit while it is
+  on.
+- A small triangle in the corner of a tile marks a choice. **CLR** shows the current label colour in its triangle;
+  the triangle (or a right click on the tile) opens the colour menu. **CUST** opens a field for the frame size with
+  **Apply** (Enter works too); the tile itself uses the stored size. Hover the triangle for the current value.
+- **Pinned row** at the top: up to five actions of your choice, each running exactly like its tile below. An empty
+  place is a dashed slot. To change the row, press the plus slot (**Edit pinned**):
+  - a press on any tile below pins it, and a press on a pinned tile below unpins it;
+  - every pinned tile in the row shows a cross in its corner that removes it;
+  - the check in the plus slot (or Esc, or a switch to another tab) ends editing.
+  A sixth pin is refused with a notice. The row is kept by the app and survives a panel reinstall. A pinned action
+  whose tile is not shown at the moment (its module is off, or the project is not set up) stays in the row's list
+  and returns when the tile does.
+
+**Files tab**
+
+- The project name and folder, with three counters: items in the project folder, items outside it, offline items.
+  **Set up project** is the only tile until a project is set up.
+- **SORT** and **SYNC** each carry an **AUTO** capsule at the right end: the body of the tile runs the action, the
+  capsule turns the automation on or off (SORT: Auto sort, SYNC: Auto copy). The capsule stays usable while the
+  action runs. The stored values of both automations are kept from earlier versions.
+- **USED** (Sync used media) and **ZIP** (Make ZIP) follow.
+- **SETUP** stays after the project is set up and then checks the layout: it creates folders and bins that are
+  missing again and leaves the rest alone.
+- **Offline** lists the project items whose file is missing, each with **Locate** and **Remove**; **Remove** (after a
+  confirmation) removes the item from the project and never touches a file.
+- While a job runs, the tab shows its progress with **Stop**. The round **Undo** button at the bottom left reverses
+  the last change.
+
+**Footer.** The scale slider sets the size of the whole panel from 80 % to 150 % in steps of 5; the value is kept
+per computer. On a monitor at 2K resolution 125 % is the usual setting, and a display scaled to 125 % or more
+starts at 125 %. The slider is the panel's own: the window's **Scale** in Settings does not change it.
+
+**Notices.** Pressing a tile turns it into a check or a cross for two seconds, and the row keeps a result line with
+the time. The line hides itself after 3 s (10 s for a warning or an error) and closes on a click; a line with a
+reason opens the reason on the first click.
 
 ## Files
 
@@ -51,9 +102,9 @@ Module settings are on the module tabs: the Files tab has the **Auto copy** and 
 `Overlays`, `Audio/Music`, `Audio/SFX`, `Audio/Voice`, `Graphics`, `Motion`, `Media`, `Exports`, `Exports/Frames`
 and `Project`. From then on:
 
-- The two switches beside **Set up project** (on the Files tab of the panel and of the window) are off for a new
-  project; a project set up with 2.0 keeps its automatic filing and has both on. **Auto copy** copies media
-  imported from outside the project folder into `Media` and relinks it. **Auto sort** files new media of the
+- The two automations (the AUTO capsules of SORT and SYNC in the panel, the two switches beside **Set up project**
+  in the window) are off for a new project; a project set up with 2.0 keeps its automatic filing and has both on. **Auto copy**
+  copies media imported from outside the project folder into `Media` and relinks it. **Auto sort** files new media of the
   project folder (copied by Auto copy, dropped into a layout folder or loose in the project folder) into the layout
   folders and bins by content. With both on, an outside file is copied straight into its layout folder. With both
   off the app only watches.
@@ -64,44 +115,49 @@ and `Project`. From then on:
 - **Sync all media** copies every item whose file lies outside the project folder into `Media` next to the project;
   **Sync used media** does the same for the items placed in sequences. Nothing is sorted or deleted; run **Sort
   project** afterwards to file the synced media.
+- **Check project folders** (SETUP in the panel, after a project is set up) creates folders and bins that are missing
+  again; existing ones and the media in them are left alone.
 - **Make ZIP** checks for offline media and writes `<project name>.zip` into the project's `Exports` folder (the
   folder itself is left out of the archive), with a report file beside it. While media is still outside the folder
   it asks for a sync first.
 - **Stop** ends a running job, and **Undo last** (and the journal's **Undo** in the window) reverse changes.
 
-The Files tab has its own codes: SETUP = Set up project · SORT = Sort project · SYNC = Sync all media · USED = Sync
-used media · ZIP = Make ZIP · AUTO COPY and AUTO SORT (the two switches).
+The Files tab has its own codes: SETUP = Set up project (Check project folders once the project is set up) · SORT =
+Sort project · SYNC = Sync all media · USED = Sync used media · ZIP = Make ZIP · AUTO on SORT = Auto sort · AUTO on
+SYNC = Auto copy.
 
 ## Quick actions
 
 How a few of the actions work:
 
-- **CLR** (Colour label) has a menu of Premiere's 16 label colours. A pick colours the selected timeline clips
+- **CLR** (Colour label) has a menu of Premiere's 16 label colours, opened from the triangle in the tile's corner. A pick colours the selected timeline clips
   through Premiere's own Edit > Label menu (the host posts the menu command; with nothing selected in the timeline
   it colours the items selected in the Project panel, bins included) and the marker at the playhead, using the
   nearest of Premiere's 8 marker colours. The result line says what was coloured.
 - **16:9**, **9:16** and **CUST** make a reframed copy of the active sequence (Auto Reframe) named `<name> 16x9`,
   `<name> 9x16` or `<name> <W>x<H>`; the frame size follows the ratio (a 1080x1920 sequence becomes 1920x1080 at
-  16:9). **CUST** takes a size such as `1080x1350`.
+  16:9). **CUST** uses the stored size; the triangle in its corner opens a field for another one, such as
+  `1080x1350`, and **Apply** stores it and makes the copy.
 - **EXP** opens Premiere's Export mode for the active sequence (the host posts File > Export > Media). Presets and
   settings are chosen in Premiere.
 - **SLOW**, **MED** and **FAST** ease the keyframe pair around the playhead on every animated property of the
   selected clip; **LIN** sets the pair back to linear. The ease is written as one keyframe per frame (Premiere's
   scripting has no bezier handles), so a long pair adds many keyframes.
-- **SOLO** and **LOCK** are switches: on mutes every other audio track (or locks every track without a selected
+- **SOLO** and **LOCK** are switches (the whole tile, with a lamp dot): on mutes every other audio track (or locks every track without a selected
   clip); off restores the earlier states.
-- The **Actions** tab of the window holds one switch per action for what the panel shows.
+- The **Actions** tab of the window holds one switch per action for what the panel shows. Any shown tile can be
+  pinned to the panel's top row ([The panel](#the-panel)).
 
-| Group | Codes = full names |
+| Group (row code) | Codes = full names |
 |---|---|
-| Timeline | ADJ = Adjustment layer · RZR = Razor all tracks · EMPT = Delete empty tracks |
-| Tracks | +V = Add video track · +A = Add audio track · −V = Remove video track · −A = Remove audio track · SOLO = Solo audio track · LOCK = Lock other tracks |
-| Selection | SRC = Select same source · OFF = Select offline clips |
-| Clips | FIT = Set to frame size · CLR = Colour label · BIN = Colour labels by bin |
-| Project | SAVE = Save version · CONS = Consolidate duplicates · DIR = Open project folder · REV = Reveal clip file |
-| Sequence | DUP = Duplicate sequence · 16:9 = Reframe 16:9 · 9:16 = Reframe 9:16 · CUST = Reframe custom size |
-| Export | EXP = Export · FRM = Export frame |
-| Keys | SLOW = Ease slow · MED = Ease medium · FAST = Ease fast · LIN = Linear keys |
+| Timeline (TIME) | ADJ = Adjustment layer · RZR = Razor all tracks · EMPT = Delete empty tracks |
+| Tracks (TRKS) | +V = Add video track · +A = Add audio track · −V = Remove video track · −A = Remove audio track · SOLO = Solo audio track · LOCK = Lock other tracks |
+| Selection (SEL) | SRC = Select same source · OFF = Select offline clips |
+| Clips (CLIP) | FIT = Set to frame size · CLR = Colour label · BIN = Colour labels by bin |
+| Project (PROJ) | SAVE = Save version · CONS = Consolidate duplicates · DIR = Open project folder · REV = Reveal clip file |
+| Sequence (SEQ) | DUP = Duplicate sequence · 16:9 = Reframe 16:9 · 9:16 = Reframe 9:16 · CUST = Reframe custom size |
+| Export (OUT) | EXP = Export · FRM = Export frame |
+| Keys (KEYS) | SLOW = Ease slow · MED = Ease medium · FAST = Ease fast · LIN = Linear keys |
 
 <div align="center">
 
@@ -140,7 +196,7 @@ Two locations are outside the data folder, because Adobe dictates them:
   panel (the waiting screen offers it once, after a confirmation), and removed from **Settings**.
 
 Inside each project folder the app keeps a hidden `.premiere-deck\` folder with the project's layout and settings,
-and the Files journal. It travels with the project when the folder is copied; the two switches Auto copy and Auto
+and the Files journal. It travels with the project when the folder is copied; the two automations Auto copy and Auto
 sort are stored there. An `index\` folder inside `.premiere-deck\` left by an earlier version is unused and can be
 deleted by hand.
 

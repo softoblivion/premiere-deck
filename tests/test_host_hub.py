@@ -69,6 +69,7 @@ class Echo(Module):
 class HubTestBase(unittest.TestCase):
     use_stub = False
     fake_display = False
+    modules = [Echo]
 
     def setUp(self):
         self.root = scratch_dir("hub")
@@ -79,8 +80,9 @@ class HubTestBase(unittest.TestCase):
         self.stack = contextlib.ExitStack()
         if self.use_stub:
             self.stack.enter_context(mock.patch.dict(sys.modules, {"premiere_deck.premiere.api": None}))
-        self.hub = Hub(self.paths, fake=True, modules=[Echo], ports=free_ports(3), installer=installer, watch=False,
-                       fake_display=self.fake_display)
+        self.installer = installer
+        self.hub = Hub(self.paths, fake=True, modules=list(self.modules), ports=free_ports(3), installer=installer,
+                       watch=False, fake_display=self.fake_display)
         self.events = []
         self.hub.emit = lambda name, payload: self.events.append((name, payload))
         self.opened = []

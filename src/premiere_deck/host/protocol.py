@@ -51,6 +51,11 @@ OUTCOMES = ("ok", "warn", "error", "neutral")  # action_result outcomes (docs/PR
 THEMES = ("black", "sky")  # docs/PROTOCOL.md 6.5
 DEFAULT_THEME = "black"
 SHORT_MAX = 16  # longest tile label (button `short`)
+GROUP_SHORT_MAX = 6  # longest group code (group `short`, 3.0)
+PINS_MAX = 5  # size of the pinned row (tree `pins`, 3.0)
+PANEL_PIN = "panel.pin"  # display actions that edit the pinned row (docs/PROTOCOL.md 6.1, 6.2)
+PANEL_UNPIN = "panel.unpin"
+PANEL_PINS = "panel.pins"  # `action_result` id of the pinned row
 SWATCH = re.compile(r"^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$")  # menu option `swatch` (docs/PROTOCOL.md 6.1)
 
 # Premiere events a module may subscribe to (docs/PROTOCOL.md 8).
@@ -211,10 +216,43 @@ def action_result(button_id: str, outcome: str, text: str, detail: Optional[str]
             "at": int(time.time() * 1000) if at is None else int(at)}
 
 
-def ui(revision: int, title: str, status: Optional[dict], sections: list, footer: Optional[dict] = None) -> dict:
+def ui(revision: int, title: str, status: Optional[dict], sections: list, footer: Optional[dict] = None,
+       pins: Optional[dict] = None) -> dict:
+    """`pins` (3.0): the pinned row built by `pins()`; the key is absent when None."""
     message = {"type": T_UI, "revision": int(revision), "title": title, "status": status, "sections": sections, "footer": footer}
+    if pins is not None:
+        message["pins"] = pins
     validate_tree(message)
     return message
+
+
+def pins(items: Iterable[str], max_items: int = PINS_MAX) -> dict:
+    """The tree's top-level `pins` (docs/PROTOCOL.md 6.1, 3.0): the action ids of the pinned row, in order."""
+    return {"items": [str(item) for item in items], "max": int(max_items)}
+
+
+def tile_ids(sections: list) -> list[str]:
+    """Ids of the nodes a pin may reference (docs/PROTOCOL.md 6.1 `pins`): the `button` and `switch` tiles of the
+    `tiles` groups of `sections`, in tree order (icon-only buttons and list row buttons are no tiles)."""
+    ids: list[str] = []
+
+    def walk(nodes: Any, in_tiles: bool) -> None:
+        for node in nodes if isinstance(nodes, list) else []:
+            if not isinstance(node, dict):
+                continue
+            kind = node.get("kind")
+            if kind == "group":
+                walk(node.get("items"), bool(node.get("tiles")))
+            elif kind == "row":
+                walk(node.get("items"), in_tiles)
+            elif (in_tiles and kind in ("button", "switch") and node.get("variant") is None
+                  and isinstance(node.get("id"), str)):
+                ids.append(node["id"])
+
+    for sec in sections if isinstance(sections, list) else []:
+        if isinstance(sec, dict):
+            walk(sec.get("items"), False)
+    return ids
 
 
 # --- UI node builders (used by modules/base.py, which adds the module prefix to ids) ------------------------------
@@ -235,19 +273,38 @@ def menu(id: str, value: Any, options: list, badge: str) -> dict:
     return {"id": id, "value": value, "badge": str(badge), "options": [option(o) for o in options]}
 
 
+def auto(id: str, label: str, value: bool, *, hint: Optional[str] = None) -> dict:
+    """3.0 `button.auto` (docs/PROTOCOL.md 6.1): an automation capsule attached to a tile; a press on the capsule
+    sends `action` with this `id` and `value` = the opposite of `value`."""
+    node = _strip({"id": id, "label": label, "hint": hint, "value": value})
+    _check_auto(node)
+    return node
+
+
+def prompt(id: str, label: str, value: str = "", *, placeholder: str = "") -> dict:
+    """3.0 `button.prompt` (docs/PROTOCOL.md 6.1): the stored value a tile carries, edited in a popover with one
+    text field opened from the tile's corner mark; a submit sends `action` with this `id` and the text."""
+    node = {"id": id, "label": label, "value": value, "placeholder": placeholder}
+    _check_prompt(node)
+    return node
+
+
 def node_button(id: str, label: str, *, hint: Optional[str] = None, tone: str = "neutral", busy: bool = False,
                 disabled: bool = False, confirm: Optional[str] = None, icon: Optional[str] = None,
                 short: Optional[str] = None, meta: Optional[str] = None, menu: Optional[dict] = None,
-                variant: Optional[str] = None) -> dict:
+                variant: Optional[str] = None, auto: Optional[dict] = None, prompt: Optional[dict] = None) -> dict:
     """2.0 fields: `icon` (sprite symbol), `short` (tile label, at most 16 characters), `meta` (line under the tile
-    label), `menu` (see `menu()`), `variant` (`"icon"`: a small round button with the icon only)."""
+    label), `menu` (see `menu()`), `variant` (`"icon"`: a small round button with the icon only). 3.0: `auto`
+    (see `auto()`) and `prompt` (see `prompt()`); a button carries at most one of `menu` and `prompt`."""
     if short is not None and len(short) > SHORT_MAX:
         raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
     if variant not in (None, "icon"):
         raise ProtocolError(f"unknown button variant {variant!r}")
+    if menu is not None and prompt is not None:
+        raise ProtocolError("a button carries a menu or a prompt, not both")
     return _strip({"kind": "button", "id": id, "label": label, "hint": hint, "tone": tone, "busy": busy,
                    "disabled": disabled, "confirm": confirm, "icon": icon, "short": short, "meta": meta,
-                   "menu": menu, "variant": variant})
+                   "menu": menu, "variant": variant, "auto": auto, "prompt": prompt})
 
 
 def node_toggle(id: str, label: str, value: bool, *, hint: Optional[str] = None, disabled: bool = False) -> dict:
@@ -315,10 +372,12 @@ def node_divider() -> dict:
 
 
 def node_group(title: Optional[str], items: list, *, columns: Optional[int] = None, id: Optional[str] = None,
-               collapsible: bool = False, tiles: bool = False) -> dict:
+               collapsible: bool = False, tiles: bool = False, short: Optional[str] = None,
+               icon: Optional[str] = None) -> dict:
     """A titled block inside a section (docs/PROTOCOL.md 6.1). `columns` 1 to 3 (default 1, or 3 with `tiles`) lays
     consecutive buttons out in that many columns; `tiles` draws the buttons as icon tiles; `collapsible` makes the
-    caption the collapse control, remembered by the display per `id` (unique in the tree)."""
+    caption the collapse control, remembered by the display per `id` (unique in the tree). 3.0: `short` is the
+    group code at the row's edge (1 to 6 characters; `title` is its tooltip), `icon` a sprite symbol."""
     node = {"kind": "group", "title": title, "items": items,
             "columns": columns if columns is not None else (3 if tiles else 1)}
     if id is not None:
@@ -327,6 +386,11 @@ def node_group(title: Optional[str], items: list, *, columns: Optional[int] = No
         node["collapsible"] = True
     if tiles:
         node["tiles"] = True
+    if short is not None:
+        _check_group_short(short)
+        node["short"] = short
+    if icon is not None:
+        node["icon"] = icon
     return node
 
 
@@ -372,6 +436,25 @@ def validate_tree(message: dict) -> None:
     footer = message.get("footer")
     if footer is not None and not isinstance(footer, dict):
         raise ProtocolError("footer is an object")
+    if message.get("pins") is not None:
+        _check_pins(message["pins"])
+
+
+def _check_pins(value: Any) -> None:
+    """`pins` (3.0): `{items: [unique non-empty strings], max: 1..PINS_MAX}` with at most `max` items. An item needs
+    no node in the tree (the display skips it)."""
+    if not isinstance(value, dict):
+        raise ProtocolError("pins is {items, max}")
+    limit = value.get("max")
+    if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= PINS_MAX:
+        raise ProtocolError(f"pins max is a whole number from 1 to {PINS_MAX}")
+    items = value.get("items")
+    if not isinstance(items, list) or not all(isinstance(item, str) and item for item in items):
+        raise ProtocolError("pins items is a list of action ids")
+    if len(set(items)) != len(items):
+        raise ProtocolError("pins items repeat an id")
+    if len(items) > limit:
+        raise ProtocolError(f"pins hold at most {limit} items")
 
 
 def _validate_nodes(nodes: Any, seen: set) -> None:
@@ -433,6 +516,10 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
             for flag in ("collapsible", "tiles"):
                 if not isinstance(node.get(flag, False), bool):
                     raise ProtocolError(f"group {flag} is a bool")
+            if node.get("short") is not None:
+                _check_group_short(node["short"])
+            if node.get("icon") is not None and not isinstance(node["icon"], str):
+                raise ProtocolError("a group icon is a string or null")
             group_id = node.get("id")
             if group_id is not None:
                 if not isinstance(group_id, str) or not group_id:
@@ -456,6 +543,16 @@ def _validate_button(node: dict, seen: Optional[set]) -> None:
         raise ProtocolError(f"short label {short!r} is longer than {SHORT_MAX} characters")
     if node.get("variant") not in (None, "icon"):
         raise ProtocolError(f"unknown button variant {node.get('variant')!r}")
+    if node.get("auto") is not None:
+        _check_auto(node["auto"])
+        if seen is not None:
+            _unique(seen, node["auto"]["id"])
+    if node.get("prompt") is not None:
+        if node.get("menu") is not None:
+            raise ProtocolError("a button carries a menu or a prompt, not both")
+        _check_prompt(node["prompt"])
+        if seen is not None:
+            _unique(seen, node["prompt"]["id"])
     menu_value = node.get("menu")
     if menu_value is None:
         return
@@ -488,6 +585,32 @@ def _validate_switch(node: dict) -> None:
     for flag in ("disabled", "busy"):
         if not isinstance(node.get(flag, False), bool):
             raise ProtocolError(f"switch {flag} is a bool")
+
+
+def _check_auto(value: Any) -> None:
+    """`button.auto` (3.0): `{id, label, hint, value}`; `value` a bool, `hint` a string or null."""
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"]:
+        raise ProtocolError("a button auto needs a string id")
+    if not isinstance(value.get("label"), str):
+        raise ProtocolError("a button auto label is a string")
+    if not isinstance(value.get("value"), bool):
+        raise ProtocolError("a button auto value is a bool")
+    if value.get("hint") is not None and not isinstance(value["hint"], str):
+        raise ProtocolError("a button auto hint is a string or null")
+
+
+def _check_prompt(value: Any) -> None:
+    """`button.prompt` (3.0): `{id, label, value, placeholder}`, all strings."""
+    if not isinstance(value, dict) or not isinstance(value.get("id"), str) or not value["id"]:
+        raise ProtocolError("a button prompt needs a string id")
+    for field_name in ("label", "value", "placeholder"):
+        if not isinstance(value.get(field_name), str):
+            raise ProtocolError(f"a button prompt {field_name} is a string")
+
+
+def _check_group_short(value: Any) -> None:
+    if not isinstance(value, str) or not value or len(value) > GROUP_SHORT_MAX:
+        raise ProtocolError(f"a group code is a string of 1 to {GROUP_SHORT_MAX} characters")
 
 
 def _unique(seen: set, key: str) -> None:
