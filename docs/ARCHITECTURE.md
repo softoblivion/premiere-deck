@@ -24,7 +24,8 @@ Pro (a CEP extension the host installs and updates itself). Together they remove
 3. **Quick actions**: icon tiles in the panel for operations editors do many times a day that take several steps
    in Premiere's own interface (adjustment layer over the selection, duplicate a sequence as the next version,
    save a numbered version, social-format copy of a sequence, export frame or sequence into the layout, selection
-   and track helpers).
+   and track helpers). The panel shows them as one row per group on a fixed 360 x 640 stage, with a pinned row of
+   up to five chosen actions (kept in the host settings) at the top.
 4. Every function is a module behind one contract (`MODULES.md`), so later modules (captions, silence removal,
    punch-in zooms) add code to the host only; the panel never changes for a new module.
 

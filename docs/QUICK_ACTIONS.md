@@ -5,13 +5,13 @@ Module id `actions`. Tiles in the panel for operations every editor performs man
 Code: `modules/quick_actions/module.py` (`QuickActionsModule`: rendering, routing, jobs, settings),
 `action.py` (base class `Action`, `Menu`, `Outcome`, `ActionAbort`, helpers), `actions/<id>.py` (one class per action
 with `id`, `label`, `title` (host row title when `label` is longer than 16 characters), `short`, `icon`, `hint`, `group`, `feasibility`, `long`, `switch`, `timeout_ms`,
-`menu(module) -> Menu | None`, `field(module) -> dict | None`, `submit(module, name, value)`, `is_on(module)`,
+`menu(module) -> Menu | None`, `field(module) -> dict | None` (the `prompt` the tile carries), `submit(module, name, value)`, `is_on(module)`,
 `button(module)`, `run(ctx, module) -> Outcome`; actions of one kind share a base class in the first file of the
 kind: `AddTrack`, `RemoveTrack`, `Reframe`, `Ease`; `actions/__init__.py` lists them in table order),
 `jsx/<script>.jsx` (one script per scripted action or per kind: `add_track`, `remove_track`, `reframe`,
 `ease_read` + `ease_apply`) plus `jsx/_common.jsx` (helpers prepended to every script), `easing.py` (section 1.1),
 `premiere_window.py` (Premiere's menu commands, section 2.1), `results.py` (tolerant readers of script results).
-The module keeps only the choices of the menus and the input, the visibility setting and the state of the two switch
+The module keeps only the choices of the menus and the prompt, the visibility setting and the state of the two switch
 actions (the panel keeps the last result of a group, `PANEL.md` 2). Module title (the tab): "Actions", icon
 `actions`, `order` 5 (Files has 10), so the tree, the panel's tabs and the host window list Actions first and the
 panel opens on it.
@@ -46,7 +46,7 @@ read back). Steps saved = what the user does in Premiere today.
 | Sequence | `duplicate_sequence` | DUP | Duplicate sequence | `Sequence.clone()` of the active sequence, renamed `<name> v2`, `v3`, ... (`next_sequence_name`: a name ending in ` v<n>` counts from `n + 1`; the first free number is used); the original stays the active sequence | worked (2.0) | right-click the sequence > Duplicate > rename by hand |
 | Sequence | `create_16_9` | 16:9 | Reframe 16:9 | creates `<name> 16x9` with `Sequence.autoReframeSequence(16, 9, "default", name, false)`, then sets the frame size: the source's short side is kept, the long side follows the ratio (1080x1920 -> 1920x1080; 1920x1080 stays); a name some sequence already has gets ` 2`, ` 3`, ... (`free_name`). "Created Spring 16x9 · 1920x1080" (`warn` " · frame size not changed to ..." when Premiere kept another size) | worked: `autoReframeSequence`, `getSettings` / `setSettings` frame size | Sequence > Auto Reframe Sequence > dialog > Sequence Settings |
 | Sequence | `create_9_16` | 9:16 | Reframe 9:16 | the same at 9:16 (1920x1080 -> 1080x1920), name `<name> 9x16` | worked | as above |
-| Sequence | `create_custom` | CUST | Reframe custom size | the `input` "Custom size" after the Sequence tiles (`create_custom.size`, placeholder "Width x height", button "Create"; `1080x1350`, `1080 x 1350`, `1080×1350` and `1080*1350` are accepted, each side 16 to 16384): a submit stores the size and runs the action; a press on the tile runs it with the stored size (default 1080x1350). Auto Reframe at the reduced ratio (1080x1350 -> 4:5), then that frame size, name `<name> <W>x<H>`. A refused value reports `warn` "Enter a size like 1080x1350" on the tile and stores nothing | worked | as above, with the ratio and size typed by hand |
+| Sequence | `create_custom` | CUST | Reframe custom size | the tile's `prompt` "Custom size" (`create_custom.size`, `value` = the stored size, placeholder "Width x height"; the panel opens it from the tile's corner mark; `1080x1350`, `1080 x 1350`, `1080×1350` and `1080*1350` are accepted, each side 16 to 16384): a submit stores the size and runs the action; a press on the tile runs it with the stored size (default 1080x1350). Auto Reframe at the reduced ratio (1080x1350 -> 4:5), then that frame size, name `<name> <W>x<H>`. A refused value reports `warn` "Enter a size like 1080x1350" on the tile and stores nothing | worked | as above, with the ratio and size typed by hand |
 | Export | `export_open` | EXP | Export | opens Premiere's Export mode for the active sequence: `Project.openSequence` in the script, then the host posts Window > Timelines > <sequence> and File > Export > Media... to Premiere's main window (section 2.1); "Export opened · Spring"; error "Export failed" when the menu command is not found | worked: the posted menu command (11240), also with the Deck panel or the Project panel focused (Export showed the active sequence as its source). Did not: `app.executeCommand` and `app.findMenuCommandId` do not exist; a synthetic Ctrl+M (keybd_event, with or without scan codes) reached Premiere as a plain M (it added a marker) while the Deck panel had the focus; `Project.openSequence` does not move the keyboard focus | Ctrl+M or File > Export > Media |
 | Export | `export_frame` | FRM | Export frame | writes the frame at the playhead as `<root>\Exports\Frames\<sequence>_<HH-MM-SS-FF>.png` (QE `exportFramePNG`; `_2`, `_3` on a collision) and reveals it | worked (2.0) | Export Frame button > dialog > path > OK |
 | Keys | `ease_slow` | SLOW | Ease slow | eases the keyframe pair around the playhead on every animated property of the first selected clip (a video clip first) with the cubic bezier (0.3, 0, 0.7, 1), baked (section 1.1); "Eased 2 properties · 98 keys", the property names as `detail` | worked: `getKeys`, `getValueAtKey`, `addKey`, `setValueAtKey`, `removeKey`, `keyExistsAtTime`, `setInterpolationTypeAtKey(t, 0)`. Did not: no bezier handle or keyframe selection accessor (DOM `ComponentParam`, QE component `getParamKeyframes` returns timecodes only) | Effect Controls: select keys > right-click > Bezier > drag handles per property |
@@ -68,15 +68,18 @@ does). Icons (2.0 ones unchanged): `track-video-add`, `track-audio-add`, `track-
 
 Rendering: the section is the Actions tab of the panel (module `icon` `actions`). One `group` node per group of the
 table, in the table's order (Timeline, Tracks, Selection, Clips, Project, Sequence, Export, Keys), with `id` = the
-group name in lower case, titled with the group name, `tiles` true, `collapsible` true. Every visible action is one
-`button` (or `switch`) with `id`, `label`, `short`, `icon` and `hint`; an action's `input` follows the tiles of its
-group (only `create_custom.size`), so it never splits the tile grid. `colour` carries its choice as the button's
+group name in lower case, titled with the group name, `short` = the group code drawn at the edge of the group's row
+(TIME, TRKS, SEL, CLIP, PROJ, SEQ, OUT, KEYS; OUT because EXP is the code of the Export tile; `action.GROUP_CODES`),
+`tiles` true, `collapsible` true. Every visible action is one `button` (or `switch`) with `id`, `label`, `short`,
+`icon` and `hint`; the groups hold tiles only. `create_custom` carries its stored size as the button's `prompt`
+`create_custom.size` (`{"id": "actions.create_custom.size", "label": "Custom size", "value": "1080x1350",
+"placeholder": "Width x height"}`; the action's `field()` gives it). `colour` carries its choice as the button's
 `menu` `colour.label` (`badge` = the colour name; every option carries a `swatch`, the hue of Premiere's default
 label colour from `BE.Prefs.LabelColors.<n>` lifted so its brightest channel is 224, `colour.SWATCHES`). A pick of a `runs` menu (only `colour`) stores the choice and runs
-the action; a submit of the input stores the value and runs the action. Results go through `ctx.ui.result` with the
+the action; a submit of the prompt stores the value and runs the action. Results go through `ctx.ui.result` with the
 action's id (section 4). Long actions (`label_by_bin`, `create_16_9`, `create_9_16`, `create_custom`,
-`export_frame`, the four Keys actions) run as jobs with `busy` on their tile (and `disabled` on the input), the
-section status "Running · <Label>", and a second press ignored while it runs. A job reaches Premiere through the
+`export_frame`, the four Keys actions) run as jobs with `busy` on their tile, the
+section status "Running · <Label>" (accepted by the protocol, not drawn by the panel), and a second press ignored while it runs. A job reaches Premiere through the
 facade's `run_on_module_thread` when the facade has it (`MODULES.md` 2).
 
 ### 1.1 Keyframe easing (baked)
@@ -131,7 +134,7 @@ states (the 2.0 "Restore audio" / "Restore locks" labels are gone).
 ## 3. Visibility, choices and the host page
 
 The host window lists every action with a switch (hide actions the user never needs); hidden actions are not
-rendered (nor their input), a group without visible actions is not rendered, and when all are hidden the section
+rendered, a group without visible actions is not rendered, and when all are hidden the section
 shows one line pointing to the host window. Settings (host scope, under `modules.actions`):
 
 | Key | Value | On a bad value |
@@ -195,8 +198,8 @@ happy path and results, no active sequence, nothing selected, no project, not co
 sentence, raw error, timeout, Python bug); the track tiles' four outcomes; the switches' state round trip (on, on
 again runs nothing, off, refused apply stays off, project closed); `colour` (the 16 options, a pick runs, the menu
 commands, the project-item fallback, items, bins, markers, nothing selected); reframe arguments, sizes and free
-names; the custom size input (render, submit, refused values, stored value, hidden with its action, disabled while
-running); `export_open` with its menu commands; the easing math (bezier against the parametric curve, strength
+names; the group codes; the custom size prompt (render on the tile, no input node, submit, refused values, stored
+value, hidden with its action, kept on the busy tile); `export_open` with its menu commands; the easing math (bezier against the parametric curve, strength
 order, bake times and values incl. the live values, lists, a short last step, pair detection over a bake, plans for
 a preset, a re-ease and LIN) and the Keys actions end to end; render order, group ids, kinds, codes and icons;
 removed actions and the presets module absent; settings fallback; the host page; every script ES3-clean and

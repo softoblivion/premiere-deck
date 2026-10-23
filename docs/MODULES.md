@@ -70,15 +70,27 @@ this with a thread check).
 
 `render()` returns the nodes of the module's section, which the panel shows as the module's tab (`PROTOCOL.md`
 6.1). Helpers in `base.py` build nodes: `button(id, label, **kw)` (keywords include the 2.0 fields `icon`,
-`short`, `meta`, `variant` and `menu=menu(id, value, options, badge)`), `switch(id, label, value, *, short=None,
-icon=None, hint=None, disabled=False, busy=False)` (2.1: a tile with a capsule switch; `on_action` receives the
-requested new state as `value`; the module answers by rendering the state it actually reached, and reports a
-refused change with `ctx.ui.result(id, "warn" | "error", ...)`), `toggle(id, label, value, **kw)`,
-`select(...)`, `input(...)`, `text(...)` (with `chip=True`), `progress(value, label, *, detail=None, cancel=None)`,
-`list_(...)`, `row(...)`, `group(title, items, *, id=None, columns=None, collapsible=False, tiles=False)`,
-`menu(id, value, options, badge)`, `divider()`. A module that sets `icon` (class attribute, a symbol name of the
-panel sprite) gets its tab icon. Ids are given without the module prefix; `base.py` adds `<id>.` (to node ids, menu
-ids, group ids and `cancel`; an id that already carries the prefix is kept) and strips it again before `on_action`.
+`short`, `meta`, `variant` and `menu=menu(id, value, options, badge)`; 3.0: `auto=auto(id, label, value, *,
+hint=None)` and `prompt=prompt(id, label, value="", *, placeholder="")`, at most one of `menu` and `prompt`),
+`switch(id, label, value, *, short=None, icon=None, hint=None, disabled=False, busy=False)` (2.1: a whole tile that
+is a switch; `on_action` receives the requested new state as `value`; the module answers by rendering the state it
+actually reached, and reports a refused change with `ctx.ui.result(id, "warn" | "error", ...)`), `toggle(id, label,
+value, **kw)`, `select(...)`, `input(...)`, `text(...)` (with `chip=True`), `progress(value, label, *, detail=None,
+cancel=None)`, `list_(...)`, `row(...)`, `group(title, items, *, id=None, columns=None, collapsible=False,
+tiles=False, short=None, icon=None)` (3.0: `short` is the group code at the edge of the group's row, 1 to 6
+characters, with `title` as its tooltip), `menu(id, value, options, badge)`, `divider()`. A module that sets `icon`
+(class attribute, a symbol name of the panel sprite) gets its tab icon. Ids are given without the module prefix;
+`base.py` adds `<id>.` (to node ids, menu ids, auto ids, prompt ids, group ids and `cancel`; an id that already
+carries the prefix is kept) and strips it again before `on_action`.
+
+`auto` (3.0) is an automation that belongs to a tile and runs apart from its action (Files: Auto sort on Sort
+project): a press on the capsule reaches `on_action(<auto id>, value)` with the requested new state, a press on the
+tile `on_action(<button id>)`. A refused change is reported with `ctx.ui.result(<button id>, ...)`; a successful one
+shows no result line. `prompt` (3.0) is a stored text the tile uses when pressed (Quick actions: the custom reframe
+size): a submit reaches `on_action(<prompt id>, text)`; the module validates it, stores it and answers with a result
+for the button id. The pinned row of the panel is the host's (`PROTOCOL.md` 6.1 `pins`): every `button` and
+`switch` tile of a `tiles` group can be pinned, and a module does nothing for it.
+
 A node id must be stable across renders (the display diffs by it). A short label longer than 16 characters is a
 programming error: the builder raises `ProtocolError`.
 Window-only controls (`HOST_UI.md` 4) use ids `host:<name>` after the prefix (`files.host:undo`); the registry

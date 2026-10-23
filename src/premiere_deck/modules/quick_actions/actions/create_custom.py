@@ -37,15 +37,14 @@ class CreateCustom(Reframe):
     title = "Reframe custom"
     short = "CUST"
     icon = "ratio-custom"
-    hint = "Creates an auto-reframed copy of the active sequence at the size entered below the tiles."
+    hint = "Creates an auto-reframed copy of the active sequence at the stored size."
 
     def size(self, module) -> tuple[int, int]:
         return parse_size(module.stored(f"{self.id}.{FIELD}")) or DEFAULT_SIZE
 
     def field(self, module) -> Optional[dict]:
         width, height = self.size(module)
-        return {"name": FIELD, "label": "Custom size", "value": f"{width}x{height}",
-                "placeholder": "Width x height", "submit_label": "Create"}
+        return {"name": FIELD, "label": "Custom size", "value": f"{width}x{height}", "placeholder": "Width x height"}
 
     def submit(self, module, name, value) -> Optional[Outcome]:
         size = parse_size(value) if name == FIELD else None

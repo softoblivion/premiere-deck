@@ -12,7 +12,9 @@ from unittest import mock
 from premiere_deck.host import protocol as P
 from premiere_deck.modules.base import FakeHost
 from premiere_deck.modules.quick_actions import easing, premiere_window
-from premiere_deck.modules.quick_actions.action import JSX_DIR, error_sentence, safe_file_stem, script_text, timecode
+from premiere_deck.modules.quick_actions.action import (
+    GROUP_CODES, JSX_DIR, error_sentence, safe_file_stem, script_text, timecode,
+)
 from premiere_deck.modules.quick_actions.actions.colour import MARKER_COLOURS, MARKER_FOR, SWATCHES, VIA_ITEMS
 from premiere_deck.modules.quick_actions.actions.create_16_9 import free_name, target_size
 from premiere_deck.modules.quick_actions.actions.create_custom import parse_size, ratio
@@ -617,9 +619,11 @@ class SequenceActions(QuickActionsCase):
 
     def test_custom_size_input(self):
         self.reframe_echo()
-        field = rendered(self.module, "actions.create_custom.size")
-        self.assertEqual((field["kind"], field["value"], field["submit_label"], field["placeholder"]),
-                         ("input", "1080x1350", "Create", "Width x height"))
+        self.assertNotIn("actions.create_custom.size", [n.get("id") for n in flat(self.module.render())])
+        tile = rendered(self.module, "actions.create_custom")
+        self.assertEqual(tile["prompt"], {"id": "actions.create_custom.size", "label": "Custom size",
+                                          "value": "1080x1350", "placeholder": "Width x height"})
+        self.assertNotIn("menu", tile)
         self.assertEqual(self.click("create_custom"), ("ok", "Created Spring 1080x1350 · 1080x1350"))
         self.assertEqual({k: self.evals()[-1][1][k] for k in ("numerator", "denominator", "width", "height")},
                          {"numerator": 4, "denominator": 5, "width": 1080, "height": 1350})
@@ -627,7 +631,7 @@ class SequenceActions(QuickActionsCase):
                          ("ok", "Created Spring 1920x800 · 1920x800"))
         self.assertEqual(self.evals()[-1][1]["numerator"], 12)
         self.assertEqual(self.host.settings.get("choices")["create_custom.size"], "1920x800")
-        self.assertEqual(rendered(self.module, "actions.create_custom.size")["value"], "1920x800")
+        self.assertEqual(rendered(self.module, "actions.create_custom")["prompt"]["value"], "1920x800")
 
     def test_custom_size_refused(self):
         for bad in ("abc", "10x10", "1080", "99999x1080", None, 5):
@@ -856,12 +860,14 @@ class JobsAndRendering(QuickActionsCase):
         self.assertFalse(button["busy"])
         self.assertIsNone(module.section_status())
 
-    def test_custom_input_is_disabled_while_its_job_runs(self):
+    def test_custom_tile_is_busy_while_its_job_runs(self):
         host, module = self.make(manual_jobs=True)
         module.on_action("actions.create_custom")
-        self.assertTrue(rendered(module, "actions.create_custom.size")["disabled"])
+        tile = rendered(module, "actions.create_custom")
+        self.assertTrue(tile["busy"])
+        self.assertEqual(tile["prompt"]["id"], "actions.create_custom.size")  # the prompt stays on the busy tile
         host.jobs.step()
-        self.assertFalse(rendered(module, "actions.create_custom.size").get("disabled", False))
+        self.assertFalse(rendered(module, "actions.create_custom")["busy"])
 
     def test_long_actions_are_jobs(self):
         long_ids = sorted(aid for aid, action in self.module.actions.items() if action.long)
@@ -899,20 +905,22 @@ class JobsAndRendering(QuickActionsCase):
         self.assertEqual([n["title"] for n in items], list(GROUPS))
         self.assertEqual([n["id"] for n in items], [f"actions.{t.lower()}" for t in GROUPS])
         self.assertTrue(all(n["tiles"] and n["collapsible"] for n in items))
+        self.assertEqual([n["short"] for n in items], ["TIME", "TRKS", "SEL", "CLIP", "PROJ", "SEQ", "OUT", "KEYS"])
+        self.assertEqual(GROUP_CODES, dict(zip(GROUPS, (n["short"] for n in items))))
         for group in items:
-            tiles = [n for n in group["items"] if n["kind"] != "input"]
+            tiles = group["items"]
             expected = [f"actions.{aid}" for aid in ALL_IDS if TILES[aid][0] == group["title"]]
             self.assertEqual([n["id"] for n in tiles], expected, group["title"])
             kinds = {n["id"]: n["kind"] for n in tiles}
             for node_id, kind in kinds.items():
                 self.assertEqual(kind, "switch" if node_id in ("actions.solo_track", "actions.lock_others")
                                  else "button", node_id)
-            inputs = [n["id"] for n in group["items"] if n["kind"] == "input"]
-            self.assertEqual(inputs, ["actions.create_custom.size"] if group["title"] == "Sequence" else [])
-            kinds_in_order = [n["kind"] == "input" for n in group["items"]]
-            self.assertEqual(kinds_in_order, sorted(kinds_in_order), "inputs follow the tiles")
+        self.assertEqual([n for n in flat(items) if n["kind"] == "input"], [], "no input nodes (3.0)")
+        self.assertEqual([n["id"] for n in flat(items) if n.get("prompt")], ["actions.create_custom"])
         all_ids = [n["id"] for n in flat(items) if n.get("id")]
         self.assertEqual(len(all_ids), len(set(all_ids)))
+        P.validate_tree({"type": "ui", "revision": 1, "title": "", "status": None, "sections": [section],
+                         "footer": None})
 
     def test_every_action_declares_icon_and_code(self):
         for action_id, (group, icon, short) in TILES.items():

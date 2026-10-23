@@ -192,14 +192,26 @@ class Module:
         return node_id if node_id.startswith(self.id + ".") else self._id(node_id)
 
     def button(self, local_id: str, label: str, **kw: Any) -> dict:
-        menu = kw.get("menu")
-        if isinstance(menu, dict) and isinstance(menu.get("id"), str):
-            kw["menu"] = dict(menu, id=self._pid(menu["id"]))
+        """Keywords of `protocol.node_button`; the ids of `menu`, `auto` and `prompt` get the module prefix."""
+        for key in ("menu", "auto", "prompt"):
+            value = kw.get(key)
+            if isinstance(value, dict) and isinstance(value.get("id"), str):
+                kw[key] = dict(value, id=self._pid(value["id"]))
         return P.node_button(self._pid(local_id), label, **kw)
 
     def menu(self, local_id: str, value: Any, options: list, badge: str) -> dict:
         """`button(..., menu=...)` value: the choice a tile carries (docs/PROTOCOL.md 6.1)."""
         return P.menu(self._pid(local_id), value, options, badge)
+
+    def auto(self, local_id: str, label: str, value: bool, *, hint: Optional[str] = None) -> dict:
+        """`button(..., auto=...)` value (3.0): the automation capsule a tile carries (docs/PROTOCOL.md 6.1).
+        `on_action(local_id, value)` gets the requested new state."""
+        return P.auto(self._pid(local_id), label, value, hint=hint)
+
+    def prompt(self, local_id: str, label: str, value: str = "", *, placeholder: str = "") -> dict:
+        """`button(..., prompt=...)` value (3.0): the stored text a tile carries, edited in a popover
+        (docs/PROTOCOL.md 6.1). `on_action(local_id, text)` gets the submitted text."""
+        return P.prompt(self._pid(local_id), label, value, placeholder=placeholder)
 
     def switch(self, local_id: str, label: str, value: bool, **kw: Any) -> dict:
         """2.1 switch tile (docs/PROTOCOL.md 6.1); keywords `short`, `icon`, `hint`, `disabled`, `busy`. `on_action`
@@ -222,7 +234,8 @@ class Module:
         return self.button(local_id, label, **kw)
 
     def group(self, title: Optional[str], items: list, *, id: Optional[str] = None, **kw: Any) -> dict:
-        """`id`, `columns`, `collapsible` and `tiles` as in `protocol.node_group`; the id gets the module prefix."""
+        """`id`, `columns`, `collapsible`, `tiles`, `short` (3.0 group code) and `icon` as in `protocol.node_group`;
+        the id gets the module prefix."""
         return P.node_group(title, items, id=None if id is None else self._pid(id), **kw)
 
     def progress(self, value: Optional[float], label: str = "", *, detail: Optional[str] = None,

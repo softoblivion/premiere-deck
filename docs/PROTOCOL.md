@@ -50,8 +50,8 @@ the user.
 
 ## 3. Handshake
 
-Protocol version: `1` (2.0 only adds optional fields and message types and removes a message the host no longer
-sends, none of which breaks an older client, so the version stays). The client speaks first:
+Protocol version: `1` (2.0 and 3.0 only add optional fields and message types and remove a message the host no
+longer sends, none of which breaks an older client, so the version stays). The client speaks first:
 
 ```json
 {"type": "hello", "role": "agent", "panel_version": "1.0.0", "protocol": 1,
@@ -108,21 +108,35 @@ scroll). Trees are small (a few hundred nodes at most).
 {"type": "ui", "revision": 42, "title": "Premiere Deck", "status": {"text": "Connected · Spring.prproj", "tone": "ok"},
  "sections": [ {"id": "files", "title": "Files", "icon": "folder", "status": {"text": "Watching · 3 filed today", "tone": "ok"},
                 "items": [ ...nodes ] } ],
- "footer": {"text": "Premiere Deck 2.0.0", "link": {"label": "Open host", "action": "host.open"}}}
+ "footer": {"text": "Premiere Deck 3.0.0", "link": {"label": "Open host", "action": "host.open"}},
+ "pins": {"items": ["actions.adjustment_layer", "actions.colour"], "max": 5}}
 ```
 
 Sections are the panel's tabs: one section per running module, in the module's `order`; the tab shows the
 section's `icon` (a symbol name of the panel's icon sprite, `PANEL.md` 1) and `title`, and the selected tab fills
-the panel (one screen per tab, no long scroll). The section's `status` is drawn at the top of its tab. The 1.x
-section field `collapsed` is ignored (collapsing belongs to groups).
+the panel (one screen per tab, no long scroll). The section's `status` (`{text, tone}` or null) is still accepted
+and validated but not drawn (3.0); the Files module no longer sends its watcher state there. The 1.x section field
+`collapsed` is ignored (collapsing belongs to groups).
+
+`pins` (3.0, optional; the host sends it in every tree): the pinned row at the top of the panel, `{"items": [action
+ids in order], "max": 5}`. Each item is the id of a tile: a `button` (not `variant` `icon`) or `switch` node inside
+a `tiles` group (`host/protocol.py` `tile_ids`); the display draws the pinned row from those nodes (same tile, same
+action, same state) and skips an id with no node. The host keeps the list in its settings (`BRIDGE_API.md` 3.3, key
+`pins`) and sends only ids that are tiles of the current tree, so a module that is off or a tile that is not
+rendered at the moment leaves a stored pin out of the tree without losing it; when a new pin needs room, the oldest
+stored pins that are not shown are dropped first. The display edits the row with two actions (6.2): `panel.pin` and
+`panel.unpin`, each with `value` = the action id; the host stores the change and sends the tree again. A refused pin
+(five pins are shown already, the id is no tile of the current tree) answers with an `action_result` of id
+`panel.pins` (6.6, outcome `warn`) and changes nothing; pinning an id that is pinned already and unpinning one that
+is not change nothing and answer nothing.
 
 Node kinds (every node has `kind`; interactive nodes have a unique `id`; `disabled` and `hint` are optional
-everywhere; `tone` is one of `neutral`, `ok`, `warn`, `error`, `accent`). New fields of 2.0 are optional; a node
-without them renders as in 1.x:
+everywhere; `tone` is one of `neutral`, `ok`, `warn`, `error`, `accent`). New fields of 2.0 and 3.0 are optional;
+a node without them renders as before:
 
 | kind | Fields | Rendered as |
 |---|---|---|
-| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action); 2.0: `icon` (symbol name of the panel sprite or null), `short` (tile label, at most 16 characters; `label` stays the full name and heads the tooltip), `meta` (one line under the tile label, or null), `menu` (below), `variant` (`"icon"` or absent) | a button; `busy` shows a spinner and blocks clicks. Inside a `tiles` group: a compact tile (2.1: the icon at the left, `short` in one line; `meta` and a menu's `badge` go into the tooltip). `variant` `icon`: a small round button with the icon only, anywhere (the full `label` is its tooltip) |
+| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action); 2.0: `icon` (symbol name of the panel sprite or null), `short` (tile label, at most 16 characters; `label` stays the full name and heads the tooltip), `meta` (one line under the tile label, or null), `menu` (below), `variant` (`"icon"` or absent); 3.0: `auto` (below), `prompt` (below; a button carries at most one of `menu` and `prompt`) | a button; `busy` shows a spinner and blocks clicks. Inside a `tiles` group: a compact tile (the icon and `short`; `meta` goes into the tooltip; a `menu` or `prompt` is reached from the tile's corner mark, an `auto` is a capsule zone of the tile). `variant` `icon`: a small round button with the icon only, anywhere (the full `label` is its tooltip) |
 | `switch` | 2.1: `id`, `label` (full name, heads the tooltip), `value` (bool), `short` (tile code, at most 16 characters), `icon`, `hint`, `disabled`, `busy` (bool) | a tile of the size of a button tile with a capsule switch at its right instead of the result slot (inside a `tiles` group a cell of the tile grid; elsewhere a full-width tile). A click sends `action` with `value` = `!value`; the display flips the capsule at once and takes the host's next tree as the truth (a refused change comes back as the old `value` plus an `action_result` for the switch id). `busy` greys it and blocks clicks while a job runs |
 | `toggle` | `id`, `label`, `value` (bool), `hint`, `disabled` | switch; sends `action` with `value` |
 | `select` | `id`, `label`, `value`, `options` (`[{"value","label"}]`), `disabled` | drop-down; sends `action` with `value` |
@@ -131,32 +145,51 @@ without them renders as in 1.x:
 | `progress` | `value` (0..1 or null for indeterminate), `label`; 2.0: `detail` (one line, the current item, or null), `cancel` (a button node id or null) | progress bar; with `detail` a line under the bar; with `cancel` a "Stop" pill that sends `action` with that id |
 | `list` | `id`, `rows` (`[{"id","title","subtitle","tone","thumb" (data URL or null),"bar" (0..1 or null),"actions":[button nodes]}]`), `empty` (text when no rows) | a list with per-row buttons; a row's button sends its own `id` with `row` = the row id; a numeric `bar` is drawn as a thin bar under the subtitle (the fraction of its track that is filled; `null` or absent draws none) |
 | `row` | `items` (nodes) | nodes side by side |
-| `group` | `title` (string or null), `items` (nodes), `columns` (1 to 3; default 1, or 3 with `tiles`); 2.0: `id` (string, unique in the tree), `collapsible` (bool), `tiles` (bool) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 or 3 the display lays consecutive buttons and switches out in that many columns (any other node takes the full width). With `tiles` the buttons are compact tiles in four columns (three in a panel narrower than 360 px), whatever `columns` says (2.1). With `collapsible` the caption is the collapse control (chevron; the number of items while collapsed); the display remembers the collapsed state per group `id` in `localStorage`, expanded by default. Under the group the display keeps its result line (6.6). Groups do not nest |
+| `group` | `title` (string or null), `items` (nodes), `columns` (1 to 3; default 1, or 3 with `tiles`); 2.0: `id` (string, unique in the tree), `collapsible` (bool), `tiles` (bool); 3.0: `short` (the group code, 1 to 6 characters: TIME, TRKS; drawn at the row's edge with `title` as its tooltip), `icon` (symbol name of the panel sprite or null) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 or 3 the display lays consecutive buttons and switches out in that many columns (any other node takes the full width). With `tiles` the buttons are compact tiles in four columns (three in a panel narrower than 360 px), whatever `columns` says (2.1). With `collapsible` the caption is the collapse control (chevron; the number of items while collapsed); the display remembers the collapsed state per group `id` in `localStorage`, expanded by default. Under the group the display keeps its result line (6.6). Groups do not nest |
 | `divider` | | a thin rule |
 
 `menu` of a button: `{"id": <node id>, "value": <current value>, "options": [{"value", "label"}], "badge": <short
 text>}` or absent. 2.1: an option may carry `swatch`, a CSS hex colour (`#rgb` or `#rrggbb`), drawn as a dot before
-its label (the colour menu); any other value is refused by `menu()` and `validate_tree`. The tile shows `badge` (the current choice, "9:16", "H.264") as a small badge; a click on the
-badge opens a small menu of `options`; a pick sends `action` with the menu `id` and the picked `value`, exactly what a
-`select` node with that id sends. A click on the tile outside the badge sends the button's own `id`.
+its label (the colour menu); any other value is refused by `menu()` and `validate_tree`. `badge` is the current
+choice in short form ("Rose", "9:16"); the display opens the `options` from the tile's corner mark (3.0; a mark in
+the swatch colour of the current choice when the options carry swatches), and a pick sends `action` with the menu
+`id` and the picked `value`, exactly what a `select` node with that id sends. A click on the tile outside the mark
+sends the button's own `id`.
+
+`auto` of a button (3.0): `{"id": <node id>, "label": <full name>, "hint": <one line or null>, "value": <bool>}` or
+absent. An automation that belongs to the tile (Files: Auto sort on Sort project, Auto copy on Sync all media),
+drawn as a separate capsule zone of the tile with its own tooltip (`label` over `hint`). A press on the capsule sends
+`action` with the auto `id` and `value` = `!value`; the display flips the capsule at once and takes the next tree as
+the truth (a refused change comes back as the old `value` plus an `action_result` for the button id). A press on the
+rest of the tile sends the button's own `id`. The button's `busy` and `disabled` block its body only: the capsule
+stays usable while another job runs, because it only changes what the automation does next.
+
+`prompt` of a button (3.0): `{"id": <node id>, "label": <field label>, "value": <current text>, "placeholder":
+<text>}` or absent. A stored value of the tile (Quick actions: the custom reframe size), edited in a popover with
+one text field opened from the tile's corner mark; the field starts with `value`; a submit sends `action` with the
+prompt `id` and the entered text as `value`. The host answers with an `action_result` for the button id.
 
 Tooltips: every node's `hint` is drawn by the display as its own tooltip (`PANEL.md` 2): for a button the full
 `label` in bold over the `hint` line. No node becomes a `title` attribute.
 
-Validation (`host/protocol.py`, `validate_tree`): node ids, group ids and menu ids share one id space and are unique in
-the tree (a `switch` id too); a `short` longer than 16 characters (button or switch), a `switch` whose `value` is not
-a bool, a `variant` other than `icon`, a `menu` without options and a
-`columns` outside 1 to 3 are refused; a `collapsible` group needs an `id`. Modules build the nodes through the
+Validation (`host/protocol.py`, `validate_tree`): node ids, group ids, menu ids, auto ids and prompt ids share one id
+space and are unique in the tree (a `switch` id too); a `short` longer than 16 characters (button or switch), a
+`switch` or `auto` whose `value` is not a bool, a `variant` other than `icon`, a `menu` without options, a button
+with both `menu` and `prompt`, a `prompt` field that is not a string, a group `short` outside 1 to 6 characters and
+a `columns` outside 1 to 3 are refused; a `collapsible` group needs an `id`; `pins` needs `items` (unique non-empty
+strings, at most `max`) and a whole-number `max` from 1 to 5. Modules build the nodes through the
 helpers of `MODULES.md` 4, which add the module prefix to every id.
 
 Action ids are `<module>.<action>` (`files.sort`, `actions.adjustment_layer`); `host.*` ids belong to the
-host (`host.open`, `host.settings`). The display never interprets ids.
+host (`host.open`, `host.settings`), `panel.*` ids edit the pinned row and are handled by the host before any
+module (`panel.pin`, `panel.unpin`; `panel.pins` is the id of the row's result line). The display never interprets
+module ids.
 
 ### 6.2 `display` -> host
 
 | Type | Fields | Meaning |
 |---|---|---|
-| `action` | `id`, `value` (JSON value or absent), `row` (string, for list row actions), `revision` (the tree revision the click came from) | the user used a control; the host routes it by id prefix to the module. A stale `revision` is still delivered (the module decides) |
+| `action` | `id`, `value` (JSON value or absent), `row` (string, for list row actions), `revision` (the tree revision the click came from) | the user used a control; the host routes it by id prefix to the module. A stale `revision` is still delivered (the module decides). `panel.pin` / `panel.unpin` (3.0) carry the action id as `value` and are handled by the host (6.1 `pins`) |
 | `display.ready` | `size` (`{"w","h"}`) | sent after `welcome` and whenever the panel is resized (debounced 300 ms); the host adapts nothing yet, kept for layout decisions |
 | `log` | as in section 5 | logger `panel.display` |
 
@@ -195,7 +228,8 @@ no group) for 3 s (`ok`, `neutral`) or 10 s (`warn`, `error`), or until the next
 closes the line, and a line with `detail` opens the detail in the same click (2.1). Modules send it through
 `ctx.ui.result(...)` (`MODULES.md` 3); the host also records it in the window's activity feed (`BRIDGE_API.md`
 3.5). A result for an id that is not in the current tree changes no tile and no result line; it is still recorded in the
-activity feed.
+activity feed. The id `panel.pins` (3.0) is the pinned row: the host answers a refused `panel.pin` with it ("Five
+pins at most", "This control cannot be pinned"), and the display shows it as the result line of the pinned row.
 
 ## 7. Scripts
 

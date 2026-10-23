@@ -144,7 +144,8 @@ models, module actions, launch Premiere, panel install and check, update methods
 `premiere_exe` (auto / path), `keep_running_with_premiere` (true), `theme` (`black`), `auto_download_updates`
 (true), `show_activity` (false), `ui_scale` (100), `debug_mode_written` (list of CSXS keys the host wrote), `recent_projects` (list), `recent_opened`
 (`{path: ISO 8601 UTC}` of the last open through Deck, pruned with the list; the "time ago" of a Deck row), `modules.<id>.*`
-(module host settings), `modules_enabled.<id>` (bool).
+(module host settings), `modules_enabled.<id>` (bool), `pins` (list of action ids of the panel's pinned row, at most five
+shown; written by the panel's pin actions, not by the Settings sheet, and not part of the settings the window reads).
 
 Stored values: `theme` is `black` or `sky` (default `black`; the 1.x kit names `dusk`, `nova`, `frost`, `bloom` and
 any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a path ending in `.exe`; `ui_scale` is one of 100, 125, 150, 175, 200 (a number

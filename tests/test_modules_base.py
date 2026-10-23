@@ -113,6 +113,29 @@ class TileHelpers(unittest.TestCase):
                          "sections": [P.section("tiles", "Tiles", [group])]})
         self.assertEqual(self.module.strip_prefix("tiles.solo"), "solo")
 
+    def test_3_0_helpers_add_the_module_prefix(self):
+        auto = self.module.auto("auto_sort", "Auto sort", True, hint="Files new media.")
+        self.assertEqual(auto, {"id": "tiles.auto_sort", "label": "Auto sort", "hint": "Files new media.",
+                                "value": True})
+        prompt = self.module.prompt("custom.size", "Custom size", "1080x1350", placeholder="Width x height")
+        self.assertEqual(prompt, {"id": "tiles.custom.size", "label": "Custom size", "value": "1080x1350",
+                                  "placeholder": "Width x height"})
+        sort = self.module.button("sort", "Sort project", short="SORT", auto=auto)
+        custom = self.module.button("custom", "Reframe custom size", short="CUST", prompt=prompt)
+        self.assertEqual((sort["auto"]["id"], custom["prompt"]["id"]), ("tiles.auto_sort", "tiles.custom.size"))
+        # a raw dict with a local id is prefixed too, and prefixing is idempotent
+        raw = self.module.button("go", "Go", auto={"id": "auto_go", "label": "Auto go", "value": False},
+                                 prompt={"id": "tiles.go.text", "label": "Text", "value": "", "placeholder": ""})
+        self.assertEqual((raw["auto"]["id"], raw["prompt"]["id"]), ("tiles.auto_go", "tiles.go.text"))
+        group = self.module.group("Timeline", [sort, custom], id="timeline", tiles=True, short="TIME", icon="time")
+        self.assertEqual((group["id"], group["short"], group["icon"]), ("tiles.timeline", "TIME", "time"))
+        P.validate_tree({"type": "ui", "revision": 0, "title": "", "status": None, "footer": None,
+                         "sections": [P.section("tiles", "Tiles", [group])]})
+        with self.assertRaises(P.ProtocolError):
+            self.module.group("Timeline", [], short="TIMELINE")
+        with self.assertRaises(P.ProtocolError):
+            self.module.auto("a", "A", "on")
+
     def test_module_without_icon_has_no_icon_field(self):
         self.assertNotIn("icon", Demo(FakeHost().context()).section())
 

@@ -99,6 +99,14 @@ a patch with a value that is not a bool is refused ("The setting needs on or off
 (Crystal Black) and `sky` (Crystal Sky), default `black`; a stored value that is not one of them (including the
 1.x names `dusk`, `nova`, `frost`, `bloom`) falls back to `black` on load. A patch with another value is refused.
 
+`settings.json` also holds `pins` (host scope, default `[]`): the action ids of the panel's pinned row, in order,
+at most five (`PROTOCOL.md` 6.1 `pins`). It is not part of this payload and not patchable: the panel edits it with
+`panel.pin` / `panel.unpin`, the hub stores it and sends the tree again, and the window shows nothing of it. On load
+entries that are not `<module>.<action>` strings, repeats and everything past the fifth are dropped (a value that is
+not a list becomes `[]`); at start the pins of modules this build does not know are dropped too. A stored pin whose
+tile is not in the current tree (its module is off, the project is not set up) stays stored and is left out of the
+tree.
+
 ### 3.4 `ModuleInfo`
 
 `{"id": "files", "package": "files", "title": "Files", "description": "...", "order": 10, "state":
@@ -161,7 +169,9 @@ optional `title` and `hint`. Interactive elements inside blocks are the panel's 
 `button`, `toggle`, `select`, `input`, `text`, `progress`, including the button fields `icon`, `short`, `meta`,
 `menu`, `variant` and the progress field `cancel`), built with the module's helpers (`self.button(...)` etc.), so
 ids carry the module prefix. Using a control calls `module_action(<module id>, <node id>, value, row)`; a menu pick
-sends the menu's `id` with the picked `value`, as in the panel.
+sends the menu's `id` with the picked `value`, as in the panel. The button fields `auto` and `prompt` of the panel
+(3.0) are not used on host pages: a module draws the same automation as a row `toggle` there (Files, section 7 of
+its document).
 
 | `type` | Fields | Rendered as |
 |---|---|---|

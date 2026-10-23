@@ -25,7 +25,9 @@ from typing import Any, Callable, Optional
 
 from premiere_deck.core.media import MediaInfo, is_media_extension, kind_from_extension
 from premiere_deck.modules.base import ActionResult, Module, SettingField
-from premiere_deck.premiere.model import KIND_CLIP, KIND_FILE, PremiereError, ProjectInfo, ProjectItem, Snapshot
+from premiere_deck.premiere.model import (
+    KIND_CLIP, KIND_FILE, PremiereError, PremiereUnavailable, ProjectInfo, ProjectItem, Snapshot,
+)
 
 from . import journal as J
 from .classify import Decision, classify, parse_overrides
@@ -47,6 +49,7 @@ PROJECT_DEFAULTS = {"enabled": False, "layout": DEFAULT_LAYOUT_ID, "overrides": 
                     "auto_sort": False}
 PROJECT_BOOLS = ("enforce_bins", "mirror_bins", "import_exports", "watch", "auto_copy", "auto_sort")
 AUTO_SWITCHES = ("auto_copy", "auto_sort")  # the two import switches (docs/FILES.md 3.1, 6)
+AUTO_TILES = {"auto_sort": "sort", "auto_copy": "sync_all"}  # the tile that carries each as its `auto` capsule
 _ABSENT = object()
 
 LONG_KINDS = ("sort", "sync_all", "sync_used", "zip")  # at most one of these runs at a time (docs/FILES.md 3)
@@ -66,11 +69,11 @@ HINTS = {
     "sync_used": "Copies the files used in sequences from outside the project folder into Media.",
     "zip": "Writes the project folder as a ZIP archive into its Exports folder.",
     "setup": "Creates the layout folders and the matching bins.",
+    "recheck": "Creates the layout folders and bins again when any are missing.",
     "auto_copy": "Copies files imported from outside the project folder into Media and relinks them.",
     "auto_sort": "Files new media of the project folder into the layout folders and bins.",
 }
 SWITCH_LABELS = {"auto_copy": "Auto copy", "auto_sort": "Auto sort"}
-SWITCH_CODES = {"auto_copy": "AUTO COPY", "auto_sort": "AUTO SORT"}
 SWITCH_ICONS = {"auto_copy": "sync-all", "auto_sort": "sort"}
 TILE_CODES = {"setup": "SETUP", "sort": "SORT", "sync_all": "SYNC", "sync_used": "USED", "zip": "ZIP"}
 
@@ -1746,20 +1749,49 @@ class FilesModule(Module):
             return super().on_action(action_id, value, row)
         with self._lock:
             if self._state is None:
-                self._result(local, "neutral", "Open a project in Premiere Pro first")
+                self._result(AUTO_TILES.get(local, local), "neutral", "Open a project in Premiere Pro first")
                 return ActionResult(rerender=False)
             state = self._state
             if local not in NO_SETUP_NEEDED and not self._enabled():
-                self._result(local, "warn", "Set up this project first")
+                self._result(AUTO_TILES.get(local, local), "warn", "Set up this project first")
                 return None
             return handler(state, value, row)
 
     def _act_setup(self, state: _State, value, row) -> None:
-        if self._enabled():
-            return self._result("setup", "neutral", "This project is already set up")
+        """Set-up, or on a project that is set up the re-check of docs/FILES.md 6: missing layout folders and bins
+        are created again, nothing else changes."""
+        recheck = self._enabled()
         reason = write_check(state.root)
         if reason:
             return self._result("setup", "error", NO_WRITE_ACCESS, reason)
+        created = self._create_layout_folders(state)
+        if not recheck:
+            if self._proj("layout") != "custom":
+                self._set_proj("layout", state.layout.id)
+            self._set_proj("enabled", True)
+            for key in AUTO_SWITCHES:  # stored explicitly, so the load-time mapping of 2.0 projects never sees it
+                if self._stored(key) is _ABSENT:
+                    self._set_proj(key, False)
+            self._mark_root(state)
+        bins, bins_error = self._create_layout_bins(state)
+        if not recheck:
+            state.journal.append(J.OP_SETUP, status=J.DONE, name=os.path.basename(state.root), to=state.root,
+                                 folders_created=created, bins=bins, layout=state.layout.id)
+        state.write_ok = True
+        self._start_watcher(state)
+        self._refresh_derived(state)
+        self._refresh_used(state, force=True)
+        if not recheck:
+            return self._result("setup", "ok", f"Project set up · {len(state.layout.folders)} folders")
+        text = "Project folders checked"
+        if created:
+            text += f" · {plural(created, 'folder')} created again"
+        if bins_error:
+            return self._result("setup", "warn", text, f"Bins not checked · {bins_error}")
+        self._result("setup", "ok", text)
+
+    def _create_layout_folders(self, state: _State) -> int:
+        """Creates the missing layout folders and `.premiere-deck`; the number of layout folders created."""
         created = 0
         for folder in state.layout.all_folders():
             path = state.mapper.abs_folder(folder)
@@ -1767,13 +1799,12 @@ class FilesModule(Module):
                 os.makedirs(path, exist_ok=True)
                 created += 1
         os.makedirs(os.path.join(state.root, DECK_DIR), exist_ok=True)
-        if self._proj("layout") != "custom":
-            self._set_proj("layout", state.layout.id)
-        self._set_proj("enabled", True)
-        for key in AUTO_SWITCHES:  # stored explicitly, so the load-time mapping of 2.0 projects never sees this one
-            if self._stored(key) is _ABSENT:
-                self._set_proj(key, False)
-        self._mark_root(state)
+        return created
+
+    def _create_layout_bins(self, state: _State) -> tuple[int, str]:
+        """Creates the bin of every leaf layout folder except `project_dir` (existing bins are reused by the
+        facade); (bins checked, the reason when Premiere refused). A failure is not fatal: bins are also created
+        when a file first needs one."""
         bins = 0
         try:
             for folder in state.layout.leaf_folders():
@@ -1781,17 +1812,16 @@ class FilesModule(Module):
                     continue
                 self.ctx.premiere.create_bin_path(state.mapper.bin_for_folder(folder))
                 bins += 1
+        except PremiereUnavailable:
+            self.log.warning("bins not created: Premiere Pro is not connected")
+            return bins, "Premiere Pro is not connected"
         except PremiereError as exc:
             self.log.warning("bins not created: %s", exc.message)
-        except Exception:  # noqa: BLE001 - a malformed answer; bins are also created when a file first needs one
+            return bins, exc.message
+        except Exception:  # noqa: BLE001 - a malformed answer
             self.log.exception("bins not created")
-        state.journal.append(J.OP_SETUP, status=J.DONE, name=os.path.basename(state.root), to=state.root,
-                             folders_created=created, bins=bins, layout=state.layout.id)
-        state.write_ok = True
-        self._start_watcher(state)
-        self._refresh_derived(state)
-        self._refresh_used(state, force=True)
-        self._result("setup", "ok", f"Project set up · {len(state.layout.folders)} folders")
+            return bins, "Premiere Pro gave an unexpected answer"
+        return bins, ""
 
     def _mark_root(self, state: _State) -> None:
         """When the Files root is the parent of the project file's folder (project file in `Project/` beside layout
@@ -2023,8 +2053,9 @@ class FilesModule(Module):
                 ("offline", f"{offline} offline", "error" if offline else "neutral")]
 
     def _tiles(self, state: _State, *, host: bool = False) -> list:
-        """The four action tiles with their codes (`host`: the host page, which has room for the full names) and, for
-        the panel, the two switch tiles."""
+        """The four action tiles with their codes (`host`: the host page, which has room for the full names). In the
+        panel Sort project carries Auto sort and Sync all media carries Auto copy as their `auto` capsule, and the
+        Setup tile follows (it runs the re-check, docs/FILES.md 6)."""
         running = self._long_running()
         estimate = state.sort_estimate
         outside = len(state.outside)
@@ -2035,28 +2066,34 @@ class FilesModule(Module):
                         "can be undone.")
         used_meta = "Used in sequences" if state.used_count is None else f"{state.used_count} in sequences"
 
-        def tile(local: str, label: str, short: str, icon: str, meta: str, confirm: Optional[str]) -> dict:
+        def tile(local: str, label: str, short: str, icon: str, meta: str, confirm: Optional[str],
+                 auto: Optional[str] = None) -> dict:
+            capsule = None if host or auto is None else self._auto(auto)
             return self._node(self.button(local, label, busy=running == local,
                                           disabled=running is not None and running != local,
-                                          confirm=confirm, hint=HINTS[local]),
+                                          confirm=confirm, hint=HINTS[local], auto=capsule),
                               icon=icon, short=label if host else short, meta=meta)
 
         return [
-            tile("sort", "Sort project", TILE_CODES["sort"], "sort", sort_meta, sort_confirm),
+            tile("sort", "Sort project", TILE_CODES["sort"], "sort", sort_meta, sort_confirm, "auto_sort"),
             tile("sync_all", "Sync all media", TILE_CODES["sync_all"], "sync-all", f"{outside} outside the root",
-                 f"Copy {plural(outside, 'file')} from outside the project folder into Media?" if outside else None),
+                 f"Copy {plural(outside, 'file')} from outside the project folder into Media?" if outside else None,
+                 "auto_copy"),
             tile("sync_used", "Sync used media", TILE_CODES["sync_used"], "sync-used", used_meta,
                  "Copy the files used in sequences from outside the project folder into Media?"),
             tile("zip", "Make ZIP", TILE_CODES["zip"], "zip", "Checks offline first", None),
-            *([] if host else self._switch_tiles()),
+            *([] if host else [self._setup_tile(set_up=True)]),
         ]
 
-    def _switch_tiles(self) -> list:
-        """Auto copy and Auto sort as `switch` tiles (docs/PROTOCOL.md 6.1)."""
-        return [self.switch(key, SWITCH_LABELS[key], self._proj(key), short=SWITCH_CODES[key], icon=SWITCH_ICONS[key],
-                            hint=HINTS[key]) for key in AUTO_SWITCHES]
+    def _auto(self, key: str) -> dict:
+        """Auto copy or Auto sort as the `auto` capsule of its tile (docs/PROTOCOL.md 6.1)."""
+        return self.auto(key, SWITCH_LABELS[key], bool(self._proj(key)), hint=HINTS[key])
 
-    def _setup_tile(self) -> dict:
+    def _setup_tile(self, *, set_up: bool = False) -> dict:
+        """Before set-up the accent tile that sets the project up; after it the re-check (docs/FILES.md 6)."""
+        if set_up:
+            return self._node(self.button("setup", "Check project folders", hint=HINTS["recheck"]),
+                              icon="folder", short=TILE_CODES["setup"])
         return self._node(self.button("setup", "Set up project", tone="accent", hint=HINTS["setup"]),
                           icon="folder", short=TILE_CODES["setup"])
 
@@ -2073,6 +2110,13 @@ class FilesModule(Module):
                           variant="icon", icon="open-folder")
 
     def section_status(self) -> Optional[dict]:
+        """The panel section carries no watcher state (docs/FILES.md 6): only the running job's label, which the busy
+        tile shows as well; None otherwise."""
+        busy = next(iter(self._jobs.values()), None) if self._state is not None and self._enabled() else None
+        return None if busy is None else self.status(busy.label, "accent")
+
+    def _page_status(self) -> dict:
+        """The status line of the host page (docs/FILES.md 7)."""
         state = self._state
         if state is None:
             return self.status("No project", "neutral")
@@ -2101,7 +2145,7 @@ class FilesModule(Module):
             if not self._enabled():
                 nodes.append(self.text(f"Setup creates the {state.layout.name.lower()} folders and bins in "
                                        f"{os.path.basename(state.root)}. Nothing is moved.", small=True))
-                nodes.append(self._group("actions", None, [self._setup_tile(), *self._switch_tiles()], columns=2,
+                nodes.append(self._group("actions", None, [self._setup_tile()], columns=2,
                                          tiles=True))
                 if state.external:
                     nodes.append(self.text(f"{plural(len(state.external), 'item')} outside the project folder.",
@@ -2157,7 +2201,7 @@ class FilesModule(Module):
                     *self._layout_blocks(layout, state=None),
                 ]}
             enabled = self._enabled()
-            status = self.section_status() or self.status("", "neutral")
+            status = self._page_status()
             chips = {"type": "chips", "id": "status_chips",
                      "items": [{"id": cid, "text": text, "tone": tone, "icon": None}
                                for cid, text, tone in self._chip_values(state)]}

@@ -1,7 +1,9 @@
 /* Premiere Deck panel styling (docs/PANEL.md 3): the host window's design language in plain CSS, themed by the
    `data-theme` attribute of <html> (black | sky, set by display.js from the host's `theme` message). The token block
-   below is generated; everything after it uses the tokens only. Written for CEP's Chromium 99: no color-mix(), no
-   individual transform properties, no container queries, no View Transitions (display.js crossfades instead).
+   below is generated (colours, fonts, the type roles); everything after it uses the tokens only, and every text
+   names a type role (`font: var(--t-<role>)`), never a size of its own. The layout is one fixed stage of 360 x 640
+   px that the footer slider scales with CSS `zoom`. Written for CEP's Chromium 99: no color-mix(), no individual
+   transform properties, no container queries, no :has(), no View Transitions (display.js crossfades instead).
    Motion: 120-180 ms opacity and transform transitions, the result morph, the tab thumb; the looping animations are
    the spinner, the indeterminate bar and the pulse of the connecting screen. */
 
@@ -19,6 +21,29 @@
 :root {
     --font-text: "Sora", "Segoe UI", system-ui, sans-serif;
     --font-mono: "Geist Mono", ui-monospace, "Cascadia Mono", Consolas, monospace;
+    /* The type roles of the host (ui/vendor/liquid_ui/css/tokens.css): every text below uses one. */
+    --w-body: 450;
+    --w-medium: 550;
+    --w-strong: 600;
+    --w-title: 650;
+    --w-display: 650;
+    --font-display: var(--font-text);
+    --ff-mono: "liga" 0, "calt" 0;
+    --t-display: var(--w-display) 20px / 1.2 var(--font-display);
+    --t-title: var(--w-title) 16px / 1.25 var(--font-display);
+    --t-section: var(--w-strong) 11px / 1.3 var(--font-text);
+    --t-body: var(--w-body) 13px / 1.45 var(--font-text);
+    --t-label: var(--w-medium) 12.5px / 1.3 var(--font-text);
+    --t-label-s: var(--w-medium) 11.5px / 1.3 var(--font-text);
+    --t-caption: var(--w-body) 11.5px / 1.35 var(--font-text);
+    --t-mono: var(--w-body) 12px / 1.4 var(--font-mono);
+    --t-mono-s: var(--w-body) 11px / 1.3 var(--font-mono);
+    --tr-display: -0.02em;
+    --tr-title: -0.015em;
+    --tr-section: 0.06em;
+    --tr-body: 0em;
+    --tr-label: -0.004em;
+    --tr-caption: 0em;
 }
 
 /* Crystal Black: dark, hue #5f6f8c, accent #7563ff */
@@ -254,6 +279,7 @@
     --media-badge-ink: #ffffff;
 }
 /* END generated */
+
 @font-face {
     font-family: "Geist Mono";
     src: url("../fonts/GeistMono-Variable.woff2") format("woff2");
@@ -269,14 +295,23 @@
 @property --scene-hue { syntax: "<color>"; inherits: true; initial-value: #5f6f8c; }
 @property --scene-accent { syntax: "<color>"; inherits: true; initial-value: #7563ff; }
 
+/* Geometry of the stage (docs/PANEL.md 3): every size is in stage pixels; the footer slider zooms the whole stage. */
 :root {
     --d-1: 120ms;
     --d-2: 180ms;
     --d-3: 300ms;
     --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
     --ease-spring: cubic-bezier(0.2, 1.3, 0.4, 1);
-    --r-tile: 16px;
-    --r-card: 18px;
+    --stage-w: 360px;
+    --lane-cols: 6;
+    --tile-w: 46px;
+    --tile-h: 44px;
+    --tile-gap: 4px;
+    --tile-r: 12px;
+    --row-w: 165px;
+    --row-h: 46px;
+    --row-r: 14px;
+    --slot-h: 20px;
 }
 
 * { box-sizing: border-box; }
@@ -288,17 +323,18 @@ html, body {
 }
 body {
     color: var(--ink-1);
-    font: 450 12.5px / 1.4 var(--font-text);
+    font: var(--t-body);
+    letter-spacing: var(--tr-body);
     -webkit-font-smoothing: antialiased;
     user-select: none;
     cursor: default;
 }
-button, input, select { font: inherit; color: inherit; }
+button, input, select { font: inherit; color: inherit; letter-spacing: inherit; }
 button { border: 0; background: none; padding: 0; cursor: pointer; text-align: inherit; }
 button:disabled { cursor: default; }
 :focus { outline: none; }
 :focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
-.ic { width: 18px; height: 18px; flex: none; }
+.ic { width: 18px; height: 18px; flex: none; display: block; }
 .deck-glyph { display: block; flex: none; }
 
 .tone-neutral { --tone: var(--ink-4); --tone-ink: var(--ink-3); }
@@ -307,27 +343,38 @@ button:disabled { cursor: default; }
 .tone-error { --tone: var(--rose); --tone-ink: var(--error-ink); }
 .tone-accent { --tone: var(--accent); --tone-ink: var(--accent-ink); }
 
-/* ---- Frame: the scene, the top bar, the body, the footer ---------------------------------------------------- */
+/* ---- Frame: the scene fills the panel window, the stage (360 px) sits on it, centred ------------------------- */
+/* The root is the scroll box: it scrolls only when the panel is smaller than the zoomed stage. */
 #deck { height: 100%; }
 .deck {
     position: relative;
-    display: flex;
-    flex-direction: column;
     height: 100%;
-    min-height: 0;
-    overflow: hidden;
+    overflow: auto;
     isolation: isolate;
     background: linear-gradient(180deg, var(--bg-top) 0%, var(--bg-mid) 52%, var(--bg-bottom) 100%);
 }
-.deck-scene { position: absolute; top: 0; right: 0; bottom: 0; left: 0; z-index: -1; pointer-events: none; overflow: hidden; }
+.deck::-webkit-scrollbar { width: 8px; height: 8px; }
+.deck::-webkit-scrollbar-thumb { border-radius: 4px; background: var(--scroll-thumb); }
+.deck::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
+.deck::-webkit-scrollbar-corner { background: transparent; }
+.deck-scene { position: fixed; top: 0; right: 0; bottom: 0; left: 0; z-index: -1; pointer-events: none; overflow: hidden; }
 .deck-scene i { position: absolute; border-radius: 50%; }
-.deck-scene .f1 { left: -40%; top: 48%; width: 130%; height: 75%; background: radial-gradient(circle, var(--scene-hue) 0%, transparent 66%); opacity: calc(0.34 * var(--scene-fields-o)); }
-.deck-scene .f2 { right: -40%; top: -18%; width: 90%; height: 50%; background: radial-gradient(circle, var(--scene-hue) 0%, transparent 66%); opacity: calc(0.18 * var(--scene-fields-o)); }
-.deck-scene .f3 { left: 10%; right: 10%; bottom: -16%; height: 30%; background: radial-gradient(ellipse at 50% 100%, var(--scene-accent), transparent 70%); opacity: calc(0.18 * var(--scene-floor-o)); }
+.deck-scene .f1 { left: -30%; top: 50%; width: 120%; height: 70%; background: radial-gradient(circle, var(--scene-hue) 0%, transparent 66%); opacity: calc(0.3 * var(--scene-fields-o)); }
+.deck-scene .f2 { right: -35%; top: -16%; width: 85%; height: 48%; background: radial-gradient(circle, var(--scene-hue) 0%, transparent 66%); opacity: calc(0.16 * var(--scene-fields-o)); }
+.deck-scene .f3 { left: 10%; right: 10%; bottom: -16%; height: 28%; background: radial-gradient(ellipse at 50% 100%, var(--scene-accent), transparent 70%); opacity: calc(0.16 * var(--scene-floor-o)); }
 
-.deck-top { flex: none; display: flex; align-items: center; gap: 10px; height: 52px; padding: 0 12px; }
+/* The stage: fixed width, its height (inline, from display.js) at least 640 px or the panel's height. */
+.deck-stage {
+    position: relative;
+    width: var(--stage-w);
+    margin: 0 auto;
+    display: flex;
+    flex-direction: column;
+}
+
+.deck-top { flex: none; display: flex; align-items: center; gap: 10px; height: 48px; padding: 0 12px; }
 .deck-top .deck-glyph { filter: drop-shadow(0 3px 8px var(--glyph-glow)); }
-.deck-title { flex: 1; font-size: 14px; font-weight: 650; }
+.deck-title { flex: 1; font: var(--t-title); letter-spacing: var(--tr-title); }
 
 .deck-tabs {
     flex: 1;
@@ -335,7 +382,7 @@ button:disabled { cursor: default; }
     position: relative;
     display: grid;
     grid-template-columns: repeat(var(--n, 1), minmax(0, 1fr));
-    height: 34px;
+    height: 32px;
     padding: 3px;
     border-radius: 999px;
     background: var(--well);
@@ -352,10 +399,11 @@ button:disabled { cursor: default; }
     padding: 0 6px;
     border-radius: 999px;
     color: var(--ink-3);
-    font-weight: 550;
+    font: var(--t-label);
+    letter-spacing: var(--tr-label);
     transition: color var(--d-2) ease;
 }
-.deck-tab .ic { width: 15px; height: 15px; }
+.deck-tab .ic { width: 14px; height: 14px; }
 .deck-tab span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deck-tab:hover { color: var(--ink-2); }
 .deck-tab.is-on { color: var(--ink-1); }
@@ -372,69 +420,92 @@ button:disabled { cursor: default; }
     transition: transform var(--d-3) var(--ease-spring);
 }
 
-.deck-conn { position: relative; display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; }
+.deck-conn { position: relative; display: grid; place-items: center; width: 22px; height: 22px; flex: none; border-radius: 50%; }
 .deck-conn-dot { position: relative; width: 8px; height: 8px; border-radius: 50%; background: var(--tone); }
 .deck-conn-dot::before { content: ""; position: absolute; top: -3px; right: -3px; bottom: -3px; left: -3px; border-radius: 50%; background: var(--tone); opacity: 0.2; }
 .deck-conn-dot::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; border-radius: 50%; box-shadow: 0 0 10px var(--tone); opacity: 0.6; }
 
+/* A notice closes on a click (CONVENTIONS "Notices"). */
 .deck-notice {
     flex: none;
     margin: 0 12px 6px;
-    padding: 7px 10px;
+    padding: 6px 10px;
     border-radius: 10px;
     background: var(--warn-wash);
     box-shadow: inset 0 0 0 0.5px var(--warn-rim);
     color: var(--warn-ink);
-    font-size: 11.5px;
+    font: var(--t-caption);
     cursor: pointer;
 }
 .deck-soft.is-notice { cursor: pointer; }
 
 .deck-body {
-    flex: 1;
-    min-height: 0;
+    position: relative;
+    z-index: 0;   /* a stacking context of its own: the menu and the popover (z-index 40, children of the stage) always paint over every lane */
+    flex: 1 0 auto;
     display: flex;
     flex-direction: column;
-    padding: 2px 12px 8px;
-    overflow-x: hidden;
-    overflow-y: auto;
+    padding: 4px 12px 10px;
     transition: opacity var(--d-2) ease;
 }
-.deck-body.is-screen { overflow: hidden; padding: 0; }
+.deck-body.is-screen { padding: 0; }
 .deck-body.is-offline { opacity: 0.5; pointer-events: none; }
-.deck-body::-webkit-scrollbar { width: 8px; }
-.deck-body::-webkit-scrollbar-thumb { border-radius: 4px; background: var(--scroll-thumb); }
-.deck-body::-webkit-scrollbar-thumb:hover { background: var(--scroll-thumb-hover); }
-.deck-tabpanel { flex: 1; display: flex; flex-direction: column; min-height: min-content; }
+.deck-tabpanel { flex: 1 0 auto; display: flex; flex-direction: column; }
 .deck-tabpanel > * + * { margin-top: 8px; }
-.deck-tabpanel > .deck-group + .deck-group { margin-top: 6px; }
-.deck-tabpanel > .is-dock { margin-top: auto; }
+.deck-tabpanel > .deck-lane-wrap + .deck-lane-wrap { margin-top: 5px; }
+.deck-tabpanel > .deck-lane-wrap.is-pins + * { margin-top: 11px; }
+.deck-tabpanel > .is-dock { margin-top: 8px; }   /* right under the content, not docked to the foot */
 .deck-tabpanel > .deck-g-result { margin-top: 8px; }
-
-.deck-status { display: flex; align-items: center; gap: 7px; padding: 0 4px; font-size: 11.5px; color: var(--tone-ink); }
-.deck-status-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--tone); }
 
 .deck-footer {
     flex: none;
     display: flex;
     align-items: center;
-    justify-content: space-between;
-    height: 32px;
-    padding: 0 12px;
+    gap: 10px;
+    height: 34px;
+    padding: 0 8px 0 12px;
     box-shadow: inset 0 1px 0 var(--line-soft);
 }
-.deck-ver { font: 500 11px / 1 var(--font-mono); color: var(--ink-3); }
+.deck-ver { font: var(--t-mono-s); color: var(--ink-3); white-space: nowrap; }
 
-/* ---- Pressable plates: pills, tiles, small buttons ---------------------------------------------------------- */
-.deck-btn, .deck-tile, .deck-small-btn, .deck-icon-btn {
+/* The scale slider: 80..150 % in steps of 5, a tick at 125 % (the 2K setting). */
+.deck-scale { flex: 1; display: flex; align-items: center; justify-content: center; gap: 7px; min-width: 0; color: var(--ink-3); }
+.deck-scale .ic { width: 15px; height: 15px; }
+.deck-scale-track { position: relative; display: block; }
+.deck-scale-track::after { content: ""; position: absolute; left: calc(7px + (100% - 14px) * 0.6429); top: 13px; width: 1px; height: 4px; background: var(--ink-4); pointer-events: none; }
+.deck-scale-value { width: 38px; font: var(--t-mono-s); color: var(--ink-2); text-align: right; white-space: nowrap; }
+.deck-scale-input { -webkit-appearance: none; appearance: none; display: block; width: 104px; height: 18px; margin: 0; background: transparent; cursor: pointer; }
+.deck-scale-input::-webkit-slider-runnable-track {
+    height: 4px;
+    border-radius: 999px;
+    background: linear-gradient(90deg, var(--accent-ink) 0%, var(--accent-ink) var(--p, 28.5%), var(--well-track) var(--p, 28.5%), var(--well-track) 100%);
+    box-shadow: inset 0 0 0 0.5px var(--well-rim);
+}
+.deck-scale-input::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    width: 14px;
+    height: 14px;
+    margin-top: -5px;
+    border-radius: 50%;
+    background: var(--hero-ink);
+    box-shadow: var(--thumb-shadow), inset 0 0 0 0.5px var(--stroke-2);
+    transition: transform var(--d-2) var(--ease-spring);
+}
+.deck-scale-input:active::-webkit-slider-thumb { transform: scale(1.15); }
+/* The default rectangular outline is replaced by a round ring on the thumb; keyboard focus stays visible. */
+.deck-scale-input:focus, .deck-scale-input:focus-visible { outline: none; }
+.deck-scale-input:focus-visible::-webkit-slider-thumb { box-shadow: var(--thumb-shadow), inset 0 0 0 0.5px var(--stroke-2), 0 0 0 2px var(--focus-ring); }
+
+/* ---- Pressable plates: tile bodies, pills, small and icon buttons ------------------------------------------- */
+.deck-t-body, .deck-btn, .deck-small-btn, .deck-icon-btn {
     position: relative;
     background-image: linear-gradient(to bottom, rgba(255, 255, 255, var(--btn-streak-rest)), rgba(255, 255, 255, 0) 46%);
     background-color: var(--btn-fill);
     box-shadow: inset 0 0 0 0.5px var(--btn-stroke), inset 0 1px 0 var(--btn-bevel), inset 0 -1px 0 var(--btn-shade), var(--btn-drop);
     transition: background-color var(--d-1) ease, box-shadow var(--d-2) ease, opacity var(--d-2) ease, transform 260ms var(--ease-spring);
 }
-.deck-btn:hover, .deck-tile:hover, .deck-small-btn:hover, .deck-icon-btn:hover { background-color: var(--btn-fill-hover); }
-.deck-btn:active, .deck-tile:active, .deck-small-btn:active, .deck-icon-btn:active { background-color: var(--btn-fill-press); transform: scale(1.04, 0.95); transition-duration: 80ms; }
+.deck-t-body:hover, .deck-btn:hover, .deck-small-btn:hover, .deck-icon-btn:hover { background-color: var(--btn-fill-hover); }
+.deck-t-body:active, .deck-btn:active, .deck-small-btn:active, .deck-icon-btn:active { background-color: var(--btn-fill-press); transform: scale(1.04, 0.95); transition-duration: 80ms; }
 .is-disabled, :disabled.is-disabled { opacity: 0.45; pointer-events: none; }
 
 .deck-btn {
@@ -445,13 +516,12 @@ button:disabled { cursor: default; }
     min-height: 30px;
     padding: 5px 12px;
     border-radius: 999px;
-    font-size: 12.5px;
-    font-weight: 600;
-    line-height: 1.2;
+    font: var(--t-label);
+    letter-spacing: var(--tr-label);
     text-align: center;
 }
 .deck-btn .ic { width: 16px; height: 16px; }
-.deck-btn.is-small { min-height: 24px; padding: 2px 10px; font-size: 11.5px; font-weight: 550; }
+.deck-btn.is-small { min-height: 24px; padding: 2px 10px; font: var(--t-label-s); }
 .deck-btn.tone-accent { background-image: none; background-color: transparent; background: var(--accent-grad-a); color: var(--hero-ink); box-shadow: inset 0 1px 0 rgba(255, 255, 255, var(--btn-streak-tinted)), 0 4px 14px -4px var(--btn-glow); }
 .deck-btn.tone-warn { color: var(--warn-ink); }
 .deck-btn.tone-error { color: var(--error-ink); }
@@ -461,139 +531,205 @@ button:disabled { cursor: default; }
 .deck-btn.has-icon { padding-left: 11px; }
 .deck-node { min-width: 0; }
 
-.deck-small-btn { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 10px; border-radius: 999px; font-size: 11.5px; font-weight: 550; white-space: nowrap; }
+.deck-small-btn { display: inline-flex; align-items: center; gap: 5px; height: 24px; padding: 0 9px; border-radius: 999px; font: var(--t-label-s); white-space: nowrap; }
 .deck-small-btn .ic { width: 13px; height: 13px; }
 .deck-stop { flex: none; }
-.deck-link { height: 22px; gap: 6px; padding: 0 9px; color: var(--ink-2); }
+.deck-link { flex: none; color: var(--ink-2); }
 
-.deck-icon-btn { display: grid; place-items: center; width: 30px; height: 30px; flex: none; border-radius: 50%; color: var(--ink-1); }
-.deck-icon-btn .ic { width: 16px; height: 16px; }
+.deck-icon-btn { display: grid; place-items: center; width: 28px; height: 28px; flex: none; border-radius: 50%; color: var(--ink-1); }
+.deck-icon-btn .ic { width: 15px; height: 15px; }
 
-.deck-spinner { width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid var(--spin-track); border-top-color: var(--spin-head); animation: deck-spin 0.8s linear infinite; }
+.deck-spinner { display: block; width: 12px; height: 12px; flex: none; border-radius: 50%; border: 2px solid var(--spin-track); border-top-color: var(--spin-head); animation: deck-spin 0.8s linear infinite; }
 @keyframes deck-spin { to { transform: rotate(360deg); } }
 
-/* ---- Groups ------------------------------------------------------------------------------------------------- */
-.deck-g-head { display: flex; align-items: center; gap: 8px; width: 100%; height: 28px; padding: 0 4px 0 6px; border-radius: 10px; text-align: left; }
-.deck-g-head:hover { background: var(--fill-1); }
-.deck-g-head .deck-caption { flex: 1; }
-.deck-caption { font: 600 10.5px / 1.3 var(--font-text); letter-spacing: 0.06em; text-transform: uppercase; color: var(--ink-3); }
-.deck-g-title { padding: 0 6px; }
-.deck-count { font: 500 10.5px / 1 var(--font-mono); color: var(--ink-4); }
-.deck-g-head .chev { width: 15px; height: 15px; color: var(--ink-3); transition: transform var(--d-3) var(--ease-spring); }
-.deck-group.is-collapsed .chev { transform: rotate(-90deg); }
-.deck-g-body { display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
-.deck-g-body > .deck-g-result { margin-top: -2px; }
-.deck-group.is-tiles:first-child > .deck-g-body:first-child { padding-top: 4px; }
-
-.deck-grid { display: grid; gap: 8px; grid-auto-flow: row dense; }
-.deck-grid[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
-.deck-grid[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-.deck-grid[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-.deck-grid[data-cols="4"] { grid-template-columns: repeat(4, minmax(0, 1fr)); }
-.deck-grid.is-tiles { gap: 6px; }
-.deck-grid > .deck-confirm { grid-column: 1 / -1; }
-/* Four tile columns need about 78 px per tile (the longest code, SETUP, beside its icon; a switch's capsule; a
-   menu's chevron), which a 360 px panel with its scroll bar just gives; narrower panels take three columns. */
-@media (max-width: 359px) {
-    .deck-grid.is-tiles[data-cols="4"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-}
-@media (max-width: 299px) {
-    .deck-grid:not(.is-tiles) { grid-template-columns: minmax(0, 1fr); }
-}
-
-/* ---- Tiles ----------------------------------------------------------------------------------------------- */
-/* 2.1 compact tile: 32 px high, the icon (the result slot) at the left, the code label in one line. */
-.deck-tile {
+/* ---- Lanes: every titled tile group is one row, its code at the left edge ---------------------------------- */
+.deck-lane-wrap { display: flex; flex-direction: column; gap: 4px; }
+.deck-lane {
     display: flex;
-    flex-direction: row;
     align-items: center;
-    justify-content: flex-start;
-    gap: 6px;
-    min-width: 0;
-    height: 32px;
-    padding: 0 7px 0 8px;
-    border-radius: 11px;
-    color: var(--ink-1);
-    font-size: 11.5px;
-    font-weight: 600;
-    line-height: 1;
-    letter-spacing: 0.02em;
-    text-align: left;
-    white-space: nowrap;
+    min-height: 52px;
+    padding: 4px 3px;
+    border-radius: 16px;
+    background: var(--fill-1);
+    box-shadow: inset 0 0 0 0.5px var(--stroke-1);
 }
-.deck-face { position: relative; width: 16px; height: 16px; flex: none; }
-.deck-face .ic {
-    position: absolute;
-    left: 0;
-    top: 0;
-    width: 16px;
-    height: 16px;
-    color: var(--ink-2);
-    transition: opacity var(--d-2) ease, transform 360ms var(--ease-spring);
-}
-.deck-face .ok, .deck-face .no, .deck-face .warn { opacity: 0; transform: scale(0.4) rotate(-40deg); }
-.deck-tile-text { position: relative; display: block; flex: 1; min-width: 0; }
-.deck-tile-label { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck-tile::before, .deck-tile::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity var(--d-2) ease; }
-.deck-tile::before { background: var(--tone-c, var(--mint)); }
-.deck-tile::after { box-shadow: inset 0 0 0 1px var(--tone-c, var(--mint)), 0 4px 16px -5px var(--tone-c, var(--mint)); }
-.deck-tile.tone-accent { color: var(--accent-ink); }
-.deck-tile.tone-accent .deck-face .main { color: var(--accent-ink); }
-.deck-tile.tone-accent::after { --tone-c: var(--accent); opacity: 0.5; }
-
-/* The result on a tile for 2 s: the icon rotates and scales out, the result mark springs in, the plate glows. */
-.deck-tile.is-done { --tone-c: var(--mint); }
-.deck-tile.is-failed { --tone-c: var(--rose); }
-.deck-tile.is-warned { --tone-c: var(--amber); }
-.deck-tile.is-done::before, .deck-tile.is-failed::before, .deck-tile.is-warned::before { opacity: 0.16; }
-.deck-tile.is-done::after, .deck-tile.is-failed::after, .deck-tile.is-warned::after { opacity: 0.65; }
-.deck-tile.is-done .deck-face .main, .deck-tile.is-failed .deck-face .main, .deck-tile.is-warned .deck-face .main, .deck-tile.is-noted .deck-face .main { opacity: 0; transform: scale(0.4) rotate(40deg); }
-.deck-tile.is-done .deck-face .ok, .deck-tile.is-noted .deck-face .ok { opacity: 1; transform: none; color: var(--ok-ink); }
-.deck-tile.is-noted .deck-face .ok { color: var(--ink-1); }
-.deck-tile.is-failed .deck-face .no { opacity: 1; transform: none; color: var(--error-ink); }
-.deck-tile.is-warned .deck-face .warn { opacity: 1; transform: none; color: var(--warn-ink); }
-
-/* Busy: the spinner in the icon slot and an accent rim. */
-.deck-tile.is-busy { pointer-events: none; --tone-c: var(--accent); }
-.deck-tile.is-busy::after { opacity: 0.55; box-shadow: inset 0 0 0 1px var(--accent), 0 4px 16px -6px var(--btn-glow); }
-.deck-tile.is-busy .deck-face .main { opacity: 0; }
-.deck-tile.is-busy .deck-face::after { content: ""; position: absolute; top: 1px; right: 1px; bottom: 1px; left: 1px; border-radius: 50%; border: 2px solid var(--spin-track); border-top-color: var(--spin-head); animation: deck-spin 0.8s linear infinite; }
-
-/* A tile with a menu: a chevron handle at its right edge opens the menu (the current choice is in the tooltip). */
-.deck-badge {
-    position: relative;
-    z-index: 2;
+.deck-lane-code {
+    width: 34px;
+    flex: none;
+    align-self: stretch;
     display: grid;
     place-items: center;
-    flex: none;
-    width: 14px;
-    height: 20px;
-    margin-right: -2px;
-    border-radius: 6px;
-    background: var(--fill-2);
-    box-shadow: inset 0 0 0 0.5px var(--stroke-2);
-    color: var(--ink-2);
-    cursor: pointer;
+    font: var(--t-section);
+    letter-spacing: var(--tr-section);
+    text-transform: uppercase;
+    text-indent: var(--tr-section);   /* balances the tracking after the last letter */
+    color: var(--ink-3);
+    white-space: nowrap;
 }
-.deck-badge .ic { width: 12px; height: 12px; }
-.deck-badge:hover { background: var(--fill-4); color: var(--ink-1); }
-.deck-tile.has-menu { padding-right: 5px; gap: 4px; }
+.deck-lane-code .ic { width: 15px; height: 15px; color: var(--accent-ink); }
+.deck-lane.is-pinned { background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--btn-glow), 0 6px 20px -12px var(--btn-glow); }
+.deck-lane-tiles { display: grid; grid-template-columns: repeat(var(--lane-cols), var(--tile-w)); grid-auto-rows: var(--tile-h); gap: var(--tile-gap); justify-content: start; }
 
-/* A switch tile (PROTOCOL 6.1 `switch`): the capsule in the icon slot, mint while on. */
-.deck-tile.is-switch { gap: 6px; padding: 0 6px 0 7px; }
-.deck-capsule { position: relative; width: 20px; height: 12px; flex: none; border-radius: 999px; background: var(--switch-track); box-shadow: var(--inset-well); transition: background-color var(--d-2) ease; }
-.deck-capsule-knob { position: absolute; top: 1.5px; left: 1.5px; width: 9px; height: 9px; border-radius: 50%; background: var(--hero-ink); box-shadow: var(--thumb-shadow); transition: transform var(--d-2) var(--ease-spring); }
-.deck-tile.is-switch.is-on .deck-capsule { background: var(--mint); }
-.deck-tile.is-switch.is-on .deck-capsule-knob { transform: translateX(8px); }
-.deck-tile.is-switch.is-busy .deck-capsule { opacity: 0.45; }
-.deck-tile.is-switch.is-busy::after { opacity: 0.4; }
+/* Empty places of the pinned row and its edit slot ("+" opens edit mode, the check ends it). */
+.deck-slot { display: grid; place-items: center; width: var(--tile-w); height: var(--tile-h); border-radius: var(--tile-r); border: 1px dashed var(--stroke-2); color: var(--ink-3); }
+.deck-slot .ic { width: 15px; height: 15px; }
+.deck-slot.is-edit { transition: background-color var(--d-1) ease, color var(--d-1) ease, border-color var(--d-2) ease; }
+.deck-slot.is-edit:hover { background: var(--fill-1); color: var(--ink-1); }
+.deck-slot.is-edit.is-on { border-style: solid; border-color: var(--accent-ink); color: var(--accent-ink); }
 
-/* ---- Own tooltip and tile menu ---------------------------------------------------------------------------- */
+/* Files: the block of row tiles, two per row. */
+.deck-group.is-rowtiles { display: flex; flex-direction: column; gap: 6px; }
+.deck-rowtiles { display: grid; grid-template-columns: repeat(2, var(--row-w)); grid-auto-rows: var(--row-h); gap: 6px; justify-content: start; }
+
+/* ---- Tiles: one fixed shape per form, never stretched ------------------------------------------------------ */
+.deck-t { position: relative; width: var(--tile-w); height: var(--tile-h); border-radius: var(--tile-r); }
+.deck-t.is-row { width: var(--row-w); height: var(--row-h); border-radius: var(--row-r); }
+.deck-tabpanel > .deck-t.is-row, .deck-g-body > .deck-t.is-row { width: 100%; }
+.deck-t-body {
+    position: absolute;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    border-radius: inherit;
+    color: var(--ink-1);
+}
+.deck-t.is-row .deck-t-body { flex-direction: row; justify-content: flex-start; gap: 9px; padding: 0 12px 0 13px; }
+.deck-t.has-auto.is-row .deck-t-body { padding-right: 74px; }
+.deck-face { position: relative; display: block; width: 18px; height: 18px; flex: none; }
+.deck-face .ic { position: absolute; left: 0; top: 0; width: 100%; height: 100%; color: var(--ink-2); transition: opacity var(--d-2) ease, transform 360ms var(--ease-spring); }
+.deck-face .ok, .deck-face .no, .deck-face .warn { opacity: 0; transform: scale(0.4) rotate(-40deg); }
+.deck-face .deck-spinner { position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; }
+.deck-t-code { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; font: var(--t-label-s); font-weight: var(--w-strong); letter-spacing: var(--tr-label); line-height: 1; white-space: nowrap; }
+.deck-t.is-row .deck-t-code { min-width: 0; }
+.deck-t.tone-accent .deck-t-body { color: var(--accent-ink); }
+.deck-t.tone-accent .deck-face .main { color: var(--accent-ink); }
+
+/* Armed tile (a press on a tile with `confirm`): the face flips into the check (left) and the cross (right) with the
+   accent rim; the question is the tooltip, a wide row tile also draws it between the halves when it fits one line.
+   The flipped face is always in the tile so it can flip back; only the transform and opacity animate (CEF 99). */
+.deck-armed {
+    position: absolute;
+    z-index: 4;
+    top: 0;
+    right: 0;
+    bottom: 0;
+    left: 0;
+    display: flex;
+    align-items: stretch;
+    border-radius: inherit;
+    background-image: linear-gradient(to bottom, rgba(255, 255, 255, var(--btn-streak-rest)), rgba(255, 255, 255, 0) 46%);
+    background-color: var(--btn-fill);
+    box-shadow: inset 0 0 0 0.5px var(--btn-stroke), inset 0 1px 0 var(--btn-bevel), inset 0 -1px 0 var(--btn-shade);
+    opacity: 0;
+    pointer-events: none;
+    transform: perspective(240px) rotateX(-90deg);
+    transition: transform 220ms var(--ease-out), opacity 110ms ease;
+}
+.deck-t.is-armed .deck-armed { opacity: 1; pointer-events: auto; transform: none; }
+.deck-t.is-armed .deck-t-body { opacity: 0; pointer-events: none; transform: perspective(240px) rotateX(90deg); transition: transform 220ms var(--ease-out), opacity 110ms ease; }
+.deck-t.is-armed { --tone-c: var(--accent); }
+.deck-t.is-armed .deck-auto, .deck-t.is-armed .deck-corner, .deck-t.is-armed .deck-lamp { opacity: 0; pointer-events: none; }   /* the flipped face is the only face */
+.deck-t.is-armed::after { z-index: 5; opacity: 0.6; box-shadow: inset 0 0 0 1px var(--accent), 0 4px 16px -6px var(--btn-glow); }
+.deck-armed-yes, .deck-armed-no { flex: 1; display: grid; place-items: center; min-width: 0; color: var(--ink-3); transition: background-color var(--d-1) ease, color var(--d-1) ease; }
+.deck-armed-yes { border-radius: var(--tile-r) 0 0 var(--tile-r); color: var(--ok-ink); box-shadow: inset -1px 0 0 var(--stroke-2); }
+.deck-armed-no { border-radius: 0 var(--tile-r) var(--tile-r) 0; box-shadow: inset 1px 0 0 var(--stroke-2); }
+.deck-t.is-row .deck-armed-yes { border-radius: var(--row-r) 0 0 var(--row-r); }
+.deck-t.is-row .deck-armed-no { border-radius: 0 var(--row-r) var(--row-r) 0; }
+.deck-armed-yes:hover, .deck-armed-no:hover { background: var(--fill-2); }
+.deck-armed-no:hover { color: var(--ink-1); }
+.deck-armed .ic { width: 15px; height: 15px; }
+.deck-t.is-row .deck-armed-yes, .deck-t.is-row .deck-armed-no { flex: 0 0 42px; }
+.deck-armed-q { flex: 1; min-width: 0; align-self: center; padding: 0 4px; overflow: hidden; text-align: center; white-space: nowrap; font: var(--t-caption); color: var(--ink-2); pointer-events: none; }
+
+/* The result on a tile for 2 s: the icon rotates and scales out, the result mark springs in, the plate glows. */
+.deck-t::before, .deck-t::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; border-radius: inherit; pointer-events: none; opacity: 0; transition: opacity var(--d-2) ease; }
+.deck-t::before { background: var(--tone-c, var(--mint)); }
+.deck-t::after { box-shadow: inset 0 0 0 1px var(--tone-c, var(--mint)), 0 4px 16px -5px var(--tone-c, var(--mint)); }
+.deck-t.tone-accent::after { --tone-c: var(--accent); opacity: 0.5; }
+.deck-t.is-done { --tone-c: var(--mint); }
+.deck-t.is-failed { --tone-c: var(--rose); }
+.deck-t.is-warned { --tone-c: var(--amber); }
+.deck-t.is-done::before, .deck-t.is-failed::before, .deck-t.is-warned::before { opacity: 0.16; }
+.deck-t.is-done::after, .deck-t.is-failed::after, .deck-t.is-warned::after { opacity: 0.65; }
+.deck-t.is-done .deck-face .main, .deck-t.is-failed .deck-face .main, .deck-t.is-warned .deck-face .main, .deck-t.is-noted .deck-face .main { opacity: 0; transform: scale(0.4) rotate(40deg); }
+.deck-t.is-done .deck-face .ok, .deck-t.is-noted .deck-face .ok { opacity: 1; transform: none; color: var(--ok-ink); }
+.deck-t.is-noted .deck-face .ok { color: var(--ink-1); }
+.deck-t.is-failed .deck-face .no { opacity: 1; transform: none; color: var(--error-ink); }
+.deck-t.is-warned .deck-face .warn { opacity: 1; transform: none; color: var(--warn-ink); }
+
+/* Busy: the spinner in the icon slot and an accent rim. */
+.deck-t.is-busy { --tone-c: var(--accent); }
+.deck-t.is-busy .deck-t-body { pointer-events: none; }
+/* Disabled: the body (and its corner mark and lamp) dim and take no press; an automation capsule stays usable. */
+.deck-t.is-off .deck-corner, .deck-t.is-off .deck-lamp { opacity: 0.45; pointer-events: none; }
+.deck-t.is-busy::after { opacity: 0.55; box-shadow: inset 0 0 0 1px var(--accent), 0 4px 16px -6px var(--btn-glow); }
+
+/* A switch (SOLO, LOCK): the whole tile flips; the lamp shows the state, mint while on. */
+.deck-lamp { position: absolute; z-index: 1; top: 7px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--switch-track); box-shadow: inset 0 0 0 0.5px var(--stroke-2); pointer-events: none; transition: background-color var(--d-2) ease, box-shadow var(--d-2) ease; }
+.deck-t.is-on .deck-lamp { background: var(--mint); box-shadow: 0 0 0 2px var(--ok-fill), 0 0 8px var(--mint); }
+.deck-t.is-switch.is-on .deck-face .main { color: var(--ok-ink); }
+.deck-t.is-switch.is-busy .deck-lamp { opacity: 0.45; }
+
+/* The corner mark of a menu or a prompt (the tool-slot triangle, in the current label colour for a colour menu). */
+.deck-corner { position: absolute; z-index: 2; top: 0; right: 0; width: 20px; height: 20px; border-radius: 0 var(--tile-r) 0 0; }
+/* The mark is a clipped square, not a border triangle: CEF 99 paints the transparent border sides of a rounded border box. */
+.deck-corner::after { content: ""; position: absolute; top: 5px; right: 5px; width: 6px; height: 6px; background: var(--mark, var(--ink-3)); clip-path: polygon(0 0, 100% 0, 100% 100%); }
+.deck-corner:hover { background: var(--fill-2); }
+.deck-t.is-row .deck-corner { border-radius: 0 var(--row-r) 0 0; }
+
+/* The automation capsule (Files: Auto sort on SORT, Auto copy on SYNC): its own press target. On a row tile it is
+   the AUTO zone at the right end behind a hairline; on a small tile a capsule in the corner. */
+.deck-auto { position: absolute; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 9px; transition: background-color var(--d-1) ease; }
+.deck-auto:hover { background: var(--fill-2); }
+.deck-t.is-row .deck-auto { top: 0; right: 0; bottom: 0; width: 70px; border-radius: 0 var(--row-r) var(--row-r) 0; }
+.deck-t.is-row .deck-auto::before { content: ""; position: absolute; left: 0; top: 10px; bottom: 10px; width: 1px; background: var(--stroke-2); }
+.deck-t.is-lane .deck-auto, .deck-t.is-pins .deck-auto { top: 2px; right: 2px; width: 26px; height: 17px; }
+.deck-t.is-lane .deck-auto-word, .deck-t.is-pins .deck-auto-word { display: none; }
+.deck-auto-word { font: var(--t-section); letter-spacing: var(--tr-section); color: var(--ink-3); transition: color var(--d-2) ease; }
+.deck-auto.is-on .deck-auto-word { color: var(--ok-ink); }
+.deck-capsule { position: relative; display: block; width: 22px; height: 13px; flex: none; border-radius: 999px; background: var(--switch-track); box-shadow: var(--inset-well); transition: background-color var(--d-2) ease; }
+.deck-capsule-knob { position: absolute; top: 2px; left: 2px; width: 9px; height: 9px; border-radius: 50%; background: var(--hero-ink); box-shadow: var(--thumb-shadow); transition: transform var(--d-2) var(--ease-spring); }
+.deck-auto.is-on .deck-capsule { background: var(--mint); }
+.deck-auto.is-on .deck-capsule-knob { transform: translateX(9px); }
+
+/* Edit mode of the pinned row: the tiles below carry an accent rim (pinned ones a fill as well); every pinned tile
+   carries the cross that unpins it. */
+.deck-tabpanel.is-editing .deck-t.is-pinnable::after { --tone-c: var(--accent); opacity: 0.6; }
+.deck-tabpanel.is-editing .deck-t.is-pinned::before { --tone-c: var(--accent); opacity: 0.22; }
+.deck-tabpanel.is-editing .deck-t.is-pinned::after { opacity: 1; }
+.deck-unpin {
+    position: absolute;
+    z-index: 3;
+    top: -5px;
+    right: -5px;
+    display: grid;
+    place-items: center;
+    width: 17px;
+    height: 17px;
+    border-radius: 50%;
+    background: var(--rose);
+    color: var(--hero-ink);
+    box-shadow: 0 0 0 1.5px var(--dot-ring), var(--btn-drop);
+    animation: deck-pop var(--d-3) var(--ease-spring);
+    transition: transform var(--d-2) var(--ease-spring);
+}
+.deck-unpin .ic { width: 10px; height: 10px; }
+.deck-unpin:hover { transform: scale(1.12); }
+@keyframes deck-pop { from { opacity: 0; transform: scale(0.4); } to { opacity: 1; transform: none; } }
+
+/* ---- Own tooltip, tile menu and prompt popover: glass cards placed in stage pixels ------------------------- */
 .deck-tip {
     position: absolute;
     z-index: 30;
-    width: 196px;
-    padding: 8px 10px 9px;
+    width: max-content;
+    max-width: 220px;
+    padding: 8px 11px 9px;
     border-radius: 12px;
     background: var(--tint-sheet);
     -webkit-backdrop-filter: blur(18px) saturate(1.5);
@@ -607,10 +743,8 @@ button:disabled { cursor: default; }
 }
 .deck-tip.is-below { transform: translateY(-4px) scale(0.97); }
 .deck-tip.is-ready { opacity: 1; transform: none; }
-.deck-tip b { display: block; font-size: 12px; font-weight: 620; color: var(--ink-1); }
-.deck-tip span { display: block; margin-top: 2px; font-size: 11.5px; font-weight: 450; line-height: 1.35; color: var(--ink-2); }
-.deck-tip b + span { margin-top: 2px; }
-.deck-tip .deck-tip-meta { color: var(--ink-3); }
+.deck-tip b { display: block; font: var(--t-label); font-weight: var(--w-title); letter-spacing: var(--tr-label); color: var(--ink-1); }
+.deck-tip span { display: block; margin-top: 3px; font: var(--t-caption); color: var(--ink-2); }
 .deck-tip-arrow {
     position: absolute;
     top: 100%;
@@ -624,13 +758,14 @@ button:disabled { cursor: default; }
 }
 .deck-tip.is-below .deck-tip-arrow { top: 0; border-radius: 3px 0 0 0; box-shadow: inset 0.5px 0.5px 0 var(--stroke-2); }
 
-.deck-menu {
+.deck-menu, .deck-pop {
     position: absolute;
     z-index: 40;
-    min-width: 128px;
     padding: 4px;
     border-radius: 12px;
-    background: var(--menu-tint);
+    /* Opaque: the tint over the stage colour, so nothing under the card shows through where CEF draws no backdrop blur. */
+    background-color: var(--bg-mid);
+    background-image: linear-gradient(var(--menu-tint), var(--menu-tint));
     -webkit-backdrop-filter: blur(18px) saturate(1.5);
     backdrop-filter: blur(18px) saturate(1.5);
     box-shadow: var(--shadow-m), inset 0 0 0 0.5px var(--stroke-2), inset 0 1px 0 var(--btn-bevel);
@@ -639,15 +774,22 @@ button:disabled { cursor: default; }
     transform-origin: top right;
     transition: opacity var(--d-2) ease, transform var(--d-2) var(--ease-out);
 }
-.deck-menu.is-above { transform: translateY(4px) scale(0.97); transform-origin: bottom right; }
-.deck-menu.is-ready { opacity: 1; transform: none; }
-.deck-menu-item { display: flex; align-items: center; gap: 6px; width: 100%; height: 28px; padding: 0 12px 0 6px; border-radius: 8px; font-size: 12px; font-weight: 550; color: var(--ink-1); text-align: left; white-space: nowrap; }
+.deck-menu { min-width: 128px; }
+.deck-menu.is-two { display: grid; grid-template-columns: 1fr 1fr; width: 220px; }
+.deck-menu.is-above, .deck-pop.is-above { transform: translateY(4px) scale(0.97); transform-origin: bottom right; }
+.deck-menu.is-ready, .deck-pop.is-ready { opacity: 1; transform: none; }
+.deck-menu-item { display: flex; align-items: center; gap: 6px; width: 100%; height: 26px; padding: 0 10px 0 6px; border-radius: 8px; font: var(--t-label-s); color: var(--ink-1); text-align: left; white-space: nowrap; }
 .deck-menu-item:hover { background: var(--fill-3); }
-.deck-menu-mark { width: 14px; height: 14px; flex: none; }
-.deck-menu-mark .ic { width: 14px; height: 14px; color: var(--accent-ink); }
-.deck-menu-swatch { width: 10px; height: 10px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 0.5px var(--stroke-2); }
+.deck-menu-item.is-on { background: var(--fill-2); }
+.deck-menu-mark { display: block; width: 13px; height: 13px; flex: none; }
+.deck-menu-mark .ic { width: 13px; height: 13px; color: var(--accent-ink); }
+.deck-menu-swatch { width: 9px; height: 9px; flex: none; border-radius: 50%; box-shadow: inset 0 0 0 0.5px var(--stroke-2); }
 
-/* ---- Result lines ------------------------------------------------------------------------------------------- */
+.deck-pop { display: flex; align-items: center; gap: 6px; padding: 6px; }
+.deck-pop .deck-pop-field { width: 112px; height: 26px; font: var(--t-mono-s); }
+.deck-pop .deck-btn { flex: none; min-height: 26px; }
+
+/* ---- Result lines (3 s ok / neutral, 10 s warn / error; a click closes the line) --------------------------- */
 .deck-g-result {
     position: relative;
     display: flex;
@@ -655,48 +797,91 @@ button:disabled { cursor: default; }
     gap: 7px;
     width: 100%;
     min-height: 26px;
-    margin-top: 6px;
     padding: 0 6px 0 8px;
     border-radius: 9px;
-    font-size: 11.5px;
+    font: var(--t-caption);
     color: var(--ink-2);
     text-align: left;
+    animation: deck-result-in var(--d-3) var(--ease-out);
 }
 .deck-g-result .ic { width: 14px; height: 14px; color: var(--tone-ink); }
-.deck-g-result.tone-error { background: var(--error-wash); }
-.deck-g-result.tone-warn { background: var(--warn-wash); }
-.deck-g-result:hover { background: var(--fill-1); }
-.deck-g-result.tone-error:hover, .deck-g-result.tone-warn:hover { background: var(--fill-2); }
+.deck-g-result.tone-ok { background: var(--ok-fill); }
+.deck-g-result.tone-warn { background: var(--warn-wash); box-shadow: inset 0 0 0 0.5px var(--warn-rim); }
+.deck-g-result.tone-error { background: var(--error-wash); box-shadow: inset 0 0 0 0.5px var(--error-rim); }
+.deck-g-result:hover { background: var(--fill-2); }
 .deck-g-result-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck-g-result-time { font: 500 10.5px / 1 var(--font-mono); color: var(--ink-3); }
-.deck-g-result .more { color: var(--ink-3); }
+.deck-g-result-time { font: var(--t-mono-s); color: var(--ink-3); }
+.deck-g-result .more { width: 13px; height: 13px; color: var(--ink-3); }
 .deck-g-result.has-detail { padding-right: 4px; }
-.deck-g-why { display: block; width: 100%; margin-top: 2px; padding: 4px 8px 4px 29px; border-radius: 9px; font-size: 11.5px; line-height: 1.35; color: var(--ink-2); text-align: left; }
+.deck-g-why { display: block; width: 100%; padding: 4px 8px 4px 29px; border-radius: 9px; font: var(--t-caption); color: var(--ink-2); text-align: left; }
 .deck-g-why:hover { background: var(--fill-1); }
+@keyframes deck-result-in { from { opacity: 0; transform: translateY(-3px); } to { opacity: 1; transform: none; } }
+
+/* ---- Groups that are not lanes: a caption over the items -------------------------------------------------- */
+.deck-g-head { display: flex; align-items: center; gap: 8px; width: 100%; height: 24px; padding: 0 4px 0 2px; border-radius: 8px; text-align: left; }
+.deck-g-head:hover { background: var(--fill-1); }
+.deck-g-head .deck-caption { flex: 1; }
+.deck-caption { font: var(--t-section); letter-spacing: var(--tr-section); text-transform: uppercase; color: var(--ink-3); }
+.deck-g-title { padding: 0 2px; }
+.deck-count { font: var(--t-mono-s); color: var(--ink-4); }
+.deck-g-head .chev { width: 14px; height: 14px; color: var(--ink-3); transition: transform var(--d-3) var(--ease-spring); }
+.deck-group.is-collapsed .chev { transform: rotate(-90deg); }
+.deck-g-body { display: flex; flex-direction: column; gap: 6px; padding-top: 2px; }
+
+.deck-grid { display: grid; gap: 8px; grid-auto-flow: row dense; }
+.deck-grid[data-cols="1"] { grid-template-columns: minmax(0, 1fr); }
+.deck-grid[data-cols="2"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.deck-grid[data-cols="3"] { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.deck-grid > .deck-confirm { grid-column: 1 / -1; }
+
+/* ---- Notice slot: one fixed line directly under the tab's content ---------------------------------------------- */
+/* Always in the tree (a tab with lanes), empty or filled, so a result never moves a tile. It shows results only. */
+.deck-notice-box { position: relative; flex: none; margin-top: 4px; }
+.deck-notice-slot { position: relative; display: flex; align-items: stretch; height: var(--slot-h); min-width: 0; }
+.deck-notice-slot > .deck-g-result { height: var(--slot-h); min-height: 0; }
+.deck-notice-slot > .deck-g-result { align-items: center; }
+.deck-g-result-code { flex: none; font: var(--t-section); letter-spacing: var(--tr-section); text-transform: uppercase; color: var(--ink-3); margin-right: -2px; }
+/* The reason a line opened: a small card above the slot, over the lanes (below the menu and the popover). */
+.deck-g-why.is-card {
+    position: absolute;
+    z-index: 35;
+    left: 0;
+    right: 0;
+    bottom: calc(100% + 4px);
+    width: auto;
+    max-height: 96px;
+    overflow-y: auto;
+    padding: 8px 11px 9px;
+    border-radius: 12px;
+    background-color: var(--bg-mid);
+    background-image: linear-gradient(var(--menu-tint), var(--menu-tint));
+    box-shadow: var(--shadow-m), inset 0 0 0 0.5px var(--stroke-2), inset 0 1px 0 var(--btn-bevel);
+    color: var(--ink-1);
+    animation: deck-result-in var(--d-3) var(--ease-out);
+}
+.deck-g-why.is-card:hover { background-color: var(--bg-mid); background-image: linear-gradient(var(--menu-tint), var(--menu-tint)); }
 
 /* ---- Inline confirmation ------------------------------------------------------------------------------------ */
-.deck-confirm { display: flex; align-items: center; gap: 8px; padding: 6px 4px 2px; font-size: 11.5px; color: var(--ink-2); }
+.deck-confirm { display: flex; align-items: center; gap: 8px; padding: 4px 4px 2px; font: var(--t-caption); color: var(--ink-2); }
 .deck-confirm-text { flex: 1; min-width: 0; }
 .deck-confirm-yes, .deck-confirm-no { flex: none; }
 
 /* ---- Text, chips, rows -------------------------------------------------------------------------------------- */
 .deck-text { color: var(--ink-1); overflow-wrap: anywhere; }
-.deck-text.is-small { font-size: 11.5px; color: var(--ink-3); }
-.deck-text.is-path { font: 450 11px / 1.3 var(--font-mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 4px; }
+.deck-text.is-small { font: var(--t-caption); color: var(--ink-3); }
+.deck-text.is-path { font: var(--t-mono-s); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 0 2px; }
 .deck-text.tone-ok, .deck-text.tone-warn, .deck-text.tone-error, .deck-text.tone-accent { color: var(--tone-ink); }
-.deck-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 9px 0 8px; border-radius: 999px; background: var(--fill-1); box-shadow: inset 0 0 0 0.5px var(--stroke-1); font-size: 11.5px; color: var(--ink-2); white-space: nowrap; }
+.deck-chip { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border-radius: 999px; background: var(--fill-1); box-shadow: inset 0 0 0 0.5px var(--stroke-1); font: var(--t-caption); color: var(--ink-2); white-space: nowrap; }
 .deck-chip-text { white-space: nowrap; }
 .deck-chip-dot { width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--tone); }
 .deck-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .deck-row > .deck-text { flex: 1; min-width: 0; }
 .deck-row > .deck-btn { flex: 1; }
-.deck-row.is-chips { flex-wrap: wrap; gap: 5px; }
-.deck-tabpanel > .deck-row.is-chips { margin-top: 10px; }
-.deck-row.is-head { padding: 0 2px 0 4px; gap: 8px; }
-.deck-row.is-head > .deck-text { font-size: 15px; font-weight: 620; letter-spacing: -0.01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck-row.is-head + .deck-text.is-path { margin-top: 2px; }
-.deck-row.is-dock > .deck-btn { height: 44px; justify-content: flex-start; padding: 0 12px; gap: 10px; border-radius: 14px; font-weight: 600; text-align: left; }
-.deck-row.is-dock > .deck-btn .ic { width: 17px; height: 17px; color: var(--ink-2); }
+.deck-row.is-chips { flex-wrap: wrap; gap: 6px; }
+.deck-row.is-head { gap: 8px; padding: 0 0 0 2px; }
+.deck-row.is-head > .deck-text { font: var(--t-title); letter-spacing: var(--tr-title); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-tabpanel > .deck-row.is-head + .deck-text.is-path { margin-top: -4px; }
+.deck-row.is-dock { justify-content: flex-start; }
 .deck-divider { height: 1px; margin: 4px 0; border: 0; background: var(--line-soft); }
 
 /* ---- Progress card ------------------------------------------------------------------------------------------ */
@@ -709,12 +894,12 @@ button:disabled { cursor: default; }
     box-shadow: var(--shadow-s), inset 0 0 0 0.5px rgba(var(--rim-tone), 0.14), inset 0 1px 0 rgba(var(--rim-tone), 0.18);
 }
 .deck-progress-top { display: flex; align-items: center; gap: 8px; }
-.deck-progress-label { flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-progress-label { flex: 1; min-width: 0; font: var(--t-label); letter-spacing: var(--tr-label); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .deck-progress-track { position: relative; height: 5px; margin-top: 8px; border-radius: 3px; background: var(--well); overflow: hidden; }
 .deck-progress-fill { height: 100%; border-radius: inherit; background: var(--accent-grad); box-shadow: 0 0 10px var(--btn-glow); transition: width 300ms ease; }
 .deck-progress.is-indeterminate .deck-progress-fill { width: 40% !important; animation: deck-slide 1.4s ease-in-out infinite; }
 @keyframes deck-slide { from { transform: translateX(-100%); } to { transform: translateX(250%); } }
-.deck-progress-detail { display: flex; align-items: center; gap: 6px; margin-top: 7px; font: 450 11px / 1.2 var(--font-mono); color: var(--ink-3); white-space: nowrap; overflow: hidden; }
+.deck-progress-detail { display: flex; align-items: center; gap: 6px; margin-top: 7px; font: var(--t-mono-s); color: var(--ink-3); white-space: nowrap; overflow: hidden; }
 .deck-progress-detail .ic { width: 12px; height: 12px; transform: rotate(-90deg); }
 .deck-progress-detail span { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
@@ -728,34 +913,35 @@ button:disabled { cursor: default; }
 .deck-toggle-input:focus-visible + .deck-toggle-track { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 .deck-toggle-label { flex: 1; min-width: 0; }
 .deck-field { display: flex; flex-direction: column; gap: 4px; }
-.deck-field-label { font-size: 11.5px; font-weight: 600; color: var(--ink-3); }
-.deck-select, .deck-input { width: 100%; height: 30px; padding: 0 10px; border: 0; border-radius: 10px; background: var(--well); box-shadow: var(--inset-field), inset 0 0 0 0.5px var(--well-rim); font-size: 12.5px; user-select: text; }
+.deck-field-label { font: var(--t-label-s); color: var(--ink-3); }
+.deck-select, .deck-input { width: 100%; height: 28px; padding: 0 9px; border: 0; border-radius: 8px; background: var(--well); box-shadow: var(--inset-field), inset 0 0 0 0.5px var(--well-rim); font: var(--t-body); user-select: text; }
 .deck-input::placeholder { color: var(--ink-4); }
 .deck-input-row { display: flex; gap: 8px; align-items: center; }
 .deck-input-row .deck-btn { flex: none; }
 .deck-list { display: flex; flex-direction: column; gap: 6px; }
-.deck-list-empty { padding: 8px 4px; font-size: 11.5px; color: var(--ink-3); }
-.deck-list-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border-radius: 12px; background: var(--card-fill); box-shadow: inset 0 0 0 0.5px var(--card-rim), var(--card-drop); }
+.deck-list-empty { padding: 6px 2px; font: var(--t-caption); color: var(--ink-3); }
+.deck-list-row { display: flex; align-items: center; gap: 8px; min-height: 32px; padding: 5px 4px 5px 10px; border-radius: 10px; background: var(--fill-1); box-shadow: inset 0 0 0 0.5px var(--stroke-1); }
 .deck-list-row.is-confirming { flex-wrap: wrap; }
-.deck-list-thumb { width: 40px; height: 40px; flex: none; border-radius: 8px; object-fit: cover; }
-.deck-list-text { flex: 1; min-width: 0; }
-.deck-list-title { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck-list-subtitle { font: 450 11px / 1.3 var(--font-mono); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.deck-list-row.tone-warn .deck-list-title { color: var(--warn-ink); }
+.deck-list-thumb { width: 36px; height: 36px; flex: none; border-radius: 8px; object-fit: cover; }
+.deck-list-text { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; }
+.deck-list-title { flex: none; max-width: 100%; font: var(--t-mono-s); color: var(--ink-1); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.deck-list-subtitle { flex: 1; min-width: 0; font: var(--t-caption); color: var(--ink-3); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A row with a tone carries a dot in that tone before its text (the Offline rows). */
+.deck-list-row.tone-warn::before, .deck-list-row.tone-error::before { content: ""; width: 6px; height: 6px; flex: none; border-radius: 50%; background: var(--tone); }
 .deck-list-row.tone-error .deck-list-title { color: var(--error-ink); }
-.deck-list-bar { height: 3px; margin-top: 5px; border-radius: 2px; background: var(--well); overflow: hidden; }
+.deck-list-bar { flex-basis: 100%; height: 3px; margin-top: 5px; border-radius: 2px; background: var(--well); overflow: hidden; }
 .deck-list-bar-fill { height: 100%; border-radius: inherit; background: var(--accent); }
 .deck-list-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
-.deck-list-actions .deck-btn { min-height: 24px; padding: 2px 10px; font-size: 11.5px; font-weight: 550; }
+.deck-list-actions .deck-btn { min-height: 22px; padding: 2px 9px; font: var(--t-label-s); }
 .deck-list-row.is-confirming .deck-list-actions { flex-basis: 100%; }
 .deck-list-actions .deck-confirm { flex-basis: 100%; }
 
-/* ---- Toast -------------------------------------------------------------------------------------------------- */
+/* ---- Toast (a click closes it) ------------------------------------------------------------------------------ */
 .deck-toast {
     position: absolute;
     left: 12px;
     right: 12px;
-    bottom: 40px;
+    bottom: 42px;
     z-index: 25;
     padding: 8px 12px;
     border-radius: 12px;
@@ -763,7 +949,7 @@ button:disabled { cursor: default; }
     -webkit-backdrop-filter: blur(16px) saturate(1.5);
     backdrop-filter: blur(16px) saturate(1.5);
     box-shadow: var(--shadow-m), inset 0 0 0 0.5px var(--stroke-2);
-    font-size: 12px;
+    font: var(--t-caption);
     text-align: left;
     color: var(--tone-ink, var(--ink-1));
     cursor: pointer;
@@ -777,11 +963,11 @@ button:disabled { cursor: default; }
 .deck-pulse { position: absolute; right: -4px; top: -4px; width: 14px; height: 14px; border-radius: 50%; background: var(--amber); box-shadow: 0 0 0 3px var(--bg-mid); }
 .deck-pulse::after { content: ""; position: absolute; top: 0; right: 0; bottom: 0; left: 0; border-radius: 50%; box-shadow: 0 0 0 2px var(--amber); animation: deck-pulse 1.6s ease-out infinite; }
 @keyframes deck-pulse { from { opacity: 0.9; transform: scale(1); } to { opacity: 0; transform: scale(2.4); } }
-.deck-h1 { margin: 20px 0 0; font-size: 17px; font-weight: 650; letter-spacing: -0.015em; }
-.deck-connecting p { margin: 6px 0 0; font-size: 12.5px; }
+.deck-h1 { margin: 20px 0 0; font: var(--t-title); letter-spacing: var(--tr-title); }
+.deck-connecting p { margin: 6px 0 0; }
 .deck-soft { color: var(--ink-3); }
-.deck-soft.is-small { font-size: 11.5px; }
-.deck-start { margin-top: 18px; height: 30px; padding: 0 14px; }
+.deck-soft.is-small { font: var(--t-caption); }
+.deck-start { margin-top: 18px; }
 
 /* ---- Theme switch: the crossfade where View Transitions are missing, the sweep where they exist ----------- */
 html.theme-fade { transition: --bg-top 300ms ease, --bg-mid 300ms ease, --bg-bottom 300ms ease, --scene-hue 300ms ease, --scene-accent 300ms ease; }

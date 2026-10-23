@@ -165,8 +165,10 @@ class Registry:
                  set_enabled: Optional[Callable[[str, bool], None]] = None,
                  on_tree: Optional[Callable[[dict], None]] = None, on_change: Optional[Callable[[], None]] = None,
                  toast: Optional[Callable[[str, str], None]] = None,
-                 host_status: Optional[Callable[[], Optional[dict]]] = None, version: str = "0.0.0") -> None:
+                 host_status: Optional[Callable[[], Optional[dict]]] = None, version: str = "0.0.0",
+                 pins: Optional[Callable[[list], Optional[dict]]] = None) -> None:
         self._factory = context_factory
+        self._pins = pins  # the tree's `pins` from its sections (docs/PROTOCOL.md 6.1); no key when None
         self._specs = list(modules)
         self.thread = thread or ModuleThread()
         self._is_enabled = is_enabled or (lambda module_id, default: default)
@@ -540,7 +542,7 @@ class Registry:
         footer = {"text": f"{APP_NAME} {self.version}", "link": {"label": "Open host", "action": "host.open"}}
         self.revision += 1
         try:
-            return P.ui(self.revision, APP_NAME, status, sections, footer)
+            return P.ui(self.revision, APP_NAME, status, sections, footer, self._tree_pins(sections))
         except P.ProtocolError:
             log.exception("invalid tree; sending sections one by one")
             valid = []
@@ -550,7 +552,16 @@ class Registry:
                     valid.append(sec)
                 except P.ProtocolError:
                     log.error("section %s dropped from the tree", sec.get("id"))
-            return P.ui(self.revision, APP_NAME, status, valid, footer)
+            return P.ui(self.revision, APP_NAME, status, valid, footer, self._tree_pins(valid))
+
+    def _tree_pins(self, sections: list) -> Optional[dict]:
+        if self._pins is None:
+            return None
+        try:
+            return self._pins(sections)
+        except Exception:  # noqa: BLE001 - a broken pin list never costs the tree
+            log.exception("pins failed")
+            return None
 
     def wait_rendered(self, timeout: float = 2.0) -> Optional[dict]:
         """Tests: wait until a pending render ran; returns the last tree."""

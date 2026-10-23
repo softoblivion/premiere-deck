@@ -1,6 +1,6 @@
 """Quick actions module (docs/QUICK_ACTIONS.md): renders the actions as collapsible tile groups, routes clicks, runs
 long actions as jobs with a busy tile, reports every press through `ctx.ui.result`, and keeps only the choices of
-the tile menus and inputs, the visibility setting and the state of the two switch actions (solo, lock)."""
+the tile menus and prompts, the visibility setting and the state of the two switch actions (solo, lock)."""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional
 
 from premiere_deck.modules.base import ActionResult, Module, ModuleContext
 from premiere_deck.modules.quick_actions.action import (
-    GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence,
+    GROUP_CODES, GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence,
 )
 from premiere_deck.modules.quick_actions.actions import ACTION_CLASSES
 from premiere_deck.premiere.model import PremiereError, PremiereUnavailable
@@ -239,10 +239,9 @@ class QuickActionsModule(Module):
         for group in GROUPS:
             members = [action for action in visible if action.group == group]
             if members:
-                # Inputs follow the tiles, so they never split the tile grid.
                 items = [self._tile(action) for action in members]
-                items += [self._field(action) for action in members if action.field(self) is not None]
-                nodes.append(self.group(group, items, id=group.lower(), tiles=True, collapsible=True))
+                nodes.append(self.group(group, items, id=group.lower(), tiles=True, collapsible=True,
+                                        short=GROUP_CODES[group]))
         return nodes
 
     def _tile(self, action: Action) -> dict:
@@ -251,17 +250,15 @@ class QuickActionsModule(Module):
                                hint=action.hint, busy=action.id in self._running)
         return self._button(action)
 
-    def _field(self, action: Action) -> dict:
-        spec = action.field(self) or {}
-        return self.input(f"{action.id}.{spec['name']}", spec.get("label", action.label), spec.get("value", ""),
-                          placeholder=spec.get("placeholder", ""), submit_label=spec.get("submit_label"),
-                          disabled=action.id in self._running)
-
     def _button(self, action: Action) -> dict:
         state = action.button(self)
         menu = action.menu(self)
         kw: dict = {}
-        if menu is not None:
+        spec = action.field(self)
+        if spec is not None:
+            kw["prompt"] = self.prompt(f"{action.id}.{spec['name']}", spec.get("label", action.label),
+                                       spec.get("value", ""), placeholder=spec.get("placeholder", ""))
+        elif menu is not None:
             current = self.choice(action, menu.name)
             kw["menu"] = self.menu(f"{action.id}.{menu.name}", current,
                                    [dict({"value": value, "label": label}, **menu.swatch(value))

@@ -3,6 +3,7 @@ settings, recovery and the journal clean-up (docs/FILES.md 3 to 8)."""
 
 import json
 import os
+import shutil
 import time
 import unittest
 from unittest import mock
@@ -16,7 +17,6 @@ from tests.test_modules_files_support import FilesCase, info, write_file
 
 BLOCK_TYPES = {"cards", "table", "list", "form", "actions", "text", "progress", "chips"}
 TILES = ["files.sort", "files.sync_all", "files.sync_used", "files.zip"]
-SWITCHES = ["files.auto_copy", "files.auto_sort"]
 
 
 def check_block(test, block):
@@ -117,7 +117,8 @@ class RenderStates(Base):
         self.module = module
         module.start()
         sec = self.check_render()
-        self.assertEqual(sec["status"]["text"], "No project")
+        self.assertIsNone(sec["status"])  # the panel draws no section status (3.0)
+        self.assertEqual(module.render_host()["status"]["text"], "No project open")
         self.assertIn("Open a project", sec["items"][0]["text"])
         self.assertEqual(module.render_host()["status"]["text"], "No project open")
         result = module.on_action("files.sort")
@@ -127,8 +128,10 @@ class RenderStates(Base):
     def test_not_set_up_observes_only(self):
         self.make_module()
         sec = self.check_render()
-        self.assertEqual(sec["status"], {"text": "Set up this project", "tone": "warn"})
-        self.assertEqual(node_ids(sec["items"]), ["files.setup", "files.auto_copy", "files.auto_sort"])
+        self.assertIsNone(sec["status"])
+        self.assertEqual(self.module.render_host()["status"], {"text": "Set up this project", "tone": "warn"})
+        self.assertEqual(node_ids(sec["items"]), ["files.setup"])
+        self.assertEqual(find(sec["items"], "files.setup")["tone"], "accent")
         clip = self.ext("clip.mp4")
         self.user_import(clip)
         self.assertEqual(self.pr.calls_named("relink"), [])
@@ -160,9 +163,40 @@ class RenderStates(Base):
         self.assertEqual(self.host.ui.results[-1], ("setup", "ok", "Project set up · 13 folders", None))
         self.assertEqual(self.host.ui.toasts, [])
         sec = self.check_render()
-        self.assertEqual(sec["status"]["text"], "Paused")
-        self.assertEqual(self.press("files.setup"), ("setup", "neutral", "This project is already set up", None))
+        self.assertIsNone(sec["status"])
+        self.assertEqual(self.module.render_host()["status"]["text"], "Paused")
         self.assertEqual(os.listdir(os.path.join(self.root, ".premiere-deck")), ["journal.jsonl"])  # check file gone
+
+    def test_setup_tile_stays_and_rechecks_folders_and_bins(self):
+        self.make_module(enabled=True, watch=False)
+        tile = find(self.module.render(), "files.setup")
+        self.assertEqual((tile["short"], tile["icon"], tile["tone"]), ("SETUP", "folder", "neutral"))
+        self.assertEqual(tile["label"], "Check project folders")
+        self.assertTrue(tile["hint"])
+        journal = len(self.journal())
+        bins_before = len(self.pr.calls_named("create_bin_path"))
+        self.assertEqual(self.press("files.setup"), ("setup", "ok", "Project folders checked", None))
+        self.assertEqual(len(self.pr.calls_named("create_bin_path")), 2 * bins_before)  # every bin checked again
+        shutil.rmtree(self.in_root("Audio"))
+        os.rmdir(self.in_root("Motion"))
+        self.assertEqual(self.press("files.setup"),
+                         ("setup", "ok", "Project folders checked · 5 folders created again", None))
+        for folder in ("Audio/Music", "Audio/SFX", "Audio/Voice", "Motion"):
+            self.assertTrue(os.path.isdir(self.in_root(*folder.split("/"))), folder)
+        self.assertEqual(len(self.journal()), journal)  # a re-check is not journaled
+        self.assertEqual(self.host.ui.toasts, [])
+        self.pr.eval_errors.clear()
+        self.pr.connected = False
+        result = self.press("files.setup")
+        self.assertEqual(result[:3], ("setup", "warn", "Project folders checked"))
+        self.assertEqual(result[3], "Bins not checked · Premiere Pro is not connected")
+
+    def test_recheck_without_write_access(self):
+        self.make_module(enabled=True, watch=False)
+        with mock.patch("premiere_deck.modules.files.module.write_check", return_value="access denied"):
+            result = self.press("files.setup")
+        self.assertEqual(result, ("setup", "error", "No write access to the project folder", "access denied"))
+        self.assertTrue(self.host.settings.project.values["enabled"])
 
     def test_setup_without_write_access(self):
         self.make_module()
@@ -176,11 +210,13 @@ class RenderStates(Base):
         self.make_module(enabled=True)
         try:
             sec = self.check_render()
-            self.assertEqual(sec["status"], {"text": "Watching · Sample", "tone": "ok"})
+            self.assertIsNone(sec["status"])  # the watcher state is not sent to the panel (3.0)
+            self.assertEqual(self.module.render_host()["status"], {"text": "Watching · Sample", "tone": "ok"})
             self.assertIsNone(find(sec["items"], "files.watch"))  # a project setting of the host window now
         finally:
             self.module.on_setting_changed("watch", "project", False)
-        self.assertEqual(self.module.section()["status"]["text"], "Paused")
+        self.assertEqual(self.module.render_host()["status"]["text"], "Paused")
+        self.assertIsNone(self.module.section()["status"])
 
     def test_enabled_render_has_the_2_0_layout(self):
         self.make_module(enabled=True, watch=False)
@@ -206,11 +242,20 @@ class RenderStates(Base):
         self.assertEqual((group["kind"], group["id"], group["tiles"], group["columns"], group["title"]),
                          ("group", "files.actions", True, 2, None))
         tiles = {t["id"]: t for t in group["items"]}
-        self.assertEqual(list(tiles), TILES + SWITCHES)
+        self.assertEqual(list(tiles), TILES + ["files.setup"])
+        self.assertTrue(all(t["kind"] == "button" for t in tiles.values()))  # no switch tiles (3.0)
         self.assertEqual([(t["icon"], t["short"]) for t in tiles.values()],
                          [("sort", "SORT"), ("sync-all", "SYNC"), ("sync-used", "USED"), ("zip", "ZIP"),
-                          ("sync-all", "AUTO COPY"), ("sort", "AUTO SORT")])
+                          ("folder", "SETUP")])
         self.assertTrue(all(t["hint"] for t in tiles.values()))
+        self.assertEqual(tiles["files.sort"]["auto"],
+                         {"id": "files.auto_sort", "label": "Auto sort", "value": self.module._proj("auto_sort"),
+                          "hint": "Files new media of the project folder into the layout folders and bins."})
+        self.assertEqual(tiles["files.sync_all"]["auto"],
+                         {"id": "files.auto_copy", "label": "Auto copy", "value": self.module._proj("auto_copy"),
+                          "hint": "Copies files imported from outside the project folder into Media and relinks them."})
+        self.assertEqual([t for t in TILES[2:] + ["files.setup"] if "auto" in tiles[t]], [])
+        self.assertIsNone(sec["status"])
         self.assertEqual(tiles["files.sort"]["meta"], "1 item to file")
         self.assertEqual(tiles["files.sort"]["confirm"],
                          "Move 1 file into the layout folders? Every move is journaled and can be undone.")
@@ -274,10 +319,10 @@ class RenderStates(Base):
         tiles = {t["id"]: t for t in find(sec["items"], "files.actions")["items"]}
         self.assertTrue(tiles["files.sort"]["busy"])
         self.assertTrue(all(tiles[t]["disabled"] for t in TILES[1:]))
-        self.assertFalse(any(tiles[t].get("disabled") for t in SWITCHES))
+        self.assertIn("auto", tiles["files.sync_all"])  # the capsule stays usable on a disabled tile
         progress = next(n for n in walk(sec["items"]) if n["kind"] == "progress")
         self.assertEqual(progress["cancel"], "files.stop")
-        self.assertEqual(sec["status"]["tone"], "accent")
+        self.assertEqual(sec["status"]["tone"], "accent")  # the job label, the only status still sent
         self.assertEqual(self.host.jobs.jobs[-1].priority, "high")
         job_blocks = [b for b in self.module.render_host()["blocks"] if b["id"].startswith("job_")]
         self.assertEqual(job_blocks[0]["cancel"], "files.stop")
@@ -1044,7 +1089,7 @@ class SettingsAndRecovery(Base):
         with open(os.path.join(top, ".premiere-deck", "project.json"), encoding="utf-8") as handle:
             marker = json.load(handle)
         self.assertTrue(marker["modules"]["files"]["enabled"])
-        self.assertEqual(self.module.section()["status"]["text"], "Paused")
+        self.assertEqual(self.module.render_host()["status"]["text"], "Paused")
 
     def test_custom_layout_is_used(self):
         deck = os.path.join(self.root, ".premiere-deck")

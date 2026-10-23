@@ -52,46 +52,44 @@ class Switches(FilesCase):
         self.make_module()
         self.assertEqual((self.module._proj("auto_copy"), self.module._proj("auto_sort")), (False, False))
 
-    def switch_nodes(self):
+    def capsules(self):
+        """The `auto` capsules of the panel tiles by auto id (3.0), with the id of the tile that carries each."""
         sec = self.module.section()  # validates the tree against the protocol
         P.validate_tree({"type": "ui", "revision": 1, "title": "", "status": None, "sections": [sec], "footer": None})
-        return {n["id"]: n for n in walk(sec["items"]) if n.get("kind") == "switch"}
+        self.assertEqual([n for n in walk(sec["items"]) if n.get("kind") == "switch"], [])  # no switch tiles
+        return {n["auto"]["id"]: dict(n["auto"], tile=n["id"]) for n in walk(sec["items"]) if "auto" in n}
 
-    def test_switch_tiles_beside_setup_before_the_project_is_set_up(self):
+    def test_only_the_setup_tile_before_the_project_is_set_up(self):
         self.make_module()
         group = find(self.module.render(), "files.actions")
-        self.assertEqual((group["tiles"], [n["id"] for n in group["items"]]),
-                         (True, ["files.setup", "files.auto_copy", "files.auto_sort"]))
-        setup, copy, sort = group["items"]
-        self.assertEqual((setup["kind"], setup["short"]), ("button", "SETUP"))
-        self.assertEqual([(n["kind"], n["label"], n["short"], n["value"]) for n in (copy, sort)],
-                         [("switch", "Auto copy", "AUTO COPY", False), ("switch", "Auto sort", "AUTO SORT", False)])
-        self.assertTrue(all(n["hint"] for n in (copy, sort)))
-        # a flip before Setup is refused with a result, and the tile keeps the old value
+        self.assertEqual((group["tiles"], [n["id"] for n in group["items"]]), (True, ["files.setup"]))
+        self.assertEqual(self.capsules(), {})
+        # a flip before Setup (host page, scripts) is refused with a result on the carrying tile
         before = len(self.host.ui.results)
         self.module.on_action("files.auto_copy", True)
-        self.assertEqual(self.host.ui.results[before:], [("auto_copy", "warn", "Set up this project first", None)])
+        self.assertEqual(self.host.ui.results[before:], [("sync_all", "warn", "Set up this project first", None)])
         self.assertNotIn("auto_copy", self.store())
-        self.assertFalse(self.switch_nodes()["files.auto_copy"]["value"])
 
-    def test_switch_tiles_after_setup_and_the_flip(self):
+    def test_sort_and_sync_carry_the_capsules_and_the_flip(self):
         self.make_module(enabled=True, auto=False, watch=False)
-        nodes = self.switch_nodes()
-        self.assertEqual(list(nodes), ["files.auto_copy", "files.auto_sort"])
-        group = find(self.module.render(), "files.actions")
-        self.assertEqual([n["id"] for n in group["items"]][-2:], ["files.auto_copy", "files.auto_sort"])
+        caps = self.capsules()
+        self.assertEqual(list(caps), ["files.auto_sort", "files.auto_copy"])
+        self.assertEqual([(c["tile"], c["label"], c["value"]) for c in caps.values()],
+                         [("files.sort", "Auto sort", False), ("files.sync_all", "Auto copy", False)])
+        self.assertTrue(all(c["hint"] for c in caps.values()))
         self.assertNotIn("files.journal", node_ids(self.module.render()))
         before = len(self.host.ui.results)
         result = self.module.on_action("files.auto_copy", True)
         self.assertTrue(result is None or result.rerender)
         self.assertEqual(len(self.host.ui.results), before)  # a successful flip shows no result line
         self.assertEqual(self.store()["auto_copy"], True)
-        nodes = self.switch_nodes()
-        self.assertEqual((nodes["files.auto_copy"]["value"], nodes["files.auto_sort"]["value"]), (True, False))
+        caps = self.capsules()
+        self.assertEqual((caps["files.auto_copy"]["value"], caps["files.auto_sort"]["value"]), (True, False))
         self.module.on_action("files.auto_copy", False)
-        self.assertFalse(self.switch_nodes()["files.auto_copy"]["value"])
+        self.assertFalse(self.capsules()["files.auto_copy"]["value"])
         self.module.on_action("files.auto_sort", "not a bool")  # anything but a bool flips the stored value
         self.assertTrue(self.store()["auto_sort"])
+        self.assertTrue(self.capsules()["files.auto_sort"]["value"])
 
     def test_host_page_has_the_switch_rows_next_to_setup(self):
         self.make_module()
