@@ -13,12 +13,12 @@ and class map).
 
 1. Files outside the root are never moved, renamed or deleted: the module copies them in; the user deletes.
    Inside the root the module moves files between layout folders only on the user's explicit command (Sort
-   project, 3.4) or mirror (a bin move, 3.3), always journaled and undoable, never across volumes (the root is one
-   folder tree, so a move is a rename). The only files the module deletes are copies it made itself: a file a
+   project, 3.4), mirror (a bin move, 3.3) or, for a file dropped into `media_dir`, the Auto sort switch (3.1),
+   always journaled and undoable, never across volumes (the root is one folder tree, so a move is a rename). The only files the module deletes are copies it made itself: a file a
    `done` journal entry records as `copied` (or `recreated` by an undo), whose quick hash still equals the
    journaled hash, inside the root, referenced by no project item.
-2. Nothing happens outside the project root except reading a source file for a copy, and the one exception the
-   user asks for explicitly: the archive `<root>.zip` beside the root ("Make ZIP", 3.6).
+2. Nothing happens outside the project root except reading a source file for a copy. The ZIP archive of "Make ZIP"
+   (3.6) is written inside the root, into `<root>\<exports_dir>`.
 3. Every change is journaled before it is made and marked done after; an interrupted run is resumed or rolled
    back from the journal on the next project open (5.2).
 4. A change the module made never triggers the module again (suppression, section 5.4).
@@ -124,6 +124,21 @@ and the other three are disabled.
 
 ### 3.1 Import intercept (Premiere -> disk)
 
+Two project switches decide what the intercept does (5.1, 6): `auto_copy` ("Auto copy", the copy step) and
+`auto_sort` ("Auto sort", the filing step). Both default to off and a project that is not set up never runs the
+intercept; with both off the module only observes (snapshot, offline list, external count).
+
+| `auto_copy` | `auto_sort` | A new item whose file lies ... | What happens |
+|---|---|---|---|
+| on | off | outside the root | copied into `media_dir`, relinked, moved to the bin of `media_dir`; no classification; journal `synced`, toast "Copied <name> into Media" |
+| on | off | in the root | nothing |
+| off | on | outside the root | nothing (the item stays in the "outside" count) |
+| off | on | loose in the root (root folder, `project_dir`, a folder outside the layout) | classified, copied into its layout folder (the original stays), relinked, binned; journal `filed` |
+| off | on | in `media_dir` | classified and moved into its layout folder (a rename, like Sort project 3.4), relinked, binned; journal `sorted`, undoable |
+| off | on | in another layout folder | moved to the bin of its folder when `enforce_bins` is on (journal `binned`) |
+| on | on | outside the root | classified and copied straight into its layout folder, relinked, binned; journal `filed` (the 2.0 behaviour, one copy) |
+| on | on | in the root | as in the row of Auto sort alone |
+
 Trigger: `project.items_added` or `project.changed` (the facade's 2 s poll fires them). Premiere fires several events
 per user action and the module's own relinks and bin moves fire more, while a snapshot is a full project scan, so
 events are coalesced: each event re-arms a one-shot timer of `SYNC_DELAY` (0.3 s, class attribute) and the timer posts
@@ -132,30 +147,35 @@ after its first event. `project_closed` cancels a pending timer, and a timer cal
 is ignored. The module then takes one snapshot (the non-event snapshots of `project_opened`, Sort, Sync, ZIP and
 Undo stay direct) and diffs it against its cached one; a diff runs only when the cached snapshot is real (a failed
 first snapshot never makes every existing item look new). For every new clip or file item with a media path that
-exists, is not excluded and lies outside the root, or inside the root but outside the layout (loose files next to
-the project file), in one high-priority job per batch:
+exists and is not excluded, the table above picks the step; the copy and sort steps run in one high-priority job per
+batch and do, in order:
 
 1. Probe the file (`ctx.tools.ffprobe`; a failure classifies by extension) and run the classifier (3.8); classify
-   by overrides and rules; target `<root>\<folder>\<file name>`.
+   by overrides and rules; target `<root>\<folder>\<file name>`. The copy step of Auto copy alone has no
+   classification: the folder is `media_dir`.
 2. Collision: a target of the same name exists -> compare size and quick hash (`core/probe.quick_hash`: BLAKE2b of
    the size, the first and the last 4 MB). Equal: reuse the existing file (no copy, `copied: false`). Different or
-   a `.part` of that name present: suffix ` (2)`, ` (3)` … on the stem (an equal suffixed file is reused).
-3. Journal `filed` `pending` (source, target, node id, old bin path, hash, copied, size), then copy to
-   `<target>.part` (exclusive create), fsync, verify the size, copy the timestamps, rename into place (never
-   overwrites). A failed copy is journaled `failed` with the reason of 3.9 in `error` and reported "Could not copy
-   <name> · <reason>".
+   a `.part` of that name present: suffix ` (2)`, ` (3)` ... on the stem (an equal suffixed file is reused).
+3. Journal `filed` (Auto sort) or `synced` (Auto copy alone) `pending` (source, target, node id, old bin path, hash,
+   copied, size), then copy to `<target>.part` (exclusive create), fsync, verify the size, copy the timestamps,
+   rename into place (never overwrites). A failed copy is journaled `failed` with the reason of 3.9 in `error` and
+   reported "Could not copy <name> · <reason>".
 4. On the module thread: `relink(node_id, target)`; if the item is not online afterwards, delete the copy if the
    module made it, journal `failed` ("relink failed") and report "Could not relink <name>".
 5. `move_to_bin([node_id], folder-as-bin-path)` (bins created as needed; bin names = folder names).
 6. Journal `done` (with the final `bin_to`).
-7. Toast "Filed <name> into <folder>"; filings within 2 s are merged ("Filed 6 files"). Host setting `toast_filed`
-   turns the toast off. The intercept is automatic work, so it reports through toasts, never `ctx.ui.result`
-   (`MODULES.md` 4).
+7. Toast "Filed <name> into <folder>" ("Copied <name> into Media" for Auto copy alone); filings within 2 s are merged
+   ("Filed 6 files"). Host setting `toast_filed` turns the toast off. The intercept is automatic work, so it reports
+   through toasts, never `ctx.ui.result` (`MODULES.md` 4).
 
-Files already inside the layout but imported into a bin that is not their folder's bin are moved to that bin when
-`enforce_bins` is on (default on), without any disk operation; journal `binned`. Offline items, sequences, bins and
-items without media are ignored. The first copy of a project session runs the write check of 3.9 first; when it
-fails the intercept stops for the session with one toast "No write access to the project folder".
+A file of `media_dir` that Auto sort files (table row "in `media_dir`") goes through the plan step of Sort project (3.4,
+step 3: journal `sorted`, a rename inside the root, a copy when another item uses the file) as a small job of its own;
+it is not one of the four long actions, so no tile is disabled while it runs. It reports with the same toast.
+
+Files already inside a layout folder but imported into a bin that is not their folder's bin are moved to that bin
+by Auto sort when `enforce_bins` is on (default on), without any disk operation; journal `binned`. Offline items,
+sequences, bins and items without media are ignored. The first copy of a project session runs the write check of 3.9
+first; when it fails the intercept stops for the session with one toast "No write access to the project folder".
 
 ### 3.2 Disk watcher (disk -> Premiere)
 
@@ -267,17 +287,21 @@ media from `Media` into the layout.
 
 Action `files.zip` ("Make ZIP"): a job that takes a fresh snapshot and checks the media first. When any clip has
 media outside the root, no archive is made and the result is `warn` "Sync all media first · <n> files outside the
-folder". Otherwise it counts every clip with media (inside, offline, total size of the unique files inside), writes
-`<root>\.premiere-deck\pack-report.txt` (the name of 1.x is kept) and writes `<root>.zip` beside the root (a free
-name: `<root> (2).zip` when taken; through a `.part` file; never overwrites) with the project folder minus
-Premiere's preview folders, `Media Cache*` folders and temporary files (the auto-save copies and `.premiere-deck`
-travel with it). Offline items do not block the archive; they are reported. Journal `zipped` (`to` = the archive,
-`size`, `offline` = the names). Progress label "Making ZIP <k> / <n>", `detail` the file being added. Result: `ok`
+folder". Otherwise it counts every clip with media (inside, offline, total size of the unique files inside) and writes
+`<root>\<exports_dir>\<project name>.zip` (the folder is created when missing; `<project name>` is the project's name
+without `.prproj`; a free name: `<project name> (2).zip` when taken; through a `.part` file; never overwrites). The
+archive holds the project folder minus the `exports_dir` folder itself (so the archive never contains an older archive
+or a report), Premiere's preview folders, `Media Cache*` folders and temporary files (the auto-save copies and
+`.premiere-deck` travel with it); the top-level folder inside the archive is the root's name. The report file
+`<zip name> report.txt` (`Sample report.txt`, `Sample (2) report.txt`) is written beside the archive after it is
+complete. Offline items do not block the archive; they are reported. Journal `zipped` (`to` = the archive, `size`,
+`offline` = the names). Progress label "Making ZIP <k> / <n>", `detail` the file being added. Result: `ok`
 "ZIP ready · 120 files · 3.2 GB", `warn` "ZIP ready · 2 offline: a.mp4, b.wav", `error` with the reason of 3.9 when
-writing fails (the `.part` file is removed). The tile's meta: "Checks offline first". Details: the file count is the
-number of files in the archive and the size the archive's size; `detail` of `ok` / `warn` is the archive path; a
-write failure reads "Could not write the ZIP · <reason>"; a stop reads "ZIP stopped · <k> of <n> files"; the journal
-entry carries `to` (archive), `size` (archive bytes) and `offline` (names).
+writing fails (the `.part` file is removed and no report is written). The tile's meta: "Checks offline first".
+Details: the file count is the number of files in the archive and the size the archive's size; `detail` of `ok` /
+`warn` is the archive path; a write failure reads "Could not write the ZIP · <reason>"; a stop reads "ZIP stopped ·
+<k> of <n> files"; the journal entry carries `to` (archive), `size` (archive bytes) and `offline` (names). The
+1.x/2.0 `<root>.zip` beside the root and `.premiere-deck\pack-report.txt` are no longer written.
 
 Action `files.stop` (the `cancel` of the progress node): cancels every running job of the module between or during
 files; finished files stay filed, a partial `.part` is removed, and the job's result is `neutral` "<Sort | Sync |
@@ -303,7 +327,7 @@ Undo reads the entry's flags: a `sorted` or `moved_bin` entry with `moved: true`
 (`deleted_from`) recreates that file first (`recreated`). A failed relink after a move back moves the file forward
 again, so the item stays online.
 
-`removed`, `setup` and `zipped` entries are not undoable (the archive beside the root is the user's to delete), nor
+`removed`, `setup` and `zipped` entries are not undoable (the archive in the Exports folder is the user's to delete), nor
 is any op this version does not know (`packed` and others of older journals: shown, never undone). The undo is
 journaled as a new entry with `status: "undone"` and `undo_of` = the reversed entry's id (from / to and bin_from /
 bin_to swapped). Results: `ok` "Undone · <op> <name>", `warn` "Cannot undo · <reason>".
@@ -406,9 +430,14 @@ files worker for the 2.0 piece (`ARCHITECTURE.md` 4).
 
 5.1 `project.json` (`<root>\.premiere-deck\`, `modules.files`): `enabled` (bool), `layout` (`"default"` or another
     shipped layout id, or `"custom"`), `overrides` (list, 2), `enforce_bins`, `mirror_bins`, `import_exports`,
-    `watch` (bools). Every value is validated on read; a wrong type or an unknown layout falls back to
-    the default (`enabled` must be exactly `true`), a settings store that raises gives the defaults. A `pack_zip`
-    key left by 1.x is ignored and kept.
+    `watch`, `auto_copy`, `auto_sort` (bools; `auto_copy` and `auto_sort` default to false). Every value is validated
+    on read; a wrong type or an unknown layout falls back to the default (`enabled` must be exactly `true`), a
+    settings store that raises gives the defaults. A `pack_zip` key left by 1.x is ignored and kept.
+    Mapping of 2.0 on load (`project_opened`): 2.0 had no switches and filed every import of a set-up project, so a
+    project with `enabled` `true` that stores neither `auto_copy` nor `auto_sort` gets both stored as `true`, once.
+    Setup stores both as `false` when they are absent (and writes them into the `project.json` it creates at the
+    root, `_mark_root`), so a project set up in 2.1 is never mapped; Setup never changes a value that is stored.
+    `enabled` stays: it is the "set up" marker that gates every action, not an intercept switch any more.
 5.2 `journal.jsonl`: append-only (except the one clean-up of 3.2). The first line of an entry carries its fields
     `{"id", "at" (epoch s), "op", "node_id", "name", "from", "to", "bin_from", "bin_to", "hash", "copied",
     "status": "pending|done|failed|undone", "undo_of"}` plus op-specific ones (`size`, `node_ids`, `name_from`,
@@ -439,46 +468,71 @@ The section is the Files tab of the panel (`icon` `folder`, one screen). Section
 this project" (warn), "Watching · <root name>" (ok), "Paused", "Watcher stopped" (error), or the running job's
 label (accent).
 
+Tile codes (`short`, at most 16 characters; the panel draws compact tiles with the code and keeps the full `label` and
+the one-line `hint` in the tooltip, `PANEL.md`):
+
+| id | Node | Code | Full name | Icon |
+|---|---|---|---|---|
+| `setup` | button | `SETUP` | Set up project | `folder` |
+| `sort` | button | `SORT` | Sort project | `sort` |
+| `sync_all` | button | `SYNC` | Sync all media | `sync-all` |
+| `sync_used` | button | `USED` | Sync used media | `sync-used` |
+| `zip` | button | `ZIP` | Make ZIP | `zip` |
+| `auto_copy` | switch | `AUTO COPY` | Auto copy | `sync-all` |
+| `auto_sort` | switch | `AUTO SORT` | Auto sort | `sort` |
+
+The two switches carry the word AUTO in their code so that they read apart from the Sort project button; the Files group has two columns, so the longer codes fit.
+
 - No project: one line "Open a project in Premiere Pro to sort its media."
-- Not set up: a line on what Setup does, `setup` ("Set up project": the write check of 3.9, then creates the
-  layout folders under the root, `.premiere-deck\` and the bins of every layout folder except `project_dir`), the
-  external count, the Offline list. Every other action answers "Set up this project first" (except `locate`,
-  `remove` and `open_folder`).
+- Not set up: a line on what Setup does and the group `actions` (`tiles`, `columns` 2, no title, not collapsible) with
+  the tile `setup` ("Set up project": the write check of 3.9, then creates the layout folders under the root,
+  `.premiere-deck\` and the bins of every layout folder except `project_dir`; it does not change the switches) and,
+  right beside it in the same block, the two `switch` tiles; then the external count and the Offline list. Every
+  other action answers "Set up this project first" (except `locate`, `remove` and `open_folder`), a switch flip
+  included: the answer is the result line, the stored value and the tile keep the old (off) value.
 - Set up, top to bottom:
   - header `row`: `text` with the project name and the button `open_folder` (`variant` `icon`, icon
     `open-folder`, label "Open project folder", hint "Opens the project folder in Explorer."); under it a small
     `text` with the root path.
   - status `row` of three `text` chips: "<n> in the root" (neutral), "<n> outside" (warn when more than 0, else
     neutral), "<n> offline" (error when more than 0, else neutral).
-  - group `actions` (`tiles`, `columns` 2, no title, not collapsible) with the four tiles: `sort` (icon `sort`,
-    short "Sort project"), `sync_all` (icon `sync-all`, short "Sync all media"), `sync_used` (icon `sync-used`,
-    short "Sync used media"), `zip` (icon `zip`, short "Make ZIP"), each with its full `label`, a one-line `hint`
-    for the tooltip, its `meta` (3.4 to 3.6) and its `confirm` (3.4, 3.5); the running one `busy`, the others
-    `disabled` while it runs. The display keeps the group's result line from `ctx.ui.result`.
+  - group `actions` (`tiles`, `columns` 2, no title, not collapsible) with the four button tiles `sort`, `sync_all`,
+    `sync_used`, `zip` (3.4 to 3.6; each with its full `label`, a one-line `hint`, its `meta` and its `confirm`; the
+    running one `busy`, the others `disabled` while it runs) followed by the two `switch` tiles `auto_copy` and
+    `auto_sort` (`label` "Auto copy" / "Auto sort"; `hint` "Copies files imported from outside the project folder
+    into Media and relinks them." / "Files new media of the project folder into the layout folders and bins."; `value`
+    = the stored setting; never `busy` or `disabled`: a flip while a job runs only changes what the next import does).
+    The display keeps the group's result line from `ctx.ui.result`.
   - while a job runs: one `progress` node (`label` "Sorting project 38 / 142", `value`, `detail` "C0042.MP4 >
     Footage", `cancel` = `stop`); a filing or watcher job shows its own label the same way.
-  - bottom `row`: button `journal` (icon `journal`, label "Journal · <n> entries"; brings the host window to the
-    front on the Files tab through `ctx.host.show("files")`) and `undo_last` (`variant` `icon`, icon `undo`,
-    label "Undo last", disabled when nothing is undoable, hint = what it would undo).
+  - bottom `row`: button `undo_last` (`variant` `icon`, icon `undo`, label "Undo last", disabled when nothing is
+    undoable, hint = what it would undo). There is no Journal tile in the panel (2.1); the journal is on the host
+    page (7).
   - group `offline` (collapsible, title "Offline", only when any item is offline): list `offline_list` (its own id,
     so the group id `files.offline` stays unique in the tree) with rows per item (50 at most) and `locate` and
     `remove`, confirmed "Remove <name> from the project? The file on disk is not touched.".
 - Warnings as text lines: an unusable `layout.json`, Premiere not answering.
+- The switch node is `{"kind": "switch", "id": "files.auto_copy", "label": "Auto copy", "value": false, "short":
+  "AUTO COPY", "icon": "sync-all", "hint": ...}` built by `Module.switch(...)` (`PROTOCOL.md` 6.1). A click sends
+  `files.auto_copy` with `value` = the new state (a bool; any other value flips the stored one); the module stores it
+  in the project setting and the next tree carries it. A successful flip shows no result line.
 - Results of the other controls: `setup` `ok` "Project set up · <n> folders" (or `error` "No write access to the
-  project folder"), `open_folder` `ok` "Opened <root name>" (`ctx.host.open_path(root)`), `journal` `ok` "Journal
-  opened in the host window", `undo_last` / `undo` `ok` "Undone · <op> <name>" / `warn` "Cannot undo · <reason>" /
-  `neutral` "Nothing to undo", `locate` `ok` "Showing <folder>", `remove` `ok` "Removed <name> from the project",
-  `stop` `neutral` "Nothing to stop" when no job runs (a stopped job reports itself). A press before Setup answers
-  `warn` "Set up this project first", a press without a project `neutral` "Open a project in Premiere Pro first". A
-  host without `ctx.ui.result` gets the same line as a toast.
+  project folder"), `open_folder` `ok` "Opened <root name>" (`ctx.host.open_path(root)`), `undo_last` / `undo` `ok`
+  "Undone · <op> <name>" / `warn` "Cannot undo · <reason>" / `neutral` "Nothing to undo", `locate` `ok` "Showing
+  <folder>", `remove` `ok` "Removed <name> from the project", `stop` `neutral` "Nothing to stop" when no job runs (a
+  stopped job reports itself). A press before Setup answers `warn` "Set up this project first", a press without a
+  project `neutral` "Open a project in Premiere Pro first". A host without `ctx.ui.result` gets the same line as a
+  toast.
 
 The watch switch and the recent-entries list of 1.x are not in the panel any more: `watch` is a project setting of
 the host window's Settings card (8), the journal is on the host page (7).
 
 Action ids of the module (panel and host window): `files.setup`, `files.sort`, `files.sync_all`,
-`files.sync_used`, `files.zip`, `files.stop`, `files.open_folder`, `files.journal`, `files.undo_last`,
-`files.undo` (with `row`), `files.locate` and `files.remove` (with `row`), plus the window-only `files.host:*` of
-7. `files.collect`, `files.collect_run`, `files.collect_discard`, `files.pack` and `files.cancel` are gone (an old
+`files.sync_used`, `files.zip`, `files.stop`, `files.open_folder`, `files.auto_copy` and `files.auto_sort` (with
+`value`, a bool), `files.undo_last`, `files.undo` (with `row`), `files.locate` and `files.remove` (with `row`),
+plus the window-only `files.host:*` of 7. `files.journal` (brings the host window to the front on the Files tab,
+`ctx.host.show("files")`, result `ok` "Journal opened in the host window") has no control in the panel since 2.1 and
+is kept for scripts. `files.collect`, `files.collect_run`, `files.collect_discard`, `files.pack` and `files.cancel` are gone (an old
 id is answered with nothing and logged).
 
 ## 7. Host window page (`render_host`)
@@ -489,11 +543,15 @@ Block shapes of `BRIDGE_API.md` 5. `{"title": "Files", "status": {...}, "subtitl
 the layout editor follows below the fold (the pane scrolls).
 
 - No project: `no_project` (text) and the layout blocks of the default layout (read only).
-- Not set up: `setup_actions` (actions: `setup`), `status_chips`, the layout blocks.
+- Not set up: `setup_actions` (actions: `setup`), `auto` (the two switches), `status_chips`, the layout blocks.
 - Set up:
   - `status_chips` (chips: in the root, outside, offline; as in 6).
   - `main` (actions with `tiles`, `columns` 2: `sort`, `sync_all`, `sync_used`, `zip`, the same buttons, meta and
-    confirmations as the panel).
+    confirmations as the panel, with their full names as `short`; the host window has room for them).
+  - `auto` (list, two rows `auto_copy` "Auto copy" and `auto_sort` "Auto sort", `subtitle` = the hint of 6, each with a
+    row `toggle` `{id: "files.auto_copy" | "files.auto_sort", value, disabled: false}`; a flip sends the toggle id
+    with the new value and `row` = the row id, handled like the panel switch). Before Setup the block follows
+    `setup_actions` directly, so the two switches sit next to Setup (a flip is refused as in 6).
   - one `job_<id>` progress block per running job (`label`, `detail`, `cancel` = `stop`).
   - `last_result` (list, one row: `title` the last result's text, `subtitle` its detail, `meta` the time, `tone`
     = its outcome; `actions` `undo_last` when anything is undoable), absent before the first result of the project
@@ -524,7 +582,9 @@ Window-only actions arrive as `host:<name>` (the registry strips the module pref
 Host level: `toast_filed` (bool, on), `copy_buffer_mb` (int 1..256, 16), `stable_seconds` (int 1..60, 2),
 `default_layout` (select from the shipped layouts). Project level (`scope="project"`): `enforce_bins`,
 `mirror_bins`, `import_exports`, `watch`; `enabled`, `layout` and `overrides` are set by Setup and the host window
-controls of 7, not by the settings form. The 1.x setting `pack_zip` is gone: Make ZIP is a button (3.6).
+controls of 7, not by the settings form. `auto_copy` and `auto_sort` (project scope, bool, default false) are also
+not in the form: they have the switches of 6 and 7 (the form would offer a second, unguarded control that works
+before Setup); `host:project_setting` accepts them for scripts. The 1.x setting `pack_zip` is gone: Make ZIP is a button (3.6).
 
 ## 9. Scripts
 
@@ -546,8 +606,9 @@ speech-like signal where no speech sample can be generated) and probed with the 
 | `tests/test_modules_files_layout.py` | every rule of the default layout (including `source` and `audio_class`), word-start name matching, overrides, broken layouts (unknown `source` / `audio_class` values, a rule into `media_dir`), a 1.x layout without `media_dir`, root detection, the exclusions of 1.5 (the `<stem> Masks` folder), folder <-> bin mapping with and without mirroring |
 | `tests/test_modules_files_media.py` | classification of the real generated media |
 | `tests/test_modules_files_classify.py` | the video source signals of 3.8 one by one and their order (tags, names, whole-word tokens, formats, the generator heuristic, numeric ids, `Lavf` / `Lavc`), the audio class with a fake scorer (decision thresholds, cache, failures leaving `None`) and with the bundled model on the CPU (a chord with tremolo -> music; noise, a sine tone, silence -> other; a sentence from the Windows speech synthesizer -> speech when System.Speech is available; the model file is present, under 20 MB and loads on the CPU provider), the 20 s / 16 kHz mono decode arguments, explicit name rules and overrides winning, tags written by ffmpeg `-metadata` read back through ffprobe |
-| `tests/test_modules_files_sync.py` | copies (`.part`, timestamps, never overwrite, cancel), collision equal and different, the failure reasons of 3.9, the write check, the free-space check, suppression TTL, journal fold / torn lines / undo window, the clean-up rewrite of 3.2, ZIP files and report, ZIP refused with media outside the root |
-| `tests/test_modules_files.py` | render in every state (tiles, meta, chips, busy and disabled tiles, progress with `cancel`, the journal row) and the host page blocks; intercept (copy, alpha, merged toasts, collisions, relink failure with roll back, loose files, enforce_bins, exclusions, probe failure, failed first snapshot, failure reason in the toast); bin move mirror; Sort (plan rules, user-placed files kept, bin-only moves, failures, stop), Sync all and Sync used (flat `Media`, bin `Media`, offline skipped, stop), Make ZIP; every result through `ctx.ui.result` and no toast for a press; undo of every op including `sorted`, `synced` and a 1.x `collected`; suppression; broken `project.json` values and layout; recovery of pending entries; every action id, and the removed ids answering nothing |
+| `tests/test_modules_files_sync.py` | copies (`.part`, timestamps, never overwrite, cancel), collision equal and different, the failure reasons of 3.9, the write check, the free-space check, suppression TTL, journal fold / torn lines / undo window, the clean-up rewrite of 3.2, ZIP files and report, the excluded folder and the archive name with collision suffixes in a folder, ZIP refused with media outside the root |
+| `tests/test_modules_files_auto.py` | Auto copy and Auto sort: the 2.0 mapping on load (once, never over a stored key, not for a project set up in 2.1), Setup leaving the switches alone, the switch tiles before and after Setup, the refusal before Setup, the flip, the host page rows, and the intercept with each combination of the switches on generated media (both off: observe only; copy only: flat `Media` copy without classification; sort only: loose and `Media` files filed, external imports untouched; both on: one classified copy; a flip affects only the next import) |
+| `tests/test_modules_files.py` | render in every state (tiles with their codes and the two switch tiles, no Journal tile, meta, chips, busy and disabled tiles, progress with `cancel`) and the host page blocks; intercept with both switches on (copy, alpha, merged toasts, collisions, relink failure with roll back, loose files, enforce_bins, exclusions, probe failure, failed first snapshot, failure reason in the toast); bin move mirror; Sort (plan rules, user-placed files kept, bin-only moves, failures, stop), Sync all and Sync used (flat `Media`, bin `Media`, offline skipped, stop), Make ZIP (archive and report in `Exports`, nothing beside the root, the Exports folder left out, collision suffix); every result through `ctx.ui.result` and no toast for a press; undo of every op including `sorted`, `synced` and a 1.x `collected`; suppression; broken `project.json` values and layout; recovery of pending entries; every action id, and the removed ids answering nothing |
 | `tests/test_modules_files_watch.py` | real `watchdog` observer: import into bins, new subfolder, copy in progress, rename and move, delete -> offline, ignored paths and the module's own copies, `.prmf` files in `<stem> Masks` and non-media extensions ignored without a journal entry, `import_exports`, paused watch; the watcher's pairing and folder expansion |
 | `tests/test_core_probe_tools.py` | the new probe fields `tags` (merge, lower-cased keys) and `nb_streams` |
 | `tests/test_modules_files_support.py` | helpers only (scratch folders, media generation, the FakeHost case) |

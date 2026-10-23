@@ -134,9 +134,17 @@ export function mountWide(host) {
     current = mountModuleTab(scroller, id, { setHeadHint: (t) => (headHint.textContent = t || '') });
   }
 
+  /** The strip exists only while the setting `show_activity` is on (HOST_UI.md 3.3). */
+  function paintActivityVisibility() {
+    const on = !!(store.settings && store.settings.show_activity);
+    activity.hidden = !on;
+    left.classList.toggle('has-activity', on);
+  }
+
   const offs = [
     watch('premiere', paintPremiere),
     watch('activity', paintActivity),
+    watch('settings', paintActivityVisibility),
     watch('modules', () => {
       paintTabs();
       paintActivity();
@@ -144,6 +152,7 @@ export function mountWide(host) {
   ];
 
   paintPremiere();
+  paintActivityVisibility();
   paintActivity();
 
   let anim = null;

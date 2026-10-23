@@ -122,7 +122,8 @@ without them renders as in 1.x:
 
 | kind | Fields | Rendered as |
 |---|---|---|
-| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action); 2.0: `icon` (symbol name of the panel sprite or null), `short` (tile label, at most 16 characters; `label` stays the full name and heads the tooltip), `meta` (one line under the tile label, or null), `menu` (below), `variant` (`"icon"` or absent) | a button; `busy` shows a spinner and blocks clicks. Inside a `tiles` group: an icon tile (icon over `short`, `meta` under it). `variant` `icon`: a small round button with the icon only, anywhere (the full `label` is its tooltip) |
+| `button` | `id`, `label`, `hint`, `tone`, `busy` (bool), `disabled`, `confirm` (string or null: a one-line question the display asks before sending the action); 2.0: `icon` (symbol name of the panel sprite or null), `short` (tile label, at most 16 characters; `label` stays the full name and heads the tooltip), `meta` (one line under the tile label, or null), `menu` (below), `variant` (`"icon"` or absent) | a button; `busy` shows a spinner and blocks clicks. Inside a `tiles` group: a compact tile (2.1: the icon at the left, `short` in one line; `meta` and a menu's `badge` go into the tooltip). `variant` `icon`: a small round button with the icon only, anywhere (the full `label` is its tooltip) |
+| `switch` | 2.1: `id`, `label` (full name, heads the tooltip), `value` (bool), `short` (tile code, at most 16 characters), `icon`, `hint`, `disabled`, `busy` (bool) | a tile of the size of a button tile with a capsule switch at its right instead of the result slot (inside a `tiles` group a cell of the tile grid; elsewhere a full-width tile). A click sends `action` with `value` = `!value`; the display flips the capsule at once and takes the host's next tree as the truth (a refused change comes back as the old `value` plus an `action_result` for the switch id). `busy` greys it and blocks clicks while a job runs |
 | `toggle` | `id`, `label`, `value` (bool), `hint`, `disabled` | switch; sends `action` with `value` |
 | `select` | `id`, `label`, `value`, `options` (`[{"value","label"}]`), `disabled` | drop-down; sends `action` with `value` |
 | `input` | `id`, `label`, `value`, `placeholder`, `submit_label` (optional button text), `disabled` | text field; sends `action` with `value` on Enter or the submit button |
@@ -130,11 +131,12 @@ without them renders as in 1.x:
 | `progress` | `value` (0..1 or null for indeterminate), `label`; 2.0: `detail` (one line, the current item, or null), `cancel` (a button node id or null) | progress bar; with `detail` a line under the bar; with `cancel` a "Stop" pill that sends `action` with that id |
 | `list` | `id`, `rows` (`[{"id","title","subtitle","tone","thumb" (data URL or null),"bar" (0..1 or null),"actions":[button nodes]}]`), `empty` (text when no rows) | a list with per-row buttons; a row's button sends its own `id` with `row` = the row id; a numeric `bar` is drawn as a thin bar under the subtitle (the fraction of its track that is filled; `null` or absent draws none) |
 | `row` | `items` (nodes) | nodes side by side |
-| `group` | `title` (string or null), `items` (nodes), `columns` (1 to 3; default 1, or 3 with `tiles`); 2.0: `id` (string, unique in the tree), `collapsible` (bool), `tiles` (bool) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 or 3 the display lays consecutive buttons out in that many columns (a node that is not a button takes the full width). With `tiles` the buttons are icon tiles. With `collapsible` the caption is the collapse control (chevron; the number of items while collapsed); the display remembers the collapsed state per group `id` in `localStorage`, expanded by default. Under the group the display keeps its result line (6.6). Groups do not nest |
+| `group` | `title` (string or null), `items` (nodes), `columns` (1 to 3; default 1, or 3 with `tiles`); 2.0: `id` (string, unique in the tree), `collapsible` (bool), `tiles` (bool) | a titled block inside a section: a small caption and its nodes on a shared surface; with `columns` 2 or 3 the display lays consecutive buttons and switches out in that many columns (any other node takes the full width). With `tiles` the buttons are compact tiles in four columns (three in a panel narrower than 360 px), whatever `columns` says (2.1). With `collapsible` the caption is the collapse control (chevron; the number of items while collapsed); the display remembers the collapsed state per group `id` in `localStorage`, expanded by default. Under the group the display keeps its result line (6.6). Groups do not nest |
 | `divider` | | a thin rule |
 
 `menu` of a button: `{"id": <node id>, "value": <current value>, "options": [{"value", "label"}], "badge": <short
-text>}` or absent. The tile shows `badge` (the current choice, "9:16", "H.264") as a small badge; a click on the
+text>}` or absent. 2.1: an option may carry `swatch`, a CSS hex colour (`#rgb` or `#rrggbb`), drawn as a dot before
+its label (the colour menu); any other value is refused by `menu()` and `validate_tree`. The tile shows `badge` (the current choice, "9:16", "H.264") as a small badge; a click on the
 badge opens a small menu of `options`; a pick sends `action` with the menu `id` and the picked `value`, exactly what a
 `select` node with that id sends. A click on the tile outside the badge sends the button's own `id`.
 
@@ -142,7 +144,8 @@ Tooltips: every node's `hint` is drawn by the display as its own tooltip (`PANEL
 `label` in bold over the `hint` line. No node becomes a `title` attribute.
 
 Validation (`host/protocol.py`, `validate_tree`): node ids, group ids and menu ids share one id space and are unique in
-the tree; a `short` longer than 16 characters, a `variant` other than `icon`, a `menu` without options and a
+the tree (a `switch` id too); a `short` longer than 16 characters (button or switch), a `switch` whose `value` is not
+a bool, a `variant` other than `icon`, a `menu` without options and a
 `columns` outside 1 to 3 are refused; a `collapsible` group needs an `id`. Modules build the nodes through the
 helpers of `MODULES.md` 4, which add the module prefix to every id.
 
@@ -160,7 +163,7 @@ host (`host.open`, `host.settings`). The display never interprets ids.
 ### 6.3 `toast` (host -> display)
 
 `{"type": "toast", "tone": "ok", "text": "Filed pленка.mp4 into Overlays", "ms": 3500}`. Transient line at the
-bottom of the panel. At most one visible; a new one replaces the old. Since 2.0 the toast carries cross-cutting
+bottom of the panel; a click on it closes it at once (2.1, `_workspace\CONVENTIONS.md` "Notices"). At most one visible; a new one replaces the old. Since 2.0 the toast carries cross-cutting
 notices only (automatic filing, host notices); the outcome of a pressed control is an `action_result` (6.6).
 
 ### 6.4 Paging
@@ -184,11 +187,12 @@ change; a display that connects later gets the current theme right after `welcom
  "text": "Adjustment layer added · V3", "detail": null, "at": 1761000000000}
 ```
 
-The outcome of one action: `id` = the button node id the result belongs to (for a menu pick, the button that
+The outcome of one action: `id` = the button (or `switch`) node id the result belongs to (for a menu pick, the button that
 carries the menu), `outcome` one of `ok`, `warn`, `error`, `neutral`, `text` one line, `detail` the one-line
-explanation (string or null), `at` epoch ms. The display morphs that tile for 2 s (check or cross, `PANEL.md` 2)
+explanation (string or null), `at` epoch ms. The display morphs that tile (a `switch` tile: its glow only) for 2 s (check or cross, `PANEL.md` 2)
 and keeps the line as the result line of the group that holds the button (or of the section when the button is in
-no group) until the next result of that group; a line with `detail` opens it on click. Modules send it through
+no group) for 3 s (`ok`, `neutral`) or 10 s (`warn`, `error`), or until the next result of that group; a click
+closes the line, and a line with `detail` opens the detail in the same click (2.1). Modules send it through
 `ctx.ui.result(...)` (`MODULES.md` 3); the host also records it in the window's activity feed (`BRIDGE_API.md`
 3.5). A result for an id that is not in the current tree changes no tile and no result line; it is still recorded in the
 activity feed.

@@ -79,7 +79,7 @@ The live checks of `PANEL.md` 5 are manual and recorded in the panel worker's re
    warning and bundles the unsigned panel (dev builds; the panel then loads only with `PlayerDebugMode`).
 5. PyInstaller one-file, windowed, `build\PremiereDeck.spec` (reads the prepared panel from `DECK_PANEL_BUNDLE`):
    bundles `premiere_deck/ui` (with the vendored kit), `premiere_deck/panel`, every non-Python file of the package
-   (jsx, layouts, presets) and `icon.ico`; every package module as a hidden import (modules are imported by name).
+   (jsx, layouts, the YAMNet model) and `icon.ico`; every package module as a hidden import (modules are imported by name).
 6. Output `release\PremiereDeck.exe` and `release\SHA256SUMS` (`<sha256>  PremiereDeck.exe`, UTF-8, LF).
 
 ## 5. Release

@@ -5,9 +5,9 @@
 
 import { call, on } from '../api.js';
 import { store, watch, moduleById } from '../store.js';
-import { createBlocks, makeAct, buildField, buttonEl, Keyed } from '../blocks.js';
+import { createBlocks, makeAct, buildField, buttonEl, Keyed, noteResult, watchResultLines } from '../blocks.js';
 import { ic } from '../icons.js';
-import { h, failToast, throttle, flash } from '../ui.js';
+import { h, failToast, throttle, flash, closeOnClick } from '../ui.js';
 
 const STATE_LABEL = {
   running: 'Running',
@@ -44,6 +44,8 @@ export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
   const headControls = [];
   let hasPage = false;
   let headSig = '';
+  let pageBlocks = [];
+  let noticeDismissed = ''; // signature of the module notice the user closed
 
   // ---- subtitle line and notice -------------------------------------------------------------
 
@@ -75,9 +77,15 @@ export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
     }
     if (info.error) notice.append(h('p', 't-error', { text: info.error }));
     for (const l of lines) notice.append(h('p', '', { text: l }));
-    notice.hidden = !notice.children.length;
+    const sig = notice.textContent;
+    notice.hidden = !notice.children.length || (!!sig && sig === noticeDismissed);
     root.classList.toggle('is-missing', info.state === 'missing');
   }
+  // The notice closes on a click and stays closed until its text changes (HOST_UI.md 7).
+  closeOnClick(notice, () => {
+    noticeDismissed = notice.textContent;
+    notice.hidden = true;
+  });
 
   // ---- page model ----------------------------------------------------------------------------
 
@@ -91,7 +99,8 @@ export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
       hasPage = !!(page && Array.isArray(page.blocks));
       paintRoot(hasPage ? page : null);
       paintNotice();
-      blocks.update(hasPage ? page.blocks : []);
+      pageBlocks = hasPage ? page.blocks : [];
+      blocks.update(pageBlocks);
     } catch (err) {
       if (!alive || my !== seq) return;
       hasPage = false;
@@ -173,6 +182,10 @@ export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
     refreshSettings();
   }, 150);
   const offs = [
+    // A result line appears with a `result` event of this module and goes away after its time or on a click.
+    watchResultLines((moduleId) => {
+      if (alive && moduleId === id) blocks.update(pageBlocks);
+    }),
     on('modules', () => {
       const m = moduleById(id);
       if (m) info = m;
@@ -195,6 +208,7 @@ export function mountModuleTab(host, id, { setHeadHint = null } = {}) {
     id,
     /** The outcome of an action on its control (a `result` event of this module). */
     flashNode(nodeId, outcome) {
+      noteResult(id, outcome);
       const el = Array.from(root.querySelectorAll('[data-node]')).find((n) => n.dataset.node === nodeId);
       if (el) flash(el, outcome, ic);
     },

@@ -205,3 +205,31 @@ creation).
 7.15 `explorer /select,"<path>"` (host side, `shell/winutil.reveal_in_explorer`) opened a new window without the
     selection on the first call into a folder in 2 of 4 live calls; a second call selected the file. Minor, not
     worked around.
+7.16 Label colours of timeline clips (verified 26.5.2, 2026-10-23): neither a DOM `TrackItem` nor a QE track item has
+    a colour getter or setter (both reflected: no `setColorLabel`, `setColor` or similar), and a placed clip does not
+    follow `ProjectItem.setColorLabel` (the item read back as Mango while its timeline clip kept Iris; another item's
+    clips showed Teal while the item read Iris), so track items keep a colour of their own. Premiere's Edit > Label >
+    <colour> menu (commands 13124 + label index, `COLOR_LABELS` order) does colour the selected timeline clips, but
+    only while the Timeline has the keyboard focus; posted with the Deck panel focused it does nothing.
+    `Project.openSequence` does not move the focus; posting Window > Timelines > <sequence name> first does
+    (`modules/quick_actions/premiere_window.py`, `QUICK_ACTIONS.md` 2.1). Markers: `Marker.setColorByIndex` takes
+    0..7 only (Green, Red, Purple, Orange, Yellow, White, Blue, Cyan, the order of the Marker dialog); 8..15 read back
+    as 7. `ProjectItem.setColorLabel` works on bins.
+7.17 Keyframes (verified 26.5.2): `ComponentParam` offers `getKeys`, `getValueAtKey`, `getValueAtTime`, `addKey`,
+    `removeKey`, `removeKeyRange`, `keyExistsAtTime`, `findNearestKey` / `findNextKey` / `findPreviousKey`,
+    `setValueAtKey`, `setInterpolationTypeAtKey`, `setTimeVarying`, but no bezier handle (tangent / influence)
+    accessor and no keyframe selection; the QE component (`QE track item getComponentAt`) offers `getParamList`,
+    `getParamKeyframes` (timecodes only, "00:00:01:00,00:00:03:00"), `getParamValue`, `getParamControlValue`,
+    `setParamValue`, nothing for tangents. Key times are in the clip's media time: moving the clip keeps them,
+    sequence time = clip start + key − clip in point. `setInterpolationTypeAtKey(time, type)` measured on a 100 ->
+    150 pair (values at 1/8, 1/4, 1/2, 3/4, 7/8 of the span): 0 linear; 4 hold; 6 the same as 0; 7 and 8 hold;
+    1, 2, 3 and 5 fixed curve shapes (3 a symmetric S, 1 / 2 / 5 asymmetric) without any strength control. The
+    easing presets therefore bake keys and use type 0 only (`QUICK_ACTIONS.md` 1.1).
+7.18 Premiere's menu bar is a native Win32 menu (`GetMenu` on the main window, title "Adobe Premiere - <project>",
+    class "Premiere Pro"): command ids are readable and a posted `WM_COMMAND` runs a command like a menu pick
+    (File > Export > Media... = 11240; Window > Timelines / Program Monitor / Extensions entries have dynamic ids).
+    ExtendScript has no `app.executeCommand` or `app.findMenuCommandId` (typeof `undefined`). A synthetic Ctrl+M
+    (`keybd_event`, with or without scan codes) arrives as a plain M while the Deck panel has the focus (it added a
+    sequence marker; a second one opened the Marker dialog). Export Media posted with the Deck or the Project panel
+    focused opened Export mode for the active sequence (preceded by Window > Timelines > <sequence>). Export mode
+    shows Premiere's own modal "Offline material is present ..." when the sequence holds offline media.

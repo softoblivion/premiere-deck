@@ -213,4 +213,44 @@
   <path d="M9.6 8.6v6l5-3Z"/>
   <path d="m15.3 20.5 5.2-5.2"/><path d="M16.9 15.3h3.6v3.6"/>
 </symbol>
+<!-- ===== 2.1 additions: tracks, colour, sequence ratios, export, keyframe easing ===== -->
+<symbol id="i-track-video-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="3.5" y="4.5" width="17" height="7" rx="1.9"/><path d="M10.7 6.6v2.8l2.4-1.4Z"/><path d="M12 15.5v5M9.5 18h5"/>
+</symbol>
+<symbol id="i-track-video-remove" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="3.5" y="4.5" width="17" height="7" rx="1.9"/><path d="M10.7 6.6v2.8l2.4-1.4Z"/><path d="M9.5 18h5"/>
+</symbol>
+<symbol id="i-track-audio-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="3.5" y="4.5" width="17" height="7" rx="1.9"/><path d="M8 7.2v1.6M10.7 6.4v3.2M13.4 7.1v1.8M16 6.8v2.4"/><path d="M12 15.5v5M9.5 18h5"/>
+</symbol>
+<symbol id="i-track-audio-remove" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="3.5" y="4.5" width="17" height="7" rx="1.9"/><path d="M8 7.2v1.6M10.7 6.4v3.2M13.4 7.1v1.8M16 6.8v2.4"/><path d="M9.5 18h5"/>
+</symbol>
+<symbol id="i-colour" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M12 3.5s6 6.2 6 10.3a6 6 0 0 1-12 0C6 9.7 12 3.5 12 3.5Z"/><path d="M9.3 14.2a2.9 2.9 0 0 0 2.4 2.6"/>
+</symbol>
+<symbol id="i-ratio-16-9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="2.5" y="6.5" width="19" height="11" rx="2.4"/><path d="M8 12h8M14 10l2 2-2 2M10 10l-2 2 2 2"/>
+</symbol>
+<symbol id="i-ratio-9-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="6.5" y="2.5" width="11" height="19" rx="2.4"/><path d="M12 8v8M10 14l2 2 2-2M10 10l2-2 2 2"/>
+</symbol>
+<symbol id="i-ratio-custom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<rect x="3.5" y="3.5" width="17" height="17" rx="2.6" stroke-dasharray="2.6 2.8"/><path d="M12 9v6M9 12h6"/>
+</symbol>
+<symbol id="i-export" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M4.5 13v4.5a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V13"/><path d="M12 15V4.5M8 8.2l4-3.7 4 3.7"/>
+</symbol>
+<symbol id="i-ease-slow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M5.9 19.5C9 18.5 15.5 6 18.1 4.5"/><circle cx="4.5" cy="19.5" r="1.4"/><circle cx="19.5" cy="4.5" r="1.4"/>
+</symbol>
+<symbol id="i-ease-med" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M5.9 19.5C11 19.5 13 4.5 18.1 4.5"/><circle cx="4.5" cy="19.5" r="1.4"/><circle cx="19.5" cy="4.5" r="1.4"/>
+</symbol>
+<symbol id="i-ease-fast" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M5.9 19.5C13.5 19.5 10.5 4.5 18.1 4.5"/><circle cx="4.5" cy="19.5" r="1.4"/><circle cx="19.5" cy="4.5" r="1.4"/>
+</symbol>
+<symbol id="i-ease-linear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+<path d="M5.5 18.5 18.5 5.5"/><circle cx="4.5" cy="19.5" r="1.4"/><circle cx="19.5" cy="4.5" r="1.4"/>
+</symbol>
 </svg>

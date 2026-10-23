@@ -59,7 +59,7 @@ for folder, dirs, files in os.walk(PKG):
     for name in files:
         if Path(name).suffix.lower() in SKIP_SUFFIXES:
             continue
-        datas.append((str(Path(folder) / name), str(Path("premiere_deck") / rel)))  # jsx, layouts, presets, notes
+        datas.append((str(Path(folder) / name), str(Path("premiere_deck") / rel)))  # jsx, layouts, the model files, notes
 if ICON.is_file():
     datas.append((str(ICON), "."))
 

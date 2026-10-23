@@ -522,14 +522,16 @@ def _skip_folder_in_pack(name: str) -> bool:
     return low in PACK_SKIP_FOLDERS or low.startswith("media cache")
 
 
-def pack_files(root: str) -> list[tuple[str, str, int]]:
+def pack_files(root: str, exclude_dir: Optional[str] = None) -> list[tuple[str, str, int]]:
     """(absolute path, archive name, size) of every file the archive holds: the project folder minus Premiere's
-    cache and preview folders and temporary files."""
+    cache and preview folders, temporary files and `exclude_dir` (the Exports folder, which holds the archive)."""
     root = os.path.abspath(root)
     top = os.path.basename(root.rstrip("\\/"))
+    skip = os.path.normcase(os.path.abspath(exclude_dir)) if exclude_dir else None
     out = []
     for base, dirs, files in os.walk(root):
-        dirs[:] = sorted(d for d in dirs if not _skip_folder_in_pack(d))
+        dirs[:] = sorted(d for d in dirs if not _skip_folder_in_pack(d)
+                         and os.path.normcase(os.path.join(base, d)) != skip)
         for name in sorted(files):
             if _skip_in_pack(name):
                 continue
@@ -539,13 +541,18 @@ def pack_files(root: str) -> list[tuple[str, str, int]]:
     return out
 
 
-def free_zip_path(root: str) -> str:
-    root = os.path.abspath(root).rstrip("\\/")
-    candidate = root + ".zip"
+def free_zip_path(root: str, folder: Optional[str] = None, name: Optional[str] = None) -> str:
+    """A free archive name: `<root>.zip` beside the root, or `<folder>\\<name>.zip` when a folder and a name are
+    given; ` (2)`, ` (3)` ... when taken (also by a `.part` file)."""
+    if folder is not None and name:
+        base = os.path.join(os.path.abspath(folder), name)
+    else:
+        base = os.path.abspath(root).rstrip("\\/")
+    candidate = base + ".zip"
     n = 1
     while os.path.exists(candidate) or os.path.exists(candidate + PART_SUFFIX):
         n += 1
-        candidate = f"{root} ({n}).zip"
+        candidate = f"{base} ({n}).zip"
     return candidate
 
 

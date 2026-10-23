@@ -8,7 +8,8 @@ from premiere_deck.modules.quick_actions.action import Action, require_project
 class OpenProjectFolder(Action):
     id = "open_project_folder"
     label = "Open project folder"
-    short = "Project folder"
+    title = "Project folder"
+    short = "DIR"
     icon = "open-folder"
     hint = "Opens the project folder in Explorer."
     group = "Project"

@@ -17,7 +17,7 @@
 ![FFmpeg](https://img.shields.io/badge/FFmpeg-007808?logo=ffmpeg&logoColor=white)
 [![License](https://img.shields.io/badge/license-GPL--3.0-blue)](LICENSE)
 
-<img src="docs/assets/screenshot.png" alt="Premiere Deck main window on the Files tab in Crystal Black: Sort project, Sync all media, Sync used media and Make ZIP" width="860">
+<img src="docs/assets/screenshot.png" alt="Premiere Deck main window on the Files tab in Crystal Black: Sort project, Sync all media, Sync used media, Make ZIP and the Auto copy and Auto sort switches" width="860">
 
 <img src="docs/assets/idle.png" alt="Premiere Deck start screen with the Launch Premiere Pro button and the recent projects" width="36%">&nbsp;<img src="docs/assets/settings.png" alt="Premiere Deck settings sheet with the Crystal Black and Crystal Sky theme cards" width="62%">
 
@@ -45,10 +45,10 @@
 
 ## Why Premiere Deck
 
-- **Routine out of the way.** Operations that take several steps in Premiere's own interface (an adjustment layer over the selection, a numbered project version, a copy of a sequence as its next version, a 9:16 copy) become single icon tiles in a panel.
-- **Media sorted by what it is.** One button files every media item of the project folder into the layout folders and the matching bins: camera footage, stock downloads and generated clips apart; audio as voice, music or effects. Files imported from anywhere are copied into the layout, relinked and filed; a project item moved between bins moves its file.
-- **Your originals are safe.** Files outside the project folder are only copied, never moved, renamed or deleted. Inside the project folder files move between layout folders only when you press Sort project or move an item between bins, and every change is journaled and can be undone.
-- **A window that follows Premiere.** A small start screen launches Premiere Pro and lists recent projects; when the panel connects, the window widens into the Files and Actions tabs. Two themes, Crystal Black and Crystal Sky, are shared by the window and the panel.
+- **Routine out of the way.** Operations that take several steps in Premiere's own interface (an adjustment layer over the selection, a numbered project version, a copy of a sequence as its next version, a 9:16 copy, a colour label, an added track) become single compact tiles in a panel: an icon beside a short code, four to a row.
+- **Media sorted by what it is.** One button files every media item of the project folder into the layout folders and the matching bins: camera footage, stock downloads and generated clips apart; audio as voice, music or effects. Two switches make it automatic: **Auto copy** copies imported files from outside the project into `Media`, **Auto sort** files new media into the layout folders and bins. A project item moved between bins moves its file.
+- **Your originals are safe.** Files outside the project folder are only copied, never moved, renamed or deleted. Inside the project folder files move between layout folders only when you press Sort project, when Auto sort is on, or when you move an item between bins, and every change is journaled and can be undone.
+- **A window that follows Premiere.** A small start screen launches Premiere Pro and lists recent projects; when the panel connects, the window widens into the Actions and Files tabs. Two themes, Crystal Black and Crystal Sky, are shared by the window and the panel.
 - **Free and open source.** GPL-3.0, no trial, no paid tier, no account, no telemetry; build it yourself if you prefer.
 - **Portable and offline.** One `PremiereDeck.exe` with a data folder next to it. The audio model ships inside the exe; nothing is downloaded for it and none of your media is uploaded.
 
@@ -67,11 +67,12 @@
 
 | | |
 |---|---|
-| **Files** | Keeps project media sorted the same way on disk and in the project panel. **Sort project** files the media inside the project folder by content; **Sync all media** and **Sync used media** copy media from outside into a `Media` folder next to the project and relink it; **Make ZIP** packs the project folder into a `.zip` beside it after a check for offline media. Imported media is copied into the layout and filed, files dropped into the layout are imported, and bin moves are mirrored to disk. A journal lists every change with a per-entry **Undo**, and a running job has a **Stop** button. |
+| **Files** | Keeps project media sorted the same way on disk and in the project panel. **Sort project** files the media inside the project folder by content; **Sync all media** and **Sync used media** copy media from outside into a `Media` folder next to the project and relink it; **Make ZIP** packs the project folder into a `.zip` in its `Exports` folder after a check for offline media. Two switches, **Auto copy** and **Auto sort**, decide what happens to media imported later: copied into `Media`, filed into the layout folders and bins, both, or neither (the app then only watches). Files dropped into the layout are imported, and bin moves are mirrored to disk. The journal in the window lists every change with a per-entry **Undo**, and a running job has a **Stop** button. |
 | **Folders by content** | Video is told apart by camera tags, camera file names, stock-site names and generator names: camera footage goes to `Footage`, stock downloads to `Stock`, generated clips to `Generated`. Audio goes to `Audio/Voice`, `Audio/Music` or `Audio/SFX`, decided by file names, your own overrides and a small audio model (YAMNet) that runs on the processor in well under a second per file. A wrong guess is corrected by moving the item to another bin. |
-| **Quick actions** | 17 icon tiles for routine timeline and project operations in seven groups: Timeline, Selection, Clips, Tracks, Project, Sequence and Export, among them **Duplicate sequence** (copies the active sequence as `name v2`, `v3`, ...), **Save version** and **Social copy**. The window can hide any tile from the panel. Details in [QUICK_ACTIONS](docs/QUICK_ACTIONS.md). |
-| **Panel with tabs and tiles** | Files and Actions tabs inside Premiere Pro; quick actions are icon tiles in collapsible groups; hovering a tile shows its full name and what it does; a pressed tile turns into a check or a cross, the group keeps the last result line, and a failed result opens a one-line reason. The panel follows the window's theme. |
-| **Window that follows Premiere** | A compact start screen with **Launch Premiere Pro** and the three most recent projects; a waiting screen that shows the menu path to open the panel; a wide main view with the Files and Actions tabs once the panel is connected. |
+| **Quick actions** | 28 compact tiles for routine timeline and project operations in eight groups: Timeline, Tracks, Selection, Clips, Project, Sequence, Export and Keys. **Tracks** adds or removes a video or audio track and has **Solo audio track** and **Lock other tracks** as switches. **Colour label** offers Premiere's 16 label colours for the selected clips, project items and the marker at the playhead. **Sequence** holds **Duplicate sequence** (copies the active sequence as `name v2`, `v3`, ...) and reframed copies at 16:9, 9:16 or a custom width x height; **Save version** is in Project. **Export** opens Premiere's own Export mode for the active sequence and exports the frame at the playhead. **Keys** applies a slow, medium or fast ease to the keyframe pair around the playhead, or sets the pair back to linear. The window can hide any tile from the panel. Details in [QUICK_ACTIONS](docs/QUICK_ACTIONS.md). |
+| **Keyframe easing, as far as scripting goes** | Premiere's scripting exposes keyframe times, values and the interpolation type, but no bezier handles. An ease is therefore written as one linear keyframe per frame between the two keyframes, with the values of a bezier curve; **Linear keys** removes those keyframes again. The result looks like an ease and is not an editable bezier. |
+| **Panel with tabs and tiles** | Actions and Files tabs inside Premiere Pro (Actions opens first, the last tab is remembered); tiles are half-height, an icon beside a short code, four to a row, in collapsible groups; hovering a tile shows its full name and what it does; a pressed tile turns into a check or a cross, the group keeps the last result line (it hides after 3 s, after 10 s for a warning or an error), and any notice closes on a click. The panel follows the window's theme. |
+| **Window that follows Premiere** | A compact start screen with **Launch Premiere Pro** and the three most recent projects; a waiting screen that shows the menu path to open the panel; a wide main view with the Actions and Files tabs once the panel is connected. An optional activity strip (**Show activity** in Settings) lists recent results. |
 | **Two themes** | Crystal Black (dark, default) and Crystal Sky (light), set in **Settings** and applied to the window and the panel together. |
 | **Panel installs itself** | The app installs, verifies and updates its Premiere panel; **Settings** can check, reinstall or remove it. The panel only shows what the app sends, so new modules need no panel update. |
 | **Self-updating app** | New releases are detected on launch and then every five minutes, downloaded in the background (or on request), verified by size and SHA-256 and installed on **Restart**. The panel updates with the app. |
@@ -81,8 +82,8 @@
 
 | Component | Role |
 |---|---|
-| **Host** (`PremiereDeck.exe`) | Window (compact start and waiting screens, wide Files and Actions tabs, Settings sheet), tray icon, WebSocket server on `127.0.0.1`, Premiere launcher, panel installer, updater. It owns all logic and state. |
-| **Panel** (CEP extension in Premiere Pro) | A thin client: a headless agent runs the ExtendScript the host sends and forwards Premiere events; the visible panel (Files and Actions tabs) renders what the host sends and returns button presses. |
+| **Host** (`PremiereDeck.exe`) | Window (compact start and waiting screens, wide Actions and Files tabs, Settings sheet), tray icon, WebSocket server on `127.0.0.1`, Premiere launcher, panel installer, updater. It owns all logic and state. |
+| **Panel** (CEP extension in Premiere Pro) | A thin client: a headless agent runs the ExtendScript the host sends and forwards Premiere events; the visible panel (Actions and Files tabs) renders what the host sends and returns button presses. |
 | **Modules** (Files, Quick actions) | Each module is code in the host behind one contract: a status, settings, actions, a panel section and a window page. A new module touches nothing in the panel. |
 
 The window has three states that follow Premiere: **idle** (Premiere is not running), **waiting** (Premiere runs, the panel is not open yet) and **connected** (the panel is open; the window widens). The app never opens the panel itself.
@@ -92,14 +93,34 @@ Contracts: [ARCHITECTURE](docs/ARCHITECTURE.md) · [PROTOCOL](docs/PROTOCOL.md) 
 ## Usage
 
 1. Run `PremiereDeck.exe`. The start screen shows the Premiere status, **Launch Premiere Pro** and the three most recent projects; a click on a project starts Premiere with it.
-2. Press **Launch Premiere Pro** (or start Premiere yourself). The window then shows **Waiting for the panel**: open **Window > Extensions > Premiere Deck** once, and Premiere keeps the panel in the workspace for later sessions. The window widens and shows the **Files** and **Actions** tabs. The waiting screen also has **Check panel update**, **Check for updates** and **Reinstall panel**.
-3. **Files:** open a project and press **Set up project** in the panel or on the Files tab. The app creates the 13 layout folders and the matching bins: `Footage`, `Stock`, `Generated`, `Overlays`, `Audio/Music`, `Audio/SFX`, `Audio/Voice`, `Graphics`, `Motion`, `Media`, `Exports`, `Exports/Frames` and `Project`. From then on:
-   - Media imported from outside the project folder is copied into the layout, relinked and filed; files dropped into a layout folder are imported into the matching bin; moving an item to another bin moves its file.
+2. Press **Launch Premiere Pro** (or start Premiere yourself). The window then shows **Waiting for the panel**: open **Window > Extensions > Premiere Deck** once, and Premiere keeps the panel in the workspace for later sessions. The window widens and shows the **Actions** and **Files** tabs. The waiting screen also has **Check panel update**, **Check for updates** and **Reinstall panel**.
+3. **Files:** open a project and press **Set up project** in the panel or on the Files tab. The app creates the 13 layout folders and the matching bins: `Footage`, `Stock`, `Generated`, `Overlays`, `Audio/Music`, `Audio/SFX`, `Audio/Voice`, `Graphics`, `Motion`, `Media`, `Exports`, `Exports/Frames` and `Project`. Setting up does not turn the switches on. From then on:
+   - The two switches beside **Set up project** (on the Files tab of the panel and of the window) are off for a new project; a project set up with 2.0 keeps its automatic filing and has both on. **Auto copy** copies media imported from outside the project folder into `Media` and relinks it. **Auto sort** files new media of the project folder (copied by Auto copy, dropped into a layout folder or loose in the project folder) into the layout folders and bins by content. With both on, an outside file is copied straight into its layout folder. With both off the app only watches.
+   - Files dropped into a layout folder are imported into the matching bin; moving an item to another bin moves its file.
    - **Sort project** files the media that already lies inside the project folder into the layout folders and bins by content. Files inside the project folder are moved; files outside it are copied and never touched.
    - **Sync all media** copies every item whose file lies outside the project folder into `Media` next to the project; **Sync used media** does the same for the items placed in sequences. Nothing is sorted or deleted; run **Sort project** afterwards to file the synced media.
-   - **Make ZIP** checks for offline media and writes `<project folder>.zip` beside the project folder. While media is still outside the folder it asks for a sync first.
-   - **Stop** ends a running job, and **Undo last** and the journal's **Undo** reverse changes.
-4. **Quick actions:** select clips or place the playhead in Premiere and press a tile in the panel. **Social copy** and **Export sequence** carry a badge (a format such as 9:16, or an export preset) that opens a small menu; presets are the built-in ones plus any `.epr` file placed in `premiere-deck_data\presets\`. The **Actions** tab of the window holds one switch per action for what the panel shows.
+   - **Make ZIP** checks for offline media and writes `<project name>.zip` into the project's `Exports` folder (the folder itself is left out of the archive), with a report file beside it. While media is still outside the folder it asks for a sync first.
+   - **Stop** ends a running job, and **Undo last** (and the journal's **Undo** in the window) reverse changes.
+4. **Quick actions:** select clips or place the playhead in Premiere and press a tile in the panel; hover a tile for its full name. Codes are short on purpose, and the table below lists them. How a few of them work:
+   - **CLR** (Colour label) has a menu of Premiere's 16 label colours. A pick colours the selected timeline clips through Premiere's own Edit > Label menu (the host posts the menu command; with nothing selected in the timeline it colours the items selected in the Project panel, bins included) and the marker at the playhead, using the nearest of Premiere's 8 marker colours. The result line says what was coloured.
+   - **16:9**, **9:16** and **CUST** make a reframed copy of the active sequence (Auto Reframe) named `<name> 16x9`, `<name> 9x16` or `<name> <W>x<H>`; the frame size follows the ratio (a 1080x1920 sequence becomes 1920x1080 at 16:9). **CUST** takes a size such as `1080x1350`.
+   - **EXP** opens Premiere's Export mode for the active sequence (the host posts File > Export > Media). Presets and settings are chosen in Premiere.
+   - **SLOW**, **MED** and **FAST** ease the keyframe pair around the playhead on every animated property of the selected clip; **LIN** sets the pair back to linear. The ease is written as one keyframe per frame (see Features), so a long pair adds many keyframes.
+   - **SOLO** and **LOCK** are switches: on mutes every other audio track (or locks every track without a selected clip); off restores the earlier states.
+   - The **Actions** tab of the window holds one switch per action for what the panel shows.
+
+| Group | Codes = full names |
+|---|---|
+| Timeline | ADJ = Adjustment layer · RZR = Razor all tracks · EMPT = Delete empty tracks |
+| Tracks | +V = Add video track · +A = Add audio track · −V = Remove video track · −A = Remove audio track · SOLO = Solo audio track · LOCK = Lock other tracks |
+| Selection | SRC = Select same source · OFF = Select offline clips |
+| Clips | FIT = Set to frame size · CLR = Colour label · BIN = Colour labels by bin |
+| Project | SAVE = Save version · CONS = Consolidate duplicates · DIR = Open project folder · REV = Reveal clip file |
+| Sequence | DUP = Duplicate sequence · 16:9 = Reframe 16:9 · 9:16 = Reframe 9:16 · CUST = Reframe custom size |
+| Export | EXP = Export · FRM = Export frame |
+| Keys | SLOW = Ease slow · MED = Ease medium · FAST = Ease fast · LIN = Linear keys |
+
+The Files tab has its own codes: SETUP = Set up project · SORT = Sort project · SYNC = Sync all media · USED = Sync used media · ZIP = Make ZIP · AUTO COPY and AUTO SORT (the two switches).
 
 Closing the window hides the app to the tray while Premiere runs; it exits when Premiere exits or on **Quit**.
 
@@ -110,10 +131,10 @@ Closing the window hides the app to the tray while Premiere runs; it exits when 
 | **Quit** | Exits the app |
 
 <p align="center">
-  <img src="docs/assets/files.png" alt="The Actions tab in Crystal Sky: one switch per quick action, grouped, and the export presets folder" width="860">
+  <img src="docs/assets/files.png" alt="The Actions tab in Crystal Sky: one switch per quick action, in the eight groups Timeline, Tracks, Selection, Clips, Project, Sequence, Export and Keys" width="860">
 </p>
 
-<p align="center"><sub>The Actions tab in Crystal Sky: every quick action can be shown in or hidden from the panel.</sub></p>
+<p align="center"><sub>The Actions tab in Crystal Sky: every quick action can be shown in or hidden from the panel; the new Tracks, Export and Keys groups are in the second column.</sub></p>
 
 ## Settings
 
@@ -123,6 +144,7 @@ In the **Settings** sheet (the gear in the title bar):
 |---|---|
 | **Theme** | Crystal Black (default) or Crystal Sky, for the window and the panel. |
 | **Keep running with Premiere** | Closing the window hides it to the tray while Premiere Pro is running (default on). |
+| **Show activity** | Shows a strip of recent results under the Premiere card of the main window (default off, Behaviour group). |
 | **Updates** | **Check for updates** and **Download updates automatically** (default on) for the app; the installed and bundled panel versions with **Check now** and **Reinstall**. |
 | **Premiere** | The executable, detected automatically; **Choose file** overrides it, **Use detected** restores it. |
 | **Panel** | Target folder, extension debug mode state, **Remove the panel from Premiere**. |
@@ -131,7 +153,7 @@ In the **Settings** sheet (the gear in the title bar):
 | **Data** | Location of the app's data, with **Open**. |
 | **About** | Version, licence and the GitHub link. |
 
-Module settings are on the module tabs: below the fold of the Files tab are the layout editor (folders, rules, overrides) and the project switches (watch, enforce bins, mirror bins, import exports); the Actions tab holds the visibility of each quick action and the export presets folder.
+Module settings are on the module tabs: the Files tab has the **Auto copy** and **Auto sort** switches beside **Set up project**, and below the fold the layout editor (folders, rules, overrides) and the project switches (watch, enforce bins, mirror bins, import exports); the Actions tab holds the visibility of each quick action.
 
 ## Data and privacy
 
@@ -142,19 +164,18 @@ All runtime data lives in `premiere-deck_data\` next to `PremiereDeck.exe` (over
 | `settings.json` | Preferences |
 | `bin\` | `ffmpeg.exe` and `ffprobe.exe` when they are not taken from the system path |
 | `panel\` | The panel staged for installation |
-| `presets\` | Your own Media Encoder export presets (`.epr`) |
 | `logs\` | `host.log` (rotating) and one log per job |
 | `webview\` | The window's WebView2 profile |
 | `updates\` | Downloaded app updates and the updater's log |
 
-There is no models folder: the YAMNet audio model is part of the exe, is read from it and is never downloaded or copied out. At start the app removes the `models\` and `cache\search\` folders that earlier versions left in the data folder.
+There is no models folder: the YAMNet audio model is part of the exe, is read from it and is never downloaded or copied out. At start the app removes the `models\` and `cache\search\` folders that earlier versions left in the data folder. A `presets\` folder left by version 2.0 is no longer used and can be deleted by hand; the app does not touch it.
 
 Two locations are outside the data folder, because Adobe dictates them:
 
 - `%APPDATA%\Adobe\CEP\extensions\com.softoblivion.premieredeck\` holds the installed panel; the app owns this folder and writes, replaces and removes it.
 - `HKCU\Software\Adobe\CSXS.<n>\PlayerDebugMode` is written only as the fallback described in the note under Quick start, after a confirmation, and removed from **Settings**.
 
-Inside each project folder the app keeps a hidden `.premiere-deck\` folder with the project's layout and settings, and the Files journal. It travels with the project when the folder is copied. An `index\` folder inside `.premiere-deck\` left by an earlier version is unused and can be deleted by hand.
+Inside each project folder the app keeps a hidden `.premiere-deck\` folder with the project's layout and settings, and the Files journal. It travels with the project when the folder is copied; the two switches Auto copy and Auto sort are stored there. An `index\` folder inside `.premiere-deck\` left by an earlier version is unused and can be deleted by hand.
 
 Network traffic:
 
@@ -210,7 +231,8 @@ premiere-deck/
 │   ├── host/          WebSocket server, Premiere launcher, panel installer, module registry, host facade
 │   ├── premiere/      Premiere facade (typed operations) and the ExtendScript files behind it
 │   ├── modules/       Files and Quick actions modules behind one contract
-│   │   └── files/     sorting, sync, ZIP, journal, layouts and models/ (YAMNet audio model, class map, licence)
+│   │   ├── files/     sorting, sync, ZIP, journal, layouts and models/ (YAMNet audio model, class map, licence)
+│   │   └── quick_actions/  one class per action, ExtendScript files, keyframe easing, Premiere menu commands
 │   ├── panel/         the CEP extension installed into Premiere Pro (tabs, tiles, tooltips, fonts)
 │   ├── shell/         entry point, window, size animation, JS <-> Python bridge, Windows helpers
 │   ├── ui/            HTML / CSS / JS of the host window, themes.json and the Liquid UI kit copy (Crystal themes, Sora)

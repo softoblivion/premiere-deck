@@ -1,3 +1,4 @@
+import importlib
 import os
 import re
 import shutil
@@ -10,12 +11,15 @@ from unittest import mock
 
 from premiere_deck.host import protocol as P
 from premiere_deck.modules.base import FakeHost
-from premiere_deck.modules.quick_actions import presets as presets_mod
+from premiere_deck.modules.quick_actions import easing, premiere_window
 from premiere_deck.modules.quick_actions.action import JSX_DIR, error_sentence, safe_file_stem, script_text, timecode
+from premiere_deck.modules.quick_actions.actions.colour import MARKER_COLOURS, MARKER_FOR, SWATCHES, VIA_ITEMS
+from premiere_deck.modules.quick_actions.actions.create_16_9 import free_name, target_size
+from premiere_deck.modules.quick_actions.actions.create_custom import parse_size, ratio
 from premiere_deck.modules.quick_actions.actions.duplicate_sequence import next_sequence_name
+from premiere_deck.modules.quick_actions.actions.ease_slow import NO_PAIR
 from premiere_deck.modules.quick_actions.actions.label_by_bin import plan_labels
 from premiere_deck.modules.quick_actions.actions.save_version import next_version_path, version_folder
-from premiere_deck.modules.quick_actions.actions.social_copy import target_size
 from premiere_deck.modules.quick_actions.module import QuickActionsModule, _ModuleThreadPremiere
 from premiere_deck.premiere.model import (
     COLOR_LABELS, PremiereError, ProjectItem, Selection, SequenceInfo, TrackItem,
@@ -24,30 +28,54 @@ from premiere_deck.premiere.model import (
 SEQUENCE = SequenceInfo("seq1", "Spring", 1920, 1080, 25.0, 60.0)
 V1 = TrackItem("seq1", "video", 0, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True)
 A2 = TrackItem("seq1", "audio", 1, 0, "a.mp4", "n1", 12.0, 18.0, 0.0, 6.0, True)
+TPS = easing.TICKS_PER_SECOND
+REAL_MENU_RUN = premiere_window.run
+FRAME = TPS // 25
 
-NEEDS_SEQUENCE = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
-                  "select_offline", "scale_to_frame", "solo_track", "lock_others", "reveal_clip", "duplicate_sequence",
-                  "social_copy", "export_frame", "export_sequence")
-NEEDS_SELECTION = ("select_same_source", "scale_to_frame", "solo_track", "lock_others", "reveal_clip")
-SCRIPTED = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
-            "select_offline", "scale_to_frame", "solo_track", "lock_others", "consolidate_duplicates",
-            "duplicate_sequence", "social_copy", "export_frame", "export_sequence")
-ALL_IDS = ("adjustment_layer", "razor_all", "delete_empty_tracks", "select_same_source",
-           "select_offline", "scale_to_frame", "label_by_bin", "solo_track", "lock_others", "save_version",
-           "consolidate_duplicates", "open_project_folder", "reveal_clip", "duplicate_sequence", "social_copy",
-           "export_frame", "export_sequence")
-# docs/QUICK_ACTIONS.md 1: id -> (icon, short)
-TILES = {
-    "adjustment_layer": ("adjustment-layer", "Adjustment layer"), "razor_all": ("razor-all", "Razor all"),
-    "delete_empty_tracks": ("delete-empty-tracks", "Empty tracks"),
-    "select_same_source": ("select-same-source", "Same source"), "select_offline": ("select-offline", "Offline clips"),
-    "scale_to_frame": ("scale-to-frame", "Frame size"), "label_by_bin": ("label-by-bin", "Label by bin"),
-    "solo_track": ("solo-track", "Solo track"), "lock_others": ("lock-others", "Lock others"),
-    "save_version": ("save-version", "Save version"), "consolidate_duplicates": ("consolidate", "Consolidate"),
-    "open_project_folder": ("open-folder", "Project folder"), "reveal_clip": ("reveal-clip", "Reveal clip"),
-    "duplicate_sequence": ("duplicate-sequence", "Duplicate"), "social_copy": ("social-copy", "Social copy"),
-    "export_frame": ("export-frame", "Export frame"), "export_sequence": ("export-sequence", "Export"),
+EASES = ("ease_slow", "ease_med", "ease_fast", "ease_linear")
+TRACKS = ("add_video_track", "add_audio_track", "remove_video_track", "remove_audio_track")
+REFRAMES = ("create_16_9", "create_9_16", "create_custom")
+NEEDS_SEQUENCE = ("adjustment_layer", "razor_all", "delete_empty_tracks") + TRACKS + (
+    "solo_track", "lock_others", "select_same_source", "select_offline", "scale_to_frame", "reveal_clip",
+    "duplicate_sequence") + REFRAMES + ("export_open", "export_frame") + EASES
+NEEDS_SELECTION = ("select_same_source", "scale_to_frame", "solo_track", "lock_others", "reveal_clip") + EASES
+# action id -> the script its first eval runs (docs/QUICK_ACTIONS.md 5)
+SCRIPT_OF = {
+    "adjustment_layer": "adjustment_layer", "razor_all": "razor_all", "delete_empty_tracks": "delete_empty_tracks",
+    "add_video_track": "add_track", "add_audio_track": "add_track", "remove_video_track": "remove_track",
+    "remove_audio_track": "remove_track", "solo_track": "solo_track", "lock_others": "lock_others",
+    "select_same_source": "select_same_source", "select_offline": "select_offline",
+    "scale_to_frame": "scale_to_frame", "colour": "colour", "consolidate_duplicates": "consolidate_duplicates",
+    "duplicate_sequence": "duplicate_sequence", "create_16_9": "reframe", "create_9_16": "reframe",
+    "create_custom": "reframe", "export_open": "export_open", "export_frame": "export_frame",
+    "ease_slow": "ease_read", "ease_med": "ease_read", "ease_fast": "ease_read", "ease_linear": "ease_read",
 }
+# docs/QUICK_ACTIONS.md 1, in panel order: id -> (group, icon, short)
+TILES = {
+    "adjustment_layer": ("Timeline", "adjustment-layer", "ADJ"), "razor_all": ("Timeline", "razor-all", "RZR"),
+    "delete_empty_tracks": ("Timeline", "delete-empty-tracks", "EMPT"),
+    "add_video_track": ("Tracks", "track-video-add", "+V"), "add_audio_track": ("Tracks", "track-audio-add", "+A"),
+    "remove_video_track": ("Tracks", "track-video-remove", "\u2212V"),
+    "remove_audio_track": ("Tracks", "track-audio-remove", "\u2212A"),
+    "solo_track": ("Tracks", "solo-track", "SOLO"), "lock_others": ("Tracks", "lock-others", "LOCK"),
+    "select_same_source": ("Selection", "select-same-source", "SRC"),
+    "select_offline": ("Selection", "select-offline", "OFF"),
+    "scale_to_frame": ("Clips", "scale-to-frame", "FIT"), "colour": ("Clips", "colour", "CLR"),
+    "label_by_bin": ("Clips", "label-by-bin", "BIN"),
+    "save_version": ("Project", "save-version", "SAVE"), "consolidate_duplicates": ("Project", "consolidate", "CONS"),
+    "open_project_folder": ("Project", "open-folder", "DIR"), "reveal_clip": ("Project", "reveal-clip", "REV"),
+    "duplicate_sequence": ("Sequence", "duplicate-sequence", "DUP"), "create_16_9": ("Sequence", "ratio-16-9", "16:9"),
+    "create_9_16": ("Sequence", "ratio-9-16", "9:16"), "create_custom": ("Sequence", "ratio-custom", "CUST"),
+    "export_open": ("Export", "export", "EXP"), "export_frame": ("Export", "export-frame", "FRM"),
+    "ease_slow": ("Keys", "ease-slow", "SLOW"), "ease_med": ("Keys", "ease-med", "MED"),
+    "ease_fast": ("Keys", "ease-fast", "FAST"), "ease_linear": ("Keys", "ease-linear", "LIN"),
+}
+ALL_IDS = tuple(TILES)
+GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Project", "Sequence", "Export", "Keys")
+SCRIPTS = {"adjustment_layer", "razor_all", "delete_empty_tracks", "add_track", "remove_track", "solo_track",
+           "lock_others", "select_same_source", "select_offline", "scale_to_frame", "colour",
+           "consolidate_duplicates", "duplicate_sequence", "reframe", "export_open", "export_frame", "ease_read",
+           "ease_apply"}
 
 
 def flat(nodes):
@@ -60,8 +88,8 @@ def flat(nodes):
     return out
 
 
-def rendered_button(module, action_id):
-    return next(n for n in flat(module.render()) if n.get("id") == action_id)
+def rendered(module, node_id):
+    return next(n for n in flat(module.render()) if n.get("id") == node_id)
 
 
 class QuickActionsCase(unittest.TestCase):
@@ -73,11 +101,17 @@ class QuickActionsCase(unittest.TestCase):
         patcher = mock.patch.dict(os.environ, {"PREMIERE_DECK_HOME": str(self.home)})
         patcher.start()
         self.addCleanup(patcher.stop)
-        self.system_root = self.home / "adobe" / "systempresets"
-        h264 = self.system_root / "4E49434B_48323634"
-        h264.mkdir(parents=True)
-        for name in ("YouTube 1080p HD.epr", "01 - Match Source - High bitrate.epr"):
-            (h264 / name).write_text("<PremiereData/>", encoding="utf-8")
+        # Premiere's menu bar is never reached from a test: commands are recorded and succeed unless told otherwise.
+        self.menu_runs = []
+        self.menu_ok = True
+
+        def run(commands):
+            self.menu_runs.append(list(commands))
+            return self.menu_ok
+
+        menu = mock.patch.object(premiere_window, "run", side_effect=run)
+        menu.start()
+        self.addCleanup(menu.stop)
         self.host, self.module = self.make()
 
     def make(self, *, manual_jobs=False, settings=None, sequence=SEQUENCE, selection=(V1, A2), project=True):
@@ -87,13 +121,12 @@ class QuickActionsCase(unittest.TestCase):
         host.premiere.active_sequence_value = sequence
         host.premiere.selection_value = Selection("seq1", tuple(selection))
         module = QuickActionsModule(host.context())
-        module.preset_roots = [self.system_root]
         module.start()
         return host, module
 
     def click(self, action_id, module=None, host=None, value=None):
-        """Presses a tile; returns the reported (outcome, text) and keeps its detail in `self.detail`. A press never
-        sends a toast (docs/MODULES.md 4)."""
+        """Presses a tile (or sends `value` to a switch, menu or input id); returns the reported (outcome, text) and
+        keeps its detail in `self.detail`. A press never sends a toast (docs/MODULES.md 4)."""
         module = module or self.module
         host = host or self.host
         results, toasts = len(host.ui.results), len(host.ui.toasts)
@@ -104,7 +137,7 @@ class QuickActionsCase(unittest.TestCase):
         if len(host.ui.results) == results:
             return None
         button_id, outcome, text, self.detail = host.ui.results[-1]
-        self.assertEqual(button_id, action_id)
+        self.assertEqual(button_id, action_id.split(".")[0])
         return outcome, text
 
     def evals(self, host=None, name=None):
@@ -129,7 +162,7 @@ class Preconditions(QuickActionsCase):
 
     def test_no_project(self):
         for action_id in ("save_version", "open_project_folder", "label_by_bin", "consolidate_duplicates",
-                          "export_frame", "export_sequence"):
+                          "export_frame"):
             with self.subTest(action_id):
                 host, module = self.make(project=False)
                 self.assertEqual(self.click(action_id, module, host), ("warn", "No project open"))
@@ -139,6 +172,8 @@ class Preconditions(QuickActionsCase):
         self.assertEqual(self.click("open_project_folder", module, host)[0], "neutral")
         self.assertEqual(self.click("consolidate_duplicates", module, host), ("ok", "Duplicates consolidated"))
         self.assertEqual(self.click("save_version", module, host)[0], "ok")
+        host.premiere.eval_results["actions.colour"] = {"items": 1}
+        self.assertEqual(self.click("colour", module, host), ("ok", "Coloured 1 item Cerulean"))
 
     def test_not_connected(self):
         for action_id in ALL_IDS:
@@ -150,10 +185,10 @@ class Preconditions(QuickActionsCase):
 
 class ScriptErrors(QuickActionsCase):
     def test_user_sentence_is_shown(self):
-        for action_id in SCRIPTED:
+        for action_id, script in SCRIPT_OF.items():
             with self.subTest(action_id):
                 host, module = self.make()
-                host.premiere.eval_errors[f"actions.{action_id}"] = PremiereError(
+                host.premiere.eval_errors[f"actions.{script}"] = PremiereError(
                     "Error: deck: No free video track above the selection.", 12, "var seq")
                 label = module.actions[action_id].label
                 with self.assertLogs("module.actions.test", level="WARNING"):
@@ -162,15 +197,21 @@ class ScriptErrors(QuickActionsCase):
                 self.assertEqual(self.detail, "No free video track above the selection.")
 
     def test_raw_errors_are_not_shown(self):
-        for action_id in SCRIPTED:
+        for action_id, script in SCRIPT_OF.items():
             with self.subTest(action_id):
                 host, module = self.make()
-                host.premiere.eval_errors[f"actions.{action_id}"] = PremiereError("undefined is not an object", 3)
+                host.premiere.eval_errors[f"actions.{script}"] = PremiereError("undefined is not an object", 3)
                 label = module.actions[action_id].label
                 with self.assertLogs("module.actions.test", level="WARNING"):
                     toast = self.click(action_id, module, host)
                 self.assertEqual(toast, ("error", f"{label} failed"))
                 self.assertEqual(self.detail, "Premiere reported a script error.")
+
+    def test_timeout_sentence(self):
+        self.host.premiere.eval_errors["actions.reframe"] = PremiereError("timeout")
+        with self.assertLogs("module.actions.test", level="WARNING"):
+            self.assertEqual(self.click("create_9_16"), ("error", "Reframe 9:16 failed"))
+        self.assertEqual(self.detail, "Premiere is waiting for a dialog.")
 
     def test_facade_errors_of_host_side_actions(self):
         self.host.premiere.save_project_as = mock.Mock(side_effect=PremiereError("deck: The disk is full."))
@@ -218,12 +259,6 @@ class TimelineActions(QuickActionsCase):
         self.click("adjustment_layer", module, host)
         self.assertEqual(self.evals(host)[0][1]["min_track"], 0)
 
-    def test_remove_gaps_is_gone(self):
-        self.assertNotIn("remove_gaps", self.module.actions)
-        self.assertFalse((JSX_DIR / "remove_gaps.jsx").exists())
-        self.assertEqual(self.module.on_action("actions.remove_gaps").toast[0], "warn")  # an unknown id
-        self.assertEqual(self.host.premiere.calls_named("eval"), [])
-
     def test_razor_all(self):
         results = self.host.premiere.eval_results
         results["actions.razor_all"] = {"cuts": 3, "locked": 0, "failed": 0, "seconds": 62.4}
@@ -245,6 +280,90 @@ class TimelineActions(QuickActionsCase):
         self.assertEqual(self.click("delete_empty_tracks"), ("ok", "Deleted 2 video tracks and 1 audio track"))
         results["actions.delete_empty_tracks"] = {"video": 0, "audio": 0}
         self.assertEqual(self.click("delete_empty_tracks"), ("neutral", "No empty tracks"))
+
+
+class TrackActions(QuickActionsCase):
+    def test_add_tracks(self):
+        self.host.premiere.eval_results["actions.add_track"] = lambda a: {
+            "kind": a["kind"], "index": 3 if a["kind"] == "video" else 2, "count": 4}
+        self.assertEqual(self.click("add_video_track"), ("ok", "Added V4"))
+        self.assertEqual(self.click("add_audio_track"), ("ok", "Added A3"))
+        self.assertEqual([args for _, args, _ in self.evals(name="actions.add_track")],
+                         [{"kind": "video", "audio_type": 1}, {"kind": "audio", "audio_type": 1}])
+
+    def test_remove_tracks(self):
+        results = self.host.premiere.eval_results
+        cases = (({"removed": True, "index": 2}, ("ok", "Removed V3"), ("ok", "Removed A3")),
+                 ({"removed": False, "reason": "not_empty", "index": 2}, ("warn", "V3 is not empty"),
+                  ("warn", "A3 is not empty")),
+                 ({"removed": False, "reason": "locked", "index": 1}, ("warn", "V2 is locked"),
+                  ("warn", "A2 is locked")),
+                 ({"removed": False, "reason": "last", "index": 0}, ("neutral", "V1 is the only video track"),
+                  ("neutral", "A1 is the only audio track")))
+        for answer, video, audio in cases:
+            with self.subTest(answer=answer):
+                results["actions.remove_track"] = answer
+                self.assertEqual(self.click("remove_video_track"), video)
+                self.assertEqual(self.click("remove_audio_track"), audio)
+        results["actions.remove_track"] = {"removed": False, "reason": "odd"}
+        self.assertEqual(self.click("remove_video_track"), ("error", "Remove video track failed"))
+        self.assertEqual(self.detail, "Premiere did not remove the track.")
+        self.assertEqual({args["kind"] for _, args, _ in self.evals(name="actions.remove_track")}, {"video", "audio"})
+
+
+class SwitchActions(QuickActionsCase):
+    def solo(self):
+        self.host.premiere.eval_results["actions.solo_track"] = lambda a: (
+            {"states": [0, 1, 0], "count": 3} if a["mode"] == "solo" else {"restored": 3})
+
+    def test_solo_is_a_switch_with_state(self):
+        self.solo()
+        node = rendered(self.module, "actions.solo_track")
+        self.assertEqual((node["kind"], node["value"], node["short"], node["icon"]),
+                         ("switch", False, "SOLO", "solo-track"))
+        self.assertEqual(self.click("solo_track", value=True), ("ok", "Soloed A2"))
+        self.assertEqual(self.evals()[-1][1], {"mode": "solo", "sequence_id": "seq1", "keep_index": 1})
+        node = rendered(self.module, "actions.solo_track")
+        self.assertEqual((node["value"], node["label"]), (True, "Solo audio track"))
+        self.assertIsNone(self.click("solo_track", value=True), "already on: nothing runs")
+        self.assertEqual(len(self.evals()), 1)
+        self.assertEqual(self.click("solo_track", value=False), ("neutral", "Audio tracks restored"))
+        self.assertEqual(self.evals()[-1][1], {"mode": "restore", "sequence_id": "seq1", "states": [0, 1, 0]})
+        self.assertFalse(rendered(self.module, "actions.solo_track")["value"])
+        self.assertIsNone(self.click("solo_track", value=False), "already off: nothing runs")
+
+    def test_refused_switch_stays_off(self):
+        host, module = self.make(selection=(V1,))
+        self.assertEqual(self.click("solo_track", module, host, value=True), ("warn", "Select a clip with audio"))
+        self.assertFalse(rendered(module, "actions.solo_track")["value"])
+        self.assertEqual(self.evals(host), [])
+
+    def test_lock_round_trip(self):
+        self.host.premiere.eval_results["actions.lock_others"] = lambda a: (
+            {"states": {"video": [0, 0, 1], "audio": [0, 0]}, "locked": 2} if a["mode"] == "lock" else {"restored": 5})
+        self.assertEqual(self.click("lock_others", value=True), ("ok", "Locked 2 tracks"))
+        self.assertEqual(self.evals()[-1][1]["keep"], [{"kind": "audio", "index": 1}, {"kind": "video", "index": 0}])
+        self.assertTrue(rendered(self.module, "actions.lock_others")["value"])
+        self.assertEqual(self.click("lock_others", value=False), ("neutral", "Track locks restored"))
+        self.assertEqual(self.evals()[-1][1]["states"], {"video": [0, 0, 1], "audio": [0, 0]})
+        self.assertFalse(rendered(self.module, "actions.lock_others")["value"])
+
+    def test_lock_nothing_to_lock_stays_off(self):
+        self.host.premiere.eval_results["actions.lock_others"] = {"states": {}, "locked": 0}
+        self.assertEqual(self.click("lock_others", value=True), ("neutral", "No other tracks to lock"))
+        self.assertFalse(rendered(self.module, "actions.lock_others")["value"])
+
+    def test_project_closed_forgets_state(self):
+        self.solo()
+        self.click("solo_track", value=True)
+        self.module.project_closed()
+        self.assertFalse(rendered(self.module, "actions.solo_track")["value"])
+
+    def test_switch_is_busy_while_running(self):
+        node = self.module._tile(self.module.actions["solo_track"])
+        self.assertFalse(node["busy"])
+        self.module._running["solo_track"] = object()
+        self.assertTrue(self.module._tile(self.module.actions["solo_track"])["busy"])
 
 
 class SelectionAndClipActions(QuickActionsCase):
@@ -307,48 +426,68 @@ class SelectionAndClipActions(QuickActionsCase):
         self.assertIn("c11", plan[COLOR_LABELS.index("Teal")])
 
 
-class TrackToggles(QuickActionsCase):
-    def test_solo_then_restore(self):
-        self.host.premiere.eval_results["actions.solo_track"] = lambda a: (
-            {"states": [0, 1, 0], "count": 3} if a["mode"] == "solo" else {"restored": 3})
-        self.assertEqual(self.click("solo_track"), ("ok", "Soloed A2"))
-        self.assertEqual(self.evals()[-1][1], {"mode": "solo", "sequence_id": "seq1", "keep_index": 1})
-        button = self._button("solo_track")
-        self.assertEqual((button["label"], button["tone"]), ("Restore audio", "accent"))
-        self.assertEqual(self.click("solo_track"), ("neutral", "Audio tracks restored"))
-        self.assertEqual(self.evals()[-1][1], {"mode": "restore", "sequence_id": "seq1", "states": [0, 1, 0]})
-        self.assertEqual(self._button("solo_track")["label"], "Solo audio track")
+class ColourAction(QuickActionsCase):
+    def test_menu_of_the_sixteen_labels(self):
+        node = rendered(self.module, "actions.colour")
+        self.assertEqual(node["menu"]["id"], "actions.colour.label")
+        self.assertEqual([o["value"] for o in node["menu"]["options"]], list(COLOR_LABELS))
+        self.assertEqual([o["label"] for o in node["menu"]["options"]], list(COLOR_LABELS))
+        self.assertEqual((node["menu"]["value"], node["menu"]["badge"]), ("Cerulean", "Cerulean"))
+        self.assertEqual(len(COLOR_LABELS), 16)
+        self.assertEqual(set(MARKER_FOR), set(COLOR_LABELS))
+        self.assertTrue(set(MARKER_FOR.values()) <= set(MARKER_COLOURS))
+        self.assertEqual([o["swatch"] for o in node["menu"]["options"]], [SWATCHES[name] for name in COLOR_LABELS])
+        self.assertTrue(all(re.fullmatch(r"#[0-9a-f]{6}", colour) for colour in SWATCHES.values()))
 
-    def test_solo_needs_audio(self):
-        host, module = self.make(selection=(V1,))
-        self.assertEqual(self.click("solo_track", module, host), ("warn", "Select a clip with audio"))
+    def test_pick_colours_the_timeline_selection(self):
+        self.host.premiere.eval_results["actions.colour"] = {"clips": 2, "markers": 1, "sequence": "Spring"}
+        self.assertEqual(self.click("colour.label", value="Rose"), ("ok", "Coloured 2 clips Rose · 1 marker Red"))
+        self.assertIsNone(self.detail)
+        self.assertEqual(self.evals()[0][1], {"label": 6, "marker": 1, "mode": "select"})
+        self.assertEqual(self.menu_runs, [premiere_window.label_commands("Spring", 6, "Rose")])
+        self.assertEqual(self.module.choice(self.module.actions["colour"], "label"), "Rose")
+        self.assertEqual(rendered(self.module, "actions.colour")["menu"]["badge"], "Rose")
+        self.assertEqual(self.click("colour")[1], "Coloured 2 clips Rose · 1 marker Red", "a press reuses the pick")
 
-    def test_lock_then_restore(self):
-        self.host.premiere.eval_results["actions.lock_others"] = lambda a: (
-            {"states": {"video": [0, 0, 1], "audio": [0, 0]}, "locked": 2} if a["mode"] == "lock" else {"restored": 5})
-        self.assertEqual(self.click("lock_others"), ("ok", "Locked 2 tracks"))
-        self.assertEqual(self.evals()[-1][1]["keep"], [{"kind": "audio", "index": 1}, {"kind": "video", "index": 0}])
-        self.assertEqual(self._button("lock_others")["label"], "Restore locks")
-        self.assertEqual(self.click("lock_others"), ("neutral", "Track locks restored"))
-        self.assertEqual(self.evals()[-1][1]["states"], {"video": [0, 0, 1], "audio": [0, 0]})
+    def test_menu_unreachable_falls_back_to_project_items(self):
+        self.menu_ok = False
+        self.host.premiere.eval_results["actions.colour"] = {"clips": 3, "sequence": "Spring"}
+        self.assertEqual(self.click("colour"), ("warn", "Coloured 3 clips Cerulean"))
+        self.assertEqual(self.detail, VIA_ITEMS)
+        self.assertEqual([args["mode"] for _, args, _ in self.evals()], ["select", "clip_items"])
 
-    def test_lock_nothing_to_lock_keeps_no_state(self):
-        self.host.premiere.eval_results["actions.lock_others"] = {"states": {}, "locked": 0}
-        self.assertEqual(self.click("lock_others"), ("neutral", "No other tracks to lock"))
-        self.assertNotIn("lock_others", self.module.toggles)
+    def test_project_items_markers_and_nothing(self):
+        results = self.host.premiere.eval_results
+        results["actions.colour"] = {"items": 2, "bins": 1, "markers": 0}
+        self.assertEqual(self.click("colour"), ("ok", "Coloured 2 items and 1 bin Cerulean"))
+        results["actions.colour"] = {"markers": 1}
+        self.assertEqual(self.click("colour"), ("ok", "Coloured 1 marker Blue"))
+        results["actions.colour"] = {}
+        self.assertEqual(self.click("colour"), ("warn", "Nothing selected"))
+        self.assertEqual(self.menu_runs, [], "no timeline clips: Premiere's menu is not used")
 
-    def test_project_closed_forgets_toggles(self):
-        self.host.premiere.eval_results["actions.solo_track"] = {"states": [0, 0], "count": 2}
-        self.click("solo_track")
-        self.module.project_closed()
-        self.assertEqual(self._button("solo_track")["label"], "Solo audio track")
+    def test_unknown_colour_is_ignored(self):
+        self.assertIsNone(self.click("colour.label", value="Pink"))
+        self.assertEqual(self.evals(), [])
+        self.assertEqual(self.module.choice(self.module.actions["colour"], "label"), "Cerulean")
 
-    def _button(self, action_id):
-        for node in self.module.render():
-            for candidate in node.get("items", [node]):
-                if candidate.get("id") == f"actions.{action_id}":
-                    return candidate
-        raise AssertionError(action_id)
+    def test_menu_commands(self):
+        commands = premiere_window.label_commands("Spring", 6, "Rose")
+        self.assertEqual([(c.command, c.path, c.required) for c in commands],
+                         [(None, ("Window", "Timelines", "Spring"), True),
+                          (13130, ("Edit", "Label", "Rose"), True)])
+        export = premiere_window.export_commands("Spring")
+        self.assertEqual([(c.command, c.path, c.required) for c in export],
+                         [(None, ("Window", "Timelines", "Spring"), False),
+                          (11240, ("File", "Export", "Media..."), True)])
+        self.assertEqual(premiere_window.menu_label("&Media...\tCtrl+M"), "Media...")
+        self.assertEqual(premiere_window.menu_label("Rose"), "Rose")
+
+    def test_menu_run_outside_windows(self):
+        with mock.patch.object(premiere_window, "sys") as fake_sys,                 mock.patch.object(premiere_window, "_post") as post:
+            fake_sys.platform = "linux"
+            self.assertFalse(REAL_MENU_RUN(premiere_window.export_commands("Spring")))
+        post.assert_not_called()
 
 
 class ProjectActions(QuickActionsCase):
@@ -411,7 +550,11 @@ class ProjectActions(QuickActionsCase):
         self.assertEqual(self.evals()[0][0], "actions.consolidate_duplicates")
 
 
-class SequenceAndExport(QuickActionsCase):
+class SequenceActions(QuickActionsCase):
+    def reframe_echo(self):
+        self.host.premiere.eval_results["actions.reframe"] = lambda a: {
+            "name": a["name"], "sequence_id": "seq2", "width": a["width"], "height": a["height"]}
+
     def test_duplicate_sequence_naming(self):
         self.assertEqual(next_sequence_name("Spring", ["Spring"]), "Spring v2")
         self.assertEqual(next_sequence_name("Spring v2", ["Spring", "Spring v2"]), "Spring v3")
@@ -438,33 +581,87 @@ class SequenceAndExport(QuickActionsCase):
                          "app.project.openSequence(seq.sequenceID)"):
             self.assertIn(fragment, code)
 
-    def test_social_copy_arguments(self):
-        self.host.premiere.eval_results["actions.social_copy"] = lambda a: {
-            "name": a["name"], "sequence_id": "seq2", "width": a["width"], "height": a["height"]}
-        self.assertEqual(self.click("social_copy"), ("ok", "Created Spring 9x16 · 1080x1920"))
-        name, args, timeout = self.evals()[0]
-        self.assertEqual(args, {"sequence_id": "seq1", "numerator": 9, "denominator": 16, "motion": "default",
-                                "name": "Spring 9x16", "width": 1080, "height": 1920})
-        self.assertGreaterEqual(timeout, 600000)
-        results = len(self.host.ui.results)
-        self.assertIsNone(self.module.on_action("actions.social_copy.format", "4x5"))  # a pick runs nothing
-        self.assertEqual(len(self.host.ui.results), results)
-        self.assertEqual(len(self.evals()), 1)
-        self.assertEqual(self.click("social_copy"), ("ok", "Created Spring 4x5 · 1080x1350"))
-        self.module.on_action("actions.social_copy.format", "16x9")  # not an option: ignored
-        self.assertEqual(self.module.choice(self.module.actions["social_copy"], "format"), "4x5")
+    def test_target_sizes(self):
+        self.assertEqual(target_size(1080, 1920, 16, 9), (1920, 1080))
+        self.assertEqual(target_size(1920, 1080, 16, 9), (1920, 1080))
+        self.assertEqual(target_size(1920, 1080, 9, 16), (1080, 1920))
+        self.assertEqual(target_size(1080, 1920, 9, 16), (1080, 1920))
+        self.assertEqual(target_size(3840, 2160, 9, 16), (2160, 3840))
+        self.assertEqual(target_size(1280, 720, 9, 16), (720, 1280))
+        self.assertEqual(target_size(1080, 1080, 16, 9), (1920, 1080))
 
-    def test_social_copy_size_not_applied(self):
-        self.host.premiere.eval_results["actions.social_copy"] = {"name": "Spring 9x16", "width": 607, "height": 1080}
-        self.assertEqual(self.click("social_copy"),
+    def test_free_names(self):
+        self.assertEqual(free_name("Spring 9x16", ["Spring"]), "Spring 9x16")
+        self.assertEqual(free_name("Spring 9x16", ["Spring 9x16"]), "Spring 9x16 2")
+        self.assertEqual(free_name("Spring 9x16", ["spring 9X16", "Spring 9x16 2"]), "Spring 9x16 3")
+
+    def test_create_16_9_and_9_16(self):
+        self.reframe_echo()
+        host, module = self.make(sequence=SequenceInfo("seq1", "Spring", 1080, 1920, 25.0, 60.0))
+        host.premiere.eval_results["actions.reframe"] = self.host.premiere.eval_results["actions.reframe"]
+        self.assertEqual(self.click("create_16_9", module, host), ("ok", "Created Spring 16x9 · 1920x1080"))
+        name, args, timeout = self.evals(host)[0]
+        self.assertEqual(name, "actions.reframe")
+        self.assertEqual(args, {"sequence_id": "seq1", "numerator": 16, "denominator": 9, "motion": "default",
+                                "name": "Spring 16x9", "width": 1920, "height": 1080})
+        self.assertGreaterEqual(timeout, 600000)
+        self.assertEqual(self.click("create_9_16"), ("ok", "Created Spring 9x16 · 1080x1920"))
+        self.assertEqual(self.evals()[-1][1]["numerator"], 9)
+        self.host.premiere.sequences_value = [SEQUENCE, SequenceInfo("s2", "Spring 9x16", 1080, 1920, 25.0, 1.0)]
+        self.assertEqual(self.click("create_9_16"), ("ok", "Created Spring 9x16 2 · 1080x1920"))
+
+    def test_reframe_size_not_applied(self):
+        self.host.premiere.eval_results["actions.reframe"] = {"name": "Spring 9x16", "width": 607, "height": 1080}
+        self.assertEqual(self.click("create_9_16"),
                          ("warn", "Created Spring 9x16 · 607x1080 · frame size not changed to 1080x1920"))
 
-    def test_target_sizes(self):
-        self.assertEqual(target_size(1920, 1080, 9, 16), (1080, 1920))
-        self.assertEqual(target_size(1920, 1080, 1, 1), (1080, 1080))
-        self.assertEqual(target_size(3840, 2160, 4, 5), (2160, 2700))
-        self.assertEqual(target_size(1280, 720, 9, 16), (720, 1280))
-        self.assertEqual(target_size(1080, 1920, 9, 16), (1080, 1920))
+    def test_custom_size_input(self):
+        self.reframe_echo()
+        field = rendered(self.module, "actions.create_custom.size")
+        self.assertEqual((field["kind"], field["value"], field["submit_label"], field["placeholder"]),
+                         ("input", "1080x1350", "Create", "Width x height"))
+        self.assertEqual(self.click("create_custom"), ("ok", "Created Spring 1080x1350 · 1080x1350"))
+        self.assertEqual({k: self.evals()[-1][1][k] for k in ("numerator", "denominator", "width", "height")},
+                         {"numerator": 4, "denominator": 5, "width": 1080, "height": 1350})
+        self.assertEqual(self.click("create_custom.size", value="1920 x 800"),
+                         ("ok", "Created Spring 1920x800 · 1920x800"))
+        self.assertEqual(self.evals()[-1][1]["numerator"], 12)
+        self.assertEqual(self.host.settings.get("choices")["create_custom.size"], "1920x800")
+        self.assertEqual(rendered(self.module, "actions.create_custom.size")["value"], "1920x800")
+
+    def test_custom_size_refused(self):
+        for bad in ("abc", "10x10", "1080", "99999x1080", None, 5):
+            with self.subTest(bad=bad):
+                self.assertEqual(self.click("create_custom.size", value=bad), ("warn", "Enter a size like 1080x1350"))
+                self.assertEqual(self.detail, "Width and height between 16 and 16384 pixels.")
+        self.assertEqual(self.evals(), [])
+        self.assertNotIn("create_custom.size", self.host.settings.get("choices", {}))
+
+    def test_parse_size_and_ratio(self):
+        self.assertEqual(parse_size("1080x1350"), (1080, 1350))
+        self.assertEqual(parse_size(" 1080 X 1350 "), (1080, 1350))
+        self.assertEqual(parse_size("1080\u00d71350"), (1080, 1350))
+        self.assertEqual(parse_size("1080*1350"), (1080, 1350))
+        self.assertIsNone(parse_size("1080x"))
+        self.assertIsNone(parse_size("0x100"))
+        self.assertEqual(ratio(1080, 1350), (4, 5))
+        self.assertEqual(ratio(1920, 1080), (16, 9))
+        self.assertEqual(ratio(1001, 1000), (1001, 1000))
+
+    def test_custom_size_hidden_with_its_action(self):
+        host, module = self.make(settings={"hidden": ["create_custom"]})
+        self.assertNotIn("actions.create_custom.size", [n.get("id") for n in flat(module.render())])
+
+
+class ExportActions(QuickActionsCase):
+    def test_export_open(self):
+        self.host.premiere.eval_results["actions.export_open"] = {"name": "Spring", "sequence_id": "seq1"}
+        self.assertEqual(self.click("export_open"), ("ok", "Export opened · Spring"))
+        self.assertEqual(self.evals()[0][:2], ("actions.export_open", {"sequence_id": "seq1"}))
+        self.assertEqual(self.menu_runs, [premiere_window.export_commands("Spring")])
+        self.menu_ok = False
+        self.assertEqual(self.click("export_open"), ("error", "Export failed"))
+        self.assertEqual(self.detail, "Premiere's File > Export > Media command was not found or is unavailable.")
 
     def test_export_frame(self):
         frames = Path(self.host.project.root) / "Exports" / "Frames"
@@ -484,63 +681,159 @@ class SequenceAndExport(QuickActionsCase):
         self.click("export_frame", module, host)
         self.assertEqual(self.evals(host)[0][1]["base_name"], "Cut_ _final__")
 
-    def test_export_sequence_arguments(self):
-        self.host.premiere.eval_results["actions.export_sequence"] = lambda a: {
-            "path": a["out_dir"] + "\\" + a["base_name"] + ".mp4", "job_id": "7"}
-        self.assertEqual(self.click("export_sequence"), ("ok", "Queued in Media Encoder · Spring.mp4"))
-        _, args, timeout = self.evals()[0]
-        self.assertEqual(args["preset"], str(self.system_root / "4E49434B_48323634" / "YouTube 1080p HD.epr"))
-        self.assertEqual(args["out_dir"], str(Path(self.host.project.root) / "Exports"))
-        self.assertEqual((args["sequence_id"], args["base_name"], args["in_to_out"]), ("seq1", "Spring", False))
-        self.assertGreaterEqual(timeout, 60000)
-        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "YT 1080p")
-        self.module.on_action("actions.export_sequence.preset", "tiktok_9x16")
-        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "TT 9:16")
-        host_seq = SequenceInfo("seq1", "Spring", 1080, 1920, 25.0, 60.0, in_point=2.0, out_point=10.0)
-        self.host.premiere.active_sequence_value = host_seq
-        self.click("export_sequence")
-        _, args, _ = self.evals()[-1]
-        self.assertTrue(args["preset"].endswith("01 - Match Source - High bitrate.epr"))
-        self.assertTrue(args["in_to_out"])
 
-    def test_export_sequence_without_presets(self):
-        empty = self.home / "nothing"
-        empty.mkdir()
-        self.module.preset_roots = [empty]
-        self.module.refresh_presets()
-        self.assertEqual(self.click("export_sequence"), ("warn", "No export presets found"))
-        nodes = {n.get("id"): n for n in flat(self.module.render()) if n.get("id")}
-        self.assertTrue(nodes["actions.export_sequence"]["disabled"])
-        self.assertNotIn("menu", nodes["actions.export_sequence"])
-        self.module.section()  # still a valid tree
+class EasingMath(unittest.TestCase):
+    def test_bezier_matches_the_parametric_curve(self):
+        for name, curve in easing.CURVES.items():
+            x1, y1, x2, y2 = curve
+            for s in (0.05, 0.2, 0.37, 0.5, 0.81, 0.97):
+                x = 3 * x1 * s * (1 - s) ** 2 + 3 * x2 * s * s * (1 - s) + s ** 3
+                y = 3 * y1 * s * (1 - s) ** 2 + 3 * y2 * s * s * (1 - s) + s ** 3
+                with self.subTest(name, s=s):
+                    self.assertAlmostEqual(easing.bezier_y(x, *curve), y, places=6)
+            self.assertAlmostEqual(easing.bezier_y(0, *curve), 0.0)
+            self.assertAlmostEqual(easing.bezier_y(1, *curve), 1.0)
+            self.assertAlmostEqual(easing.bezier_y(0.5, *curve), 0.5, places=6)  # the presets are symmetric
 
-    def test_user_and_shipped_presets(self):
-        user = self.module.user_presets_dir()
-        user.mkdir(parents=True)
-        (user / "ProRes 422.epr").write_text("x", encoding="utf-8")
-        (user / "notes.txt").write_text("x", encoding="utf-8")
-        shipped = self.home / "shipped"
-        shipped.mkdir()
-        (shipped / "TikTok 9x16.epr").write_text("x", encoding="utf-8")
-        found = presets_mod.available_presets(user, shipped_dir=shipped, system_roots=[self.system_root])
-        self.assertEqual([(p.id, p.source) for p in found],
-                         [("youtube_1080p", "system"), ("instagram_9x16", "system"), ("tiktok_9x16", "shipped"),
-                          ("match_h264", "system"), ("user:ProRes 422", "user")])
-        result = self.module.on_action("actions.host:refresh_presets")
-        self.assertEqual(result.toast, ("neutral", "5 export presets found"))
-        self.module.on_action("actions.export_sequence.preset", "user:ProRes 422")
-        self.assertEqual(rendered_button(self.module, "actions.export_sequence")["menu"]["badge"], "ProRes 4")
-        self.host.premiere.eval_results["actions.export_sequence"] = {"path": r"D:\Spring.mov"}
-        self.assertEqual(self.click("export_sequence"), ("ok", "Queued in Media Encoder · Spring.mov"))
-        self.assertEqual(self.evals()[-1][1]["preset"], str(user / "ProRes 422.epr"))
+    def test_strength_order(self):
+        at = {name: easing.bezier_y(0.25, *curve) for name, curve in easing.CURVES.items()}
+        self.assertGreater(at["slow"], at["med"])
+        self.assertGreater(at["med"], at["fast"])
+        self.assertLess(at["slow"], 0.25, "every preset starts slower than linear")
 
-    def test_system_roots_order(self):
-        program_files = self.home / "pf"
-        for app in ("Adobe Premiere Pro 2025", "Adobe Premiere Pro 2026", "Adobe Media Encoder 2026"):
-            (program_files / "Adobe" / app / "MediaIO" / "systempresets").mkdir(parents=True)
-        roots = [root.parent.parent.name for root in presets_mod.system_preset_roots(str(program_files))]
-        self.assertEqual(roots, ["Adobe Premiere Pro 2026", "Adobe Media Encoder 2026", "Adobe Premiere Pro 2025"])
-        self.assertEqual(presets_mod.system_preset_roots(str(self.home / "none")), [])
+    def test_bake_one_key_per_frame(self):
+        keys = easing.bake(TPS, 100.0, 3 * TPS, 150.0, FRAME, easing.CURVES["med"])
+        self.assertEqual(len(keys), 49)
+        self.assertEqual([t for t, _ in keys], [TPS + k * FRAME for k in range(1, 50)])
+        values = [v for _, v in keys]
+        self.assertEqual(values, sorted(values))
+        self.assertAlmostEqual(dict(keys)[2 * TPS], 125.0)
+        self.assertAlmostEqual(keys[0][1], 100 + 50 * easing.bezier_y(1 / 50, *easing.CURVES["med"]))
+        # values measured live after MED on Premiere 26.5.2 (reports/r21_actions.md)
+        self.assertAlmostEqual(keys[0][1], 100.027, places=3)
+        self.assertAlmostEqual(keys[-1][1], 149.973, places=3)
+
+    def test_bake_lists_and_a_short_last_step(self):
+        keys = easing.bake(0, [0.5, 0.5], 2 * TPS + FRAME // 4, [0.3, 0.7], FRAME, easing.CURVES["fast"])
+        self.assertEqual(len(keys), 50)
+        self.assertLess(2 * TPS + FRAME // 4 - keys[-1][0], FRAME)
+        self.assertTrue(all(isinstance(v, list) and len(v) == 2 for _, v in keys))
+        self.assertAlmostEqual(sum(keys[24][1]), 1.0)
+        self.assertEqual(easing.bake(0, "a", TPS, "b", FRAME, easing.CURVES["med"]), [])
+        self.assertEqual(easing.bake(TPS, 1.0, TPS, 2.0, FRAME, easing.CURVES["med"]), [])
+
+    def test_mix(self):
+        self.assertEqual(easing.mix(0, 10, 0.5), 5)
+        self.assertEqual(easing.mix([0, 1], [2, 3], 0.5), [1, 2])
+        self.assertIsNone(easing.mix([0, 1], [2], 0.5))
+        self.assertIsNone(easing.mix(True, 1, 0.5))
+        self.assertIsNone(easing.mix(None, 1, 0.5))
+
+    def test_find_pair(self):
+        times = [0, TPS, 3 * TPS, 5 * TPS]
+        self.assertEqual(easing.find_pair(times, 2 * TPS, FRAME), (1, 2))
+        self.assertEqual(easing.find_pair(times, TPS, FRAME), (1, 2), "on a key: the pair that starts there")
+        self.assertIsNone(easing.find_pair(times, 5 * TPS, FRAME))
+        self.assertIsNone(easing.find_pair(times, 6 * TPS, FRAME))
+        self.assertIsNone(easing.find_pair([TPS], TPS, FRAME))
+
+    def test_find_pair_widens_over_a_bake(self):
+        baked = [t for t, _ in easing.bake(TPS, 0.0, 3 * TPS, 1.0, FRAME, easing.CURVES["med"])]
+        times = [0, TPS] + baked + [3 * TPS, 5 * TPS]
+        for at in (TPS, TPS + FRAME // 2, 2 * TPS, 3 * TPS - 1):
+            with self.subTest(at=at):
+                self.assertEqual(easing.find_pair(times, at, FRAME), (1, len(times) - 2))
+        odd = [t for t, _ in easing.bake(0, 0.0, 2 * TPS + FRAME // 3, 1.0, FRAME, easing.CURVES["med"])]
+        times = [0] + odd + [2 * TPS + FRAME // 3]
+        self.assertEqual(easing.find_pair(times, times[-2] + 1, FRAME), (0, len(times) - 1), "from the short end")
+        self.assertEqual(easing.find_pair(times, FRAME // 2, FRAME), (0, len(times) - 1), "from the start")
+
+    def test_plan(self):
+        times, values = [TPS, 3 * TPS], [100.0, 150.0]
+        step = easing.plan(times, values, 2 * TPS, FRAME, "slow")
+        self.assertEqual(step.remove, [])
+        self.assertEqual(len(step.add), 49)
+        self.assertEqual(step.linear, [TPS] + [t for t, _ in step.add] + [3 * TPS])
+        baked = [TPS] + [t for t, _ in step.add] + [3 * TPS]
+        relinear = easing.plan(baked, [0.0] * len(baked), 2 * TPS, FRAME, "linear")
+        self.assertEqual(relinear.remove, [t for t, _ in step.add])
+        self.assertEqual((relinear.add, relinear.linear), ([], [TPS, 3 * TPS]))
+        again = easing.plan(baked, [100.0] + [0.0] * 49 + [150.0], 2 * TPS, FRAME, "fast")
+        self.assertEqual(again.remove, [t for t, _ in step.add], "a new preset replaces the old bake")
+        self.assertIsNone(easing.plan(times, values, 4 * TPS, FRAME, "med"))
+        self.assertIsNone(easing.plan(times, ["a", "b"], 2 * TPS, FRAME, "med"))
+
+
+class EaseActions(QuickActionsCase):
+    def read_result(self, at=2 * TPS):
+        return {"clip": "a.mp4", "kind": "video", "track": 0, "start": str(12 * TPS), "frame": str(FRAME),
+                "at": str(at), "inside": True, "skipped": [],
+                "props": [{"c": 1, "p": 1, "name": "Motion · Scale", "keys": [str(TPS), str(3 * TPS)],
+                           "values": [100, 150]},
+                          {"c": 1, "p": 0, "name": "Motion · Position", "keys": [str(TPS), str(3 * TPS)],
+                           "values": [[0.5, 0.5], [0.3, 0.7]]}]}
+
+    def apply_echo(self, args):
+        return {"removed": sum(len(p["remove"]) for p in args["props"]),
+                "added": sum(len(p["add"]) for p in args["props"]), "props": len(args["props"])}
+
+    def test_ease_bakes_every_animated_property(self):
+        results = self.host.premiere.eval_results
+        results["actions.ease_read"] = self.read_result()
+        results["actions.ease_apply"] = self.apply_echo
+        self.assertEqual(self.click("ease_med"), ("ok", "Eased 2 properties · 98 keys"))
+        self.assertEqual(self.detail, "Motion · Scale, Motion · Position")
+        (_, read, timeout), (_, apply, _) = self.evals()
+        self.assertIsNone(read)
+        self.assertEqual(timeout, 60000)
+        self.assertEqual((apply["kind"], apply["track"], apply["start"]), ("video", 0, str(12 * TPS)))
+        scale = apply["props"][0]
+        self.assertEqual((scale["c"], scale["p"], scale["remove"]), (1, 1, []))
+        self.assertEqual(len(scale["add"]), 49)
+        self.assertEqual(scale["add"][24], {"t": str(2 * TPS), "v": 125.0})
+        self.assertEqual(scale["linear"][0], str(TPS))
+        self.assertEqual(scale["linear"][-1], str(3 * TPS))
+        self.assertEqual(apply["props"][1]["add"][24]["v"], [0.4, 0.6])
+
+    def test_presets_use_their_curves(self):
+        for action_id, preset in (("ease_slow", "slow"), ("ease_med", "med"), ("ease_fast", "fast")):
+            with self.subTest(action_id):
+                host, module = self.make()
+                host.premiere.eval_results["actions.ease_read"] = self.read_result()
+                host.premiere.eval_results["actions.ease_apply"] = self.apply_echo
+                self.click(action_id, module, host)
+                first = self.evals(host, "actions.ease_apply")[0][1]["props"][0]["add"][0]["v"]
+                self.assertAlmostEqual(first, 100 + 50 * easing.bezier_y(1 / 50, *easing.CURVES[preset]))
+
+    def test_linear_removes_the_bake(self):
+        read = self.read_result()
+        baked = [TPS + k * FRAME for k in range(0, 51)]
+        read["props"] = [{"c": 1, "p": 1, "name": "Motion · Scale", "keys": [str(t) for t in baked],
+                          "values": [100.0] * 51}]
+        self.host.premiere.eval_results["actions.ease_read"] = read
+        self.host.premiere.eval_results["actions.ease_apply"] = self.apply_echo
+        self.assertEqual(self.click("ease_linear"), ("ok", "Linear · 1 property · 49 keys removed"))
+        plan = self.evals(name="actions.ease_apply")[0][1]["props"][0]
+        self.assertEqual((plan["add"], plan["linear"]), ([], [str(TPS), str(3 * TPS)]))
+        self.host.premiere.eval_results["actions.ease_read"] = self.read_result()
+        self.assertEqual(self.click("ease_linear"), ("ok", "Linear · 2 properties"))
+
+    def test_no_keys_and_no_pair(self):
+        results = self.host.premiere.eval_results
+        results["actions.ease_read"] = dict(self.read_result(), props=[])
+        self.assertEqual(self.click("ease_fast"), ("warn", "The selected clip has no keyframes"))
+        results["actions.ease_read"] = self.read_result(at=4 * TPS)
+        self.assertEqual(self.click("ease_fast"), ("warn", NO_PAIR))
+        results["actions.ease_read"] = dict(self.read_result(), inside=False)
+        self.assertEqual(self.click("ease_fast"), ("warn", NO_PAIR))
+        self.assertEqual(self.evals(name="actions.ease_apply"), [])
+
+    def test_odd_property_is_skipped(self):
+        read = self.read_result()
+        read["props"].append({"c": 2, "p": 0, "name": "Odd", "keys": [str(TPS)], "values": [1, 2]})
+        self.host.premiere.eval_results["actions.ease_read"] = read
+        self.host.premiere.eval_results["actions.ease_apply"] = self.apply_echo
+        self.assertEqual(self.click("ease_slow")[1], "Eased 2 properties · 98 keys")
 
 
 class JobsAndRendering(QuickActionsCase):
@@ -550,7 +843,7 @@ class JobsAndRendering(QuickActionsCase):
         result = module.on_action("actions.export_frame")
         self.assertIsNone(result.toast)
         self.assertEqual(host.ui.results, [], "the result comes when the job ends")
-        button = rendered_button(module, "actions.export_frame")
+        button = rendered(module, "actions.export_frame")
         self.assertTrue(button["busy"])
         self.assertEqual(module.section_status(), {"text": "Running · Export frame", "tone": "accent"})
         self.assertFalse(module.on_action("actions.export_frame").rerender)  # a second press is ignored
@@ -559,13 +852,20 @@ class JobsAndRendering(QuickActionsCase):
         self.assertEqual(host.ui.results, [("export_frame", "ok", "Frame saved · f.png", None)])
         self.assertEqual(host.ui.toasts, [])
         self.assertGreaterEqual(host.ui.invalidations, 1)
-        button = rendered_button(module, "actions.export_frame")
+        button = rendered(module, "actions.export_frame")
         self.assertFalse(button["busy"])
         self.assertIsNone(module.section_status())
 
+    def test_custom_input_is_disabled_while_its_job_runs(self):
+        host, module = self.make(manual_jobs=True)
+        module.on_action("actions.create_custom")
+        self.assertTrue(rendered(module, "actions.create_custom.size")["disabled"])
+        host.jobs.step()
+        self.assertFalse(rendered(module, "actions.create_custom.size").get("disabled", False))
+
     def test_long_actions_are_jobs(self):
         long_ids = sorted(aid for aid, action in self.module.actions.items() if action.long)
-        self.assertEqual(long_ids, ["export_frame", "export_sequence", "label_by_bin", "social_copy"])
+        self.assertEqual(long_ids, sorted(("export_frame", "label_by_bin") + REFRAMES + EASES))
 
     def test_job_calls_go_through_module_thread(self):
         calls = []
@@ -596,59 +896,62 @@ class JobsAndRendering(QuickActionsCase):
         self.assertEqual(section["icon"], "actions")
         items = section["items"]
         self.assertTrue(all(n["kind"] == "group" for n in items), "no loose headings, dividers or rows")
-        self.assertEqual([n["title"] for n in items],
-                         ["Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence", "Export"])
-        self.assertEqual([n["id"] for n in items],
-                         [f"actions.{t}" for t in ("timeline", "selection", "clips", "tracks", "project", "sequence",
-                                                   "export")])
-        self.assertTrue(all(n["tiles"] and n["collapsible"] and n["columns"] == 3 for n in items))
-        # Membership: every group holds exactly the actions of its group, in table order, as plain buttons.
+        self.assertEqual([n["title"] for n in items], list(GROUPS))
+        self.assertEqual([n["id"] for n in items], [f"actions.{t.lower()}" for t in GROUPS])
+        self.assertTrue(all(n["tiles"] and n["collapsible"] for n in items))
         for group in items:
-            self.assertTrue(all(n["kind"] == "button" for n in group["items"]))
-            buttons = [n["id"] for n in group["items"]]
-            expected = [f"actions.{aid}" for aid in ALL_IDS if self.module.actions[aid].group == group["title"]]
-            self.assertEqual(buttons, expected, group["title"])
+            tiles = [n for n in group["items"] if n["kind"] != "input"]
+            expected = [f"actions.{aid}" for aid in ALL_IDS if TILES[aid][0] == group["title"]]
+            self.assertEqual([n["id"] for n in tiles], expected, group["title"])
+            kinds = {n["id"]: n["kind"] for n in tiles}
+            for node_id, kind in kinds.items():
+                self.assertEqual(kind, "switch" if node_id in ("actions.solo_track", "actions.lock_others")
+                                 else "button", node_id)
+            inputs = [n["id"] for n in group["items"] if n["kind"] == "input"]
+            self.assertEqual(inputs, ["actions.create_custom.size"] if group["title"] == "Sequence" else [])
+            kinds_in_order = [n["kind"] == "input" for n in group["items"]]
+            self.assertEqual(kinds_in_order, sorted(kinds_in_order), "inputs follow the tiles")
         all_ids = [n["id"] for n in flat(items) if n.get("id")]
-        self.assertEqual(sorted(i for i in all_ids if i.count(".") == 1 and not i.startswith("actions.t")
-                                and i.split(".")[1] in ALL_IDS), sorted(f"actions.{a}" for a in ALL_IDS))
         self.assertEqual(len(all_ids), len(set(all_ids)))
 
-    def test_every_action_declares_icon_and_short(self):
-        for action_id, (icon, short) in TILES.items():
+    def test_every_action_declares_icon_and_code(self):
+        for action_id, (group, icon, short) in TILES.items():
             with self.subTest(action_id):
-                node = rendered_button(self.module, f"actions.{action_id}")
+                node = rendered(self.module, f"actions.{action_id}")
                 self.assertEqual((node["icon"], node["short"]), (icon, short))
                 self.assertLessEqual(len(node["short"]), P.SHORT_MAX)
                 self.assertTrue(node["label"] and node["hint"])
-        self.assertEqual(set(TILES) | {"duplicate_sequence"}, set(ALL_IDS))
+                self.assertEqual(self.module.actions[action_id].group, group)
+        self.assertEqual(list(self.module.actions), list(ALL_IDS), "panel order is the table order")
 
-    def test_choices_are_menus_on_the_tile(self):
-        social = rendered_button(self.module, "actions.social_copy")
-        self.assertEqual(social["menu"], {"id": "actions.social_copy.format", "value": "9x16", "badge": "9:16",
-                                          "options": [{"value": "9x16", "label": "9:16"},
-                                                      {"value": "1x1", "label": "1:1"},
-                                                      {"value": "4x5", "label": "4:5"}]})
-        export = rendered_button(self.module, "actions.export_sequence")
-        self.assertEqual(export["menu"]["id"], "actions.export_sequence.preset")
-        self.assertEqual(export["menu"]["badge"], "YT 1080p")
-        self.assertEqual([o["value"] for o in export["menu"]["options"]],
-                         ["youtube_1080p", "instagram_9x16", "tiktok_9x16", "match_h264"])
-        self.assertLessEqual(max(len(o) for o in (social["menu"]["badge"], export["menu"]["badge"])), 8)
-        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("kind") in ("select", "input")], [])
-        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("menu")],
-                         ["actions.social_copy", "actions.export_sequence"])
-        self.module.on_action("actions.social_copy.format", "1x1")
-        self.assertEqual(rendered_button(self.module, "actions.social_copy")["menu"]["badge"], "1:1")
+    def test_menus(self):
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("menu")], ["actions.colour"])
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("kind") == "select"], [])
+
+    def test_removed_actions_are_gone(self):
+        for gone in ("social_copy", "export_sequence", "remove_gaps", "nest_selection"):
+            with self.subTest(gone):
+                self.assertNotIn(gone, self.module.actions)
+                self.assertFalse((JSX_DIR / f"{gone}.jsx").exists())
+                self.assertEqual(self.module.on_action(f"actions.{gone}").toast[0], "warn")  # an unknown id
+        package = JSX_DIR.parent
+        self.assertFalse((package / "presets.py").exists())
+        self.assertFalse((package / "presets").exists())
+        with self.assertRaises(ImportError):
+            importlib.import_module("premiere_deck.modules.quick_actions.presets")
+        self.assertEqual(self.module.on_action("actions.host:open_presets").toast[0], "warn")
+        self.assertFalse((self.home / "presets").exists())
+        self.assertEqual(self.host.premiere.calls_named("eval"), [])
 
     def test_render_with_hidden_actions(self):
         host, module = self.make(settings={"hidden": ["select_same_source", "select_offline", "export_frame"]})
         section = module.section()
         titles = [n["title"] for n in section["items"] if n["kind"] == "group"]
         self.assertNotIn("Selection", titles, "a group without visible actions is not rendered")
-        self.assertEqual(titles, ["Timeline", "Clips", "Tracks", "Project", "Sequence", "Export"])
+        self.assertEqual(titles, [g for g in GROUPS if g != "Selection"])
         ids = [n.get("id") for n in flat(section["items"])]
         self.assertNotIn("actions.export_frame", ids)
-        self.assertIn("actions.export_sequence", ids)
+        self.assertIn("actions.export_open", ids)
         module.on_action("actions.host:visible.export_frame", True)
         module.on_action("actions.host:visible.razor_all", False)
         self.assertEqual(host.settings.get("hidden"), ["razor_all", "select_same_source", "select_offline"])
@@ -660,15 +963,15 @@ class JobsAndRendering(QuickActionsCase):
         self.assertIn("hidden", nodes[0]["text"])
 
     def test_settings_fallback_on_broken_values(self):
-        for hidden, choices in (("oops", "bad"), ([1, None, "razor_all", "gone"], {"social_copy.format": 5}),
-                                ({"x": 1}, {"export_sequence.preset": "missing"}), (None, None)):
+        for hidden, choices in (("oops", "bad"), ([1, None, "razor_all", "gone"], {"colour.label": 5}),
+                                ({"x": 1}, {"colour.label": "Pink", "create_custom.size": "huge"}), (None, None)):
             with self.subTest(hidden=hidden, choices=choices):
                 host, module = self.make(settings={"hidden": hidden, "choices": choices})
                 module.section()
                 expected = {"razor_all"} if isinstance(hidden, list) else set()
                 self.assertEqual(module.hidden_ids(), expected)
-                self.assertEqual(module.choice(module.actions["social_copy"], "format"), "9x16")
-                self.assertEqual(module.choice(module.actions["export_sequence"], "preset"), "youtube_1080p")
+                self.assertEqual(module.choice(module.actions["colour"], "label"), "Cerulean")
+                self.assertEqual(module.actions["create_custom"].size(module), (1080, 1350))
 
     def test_the_module_renders_no_result_line(self):
         self.host.premiere.eval_results["actions.select_offline"] = {"count": 0}
@@ -677,14 +980,22 @@ class JobsAndRendering(QuickActionsCase):
 
     def test_render_host_page(self):
         page = self.module.render_host()
-        visibility, presets = page["blocks"]
+        self.assertEqual([block["id"] for block in page["blocks"]], ["visibility"])
+        visibility = page["blocks"][0]
         self.assertEqual([row["id"] for row in visibility["rows"]], list(ALL_IDS))
+        self.assertEqual([row["icon"] for row in visibility["rows"]], [TILES[aid][1] for aid in ALL_IDS])
+        self.assertTrue(all(len(row["title"]) <= 16 for row in visibility["rows"]), "titles fit the column")
+        titles = {row["id"]: row["title"] for row in visibility["rows"]}
+        self.assertEqual((titles["remove_video_track"], titles["add_audio_track"], titles["create_custom"],
+                          titles["ease_slow"]), ("Remove V track", "Add A track", "Reframe custom", "Ease slow"))
         self.assertTrue(all(row["toggle"]["value"] for row in visibility["rows"]))
         self.assertEqual(visibility["rows"][0]["toggle"]["id"], "actions.host:visible.adjustment_layer")
-        self.assertEqual(len(presets["rows"]), 4)
-        self.module.on_action("actions.host:open_presets")
-        self.assertEqual(self.host.host.opened, [str(self.module.user_presets_dir())])
-        self.assertTrue(self.module.user_presets_dir().is_dir())
+        self.assertEqual(visibility["rows"][-1]["subtitle"].split(" · ")[0], "Keys")
+
+    def test_actions_come_before_files(self):
+        from premiere_deck.modules.files.module import FilesModule
+        self.assertLess(QuickActionsModule.order, FilesModule.order)
+        self.assertEqual(QuickActionsModule.order, 5)
 
     def test_unknown_action(self):
         result = self.module.on_action("actions.nothing")
@@ -700,8 +1011,7 @@ class JobsAndRendering(QuickActionsCase):
                 self.assertTrue(action.feasibility)
                 self.assertTrue(action.icon and action.short)
                 self.assertLessEqual(len(action.short), P.SHORT_MAX)
-                self.assertIn(action.group, ("Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence",
-                                             "Export"))
+                self.assertIn(action.group, GROUPS)
 
     def test_helpers(self):
         self.assertEqual(timecode(3725.9), "01:02:05")
@@ -716,9 +1026,10 @@ class Scripts(QuickActionsCase):
     def scripts(self):
         return sorted(JSX_DIR.glob("*.jsx"))
 
-    def test_every_scripted_action_has_a_script(self):
+    def test_every_script_is_used(self):
         names = {path.stem for path in self.scripts()}
-        self.assertEqual(names - {"_common"}, set(SCRIPTED))
+        self.assertEqual(names - {"_common"}, SCRIPTS)
+        self.assertEqual(set(SCRIPT_OF.values()) | {"ease_apply"}, SCRIPTS)
 
     def test_scripts_are_es3(self):
         for path in self.scripts():
@@ -727,8 +1038,8 @@ class Scripts(QuickActionsCase):
                 with self.subTest(path.name, pattern=pattern):
                     self.assertIsNone(re.search(pattern, code))
 
-    def test_actions_return_values(self):
-        for name in SCRIPTED:
+    def test_scripts_return_values(self):
+        for name in SCRIPTS:
             with self.subTest(name):
                 self.assertIn("return", (JSX_DIR / f"{name}.jsx").read_text(encoding="utf-8"))
 
@@ -742,6 +1053,13 @@ class Scripts(QuickActionsCase):
         with mock.patch("premiere_deck.modules.quick_actions.action.JSX_DIR", self.home):
             shutil.copy(JSX_DIR / "_common.jsx", self.home / "_common.jsx")
             self.assertTrue(script_text(ctx, "uses_lib").startswith("// @uses lib\n"))
+
+    def test_interpolation_and_marker_calls(self):
+        apply = (JSX_DIR / "ease_apply.jsx").read_text(encoding="utf-8")
+        self.assertIn("setInterpolationTypeAtKey(at(plan.linear[l]), 0,", apply)
+        colour = (JSX_DIR / "colour.jsx").read_text(encoding="utf-8")
+        self.assertIn("marker.setColorByIndex(__args.marker)", colour)
+        self.assertIn("app.getCurrentProjectViewSelection()", colour)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")
     def test_scripts_parse(self):

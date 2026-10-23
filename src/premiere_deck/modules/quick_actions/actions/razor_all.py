@@ -7,7 +7,7 @@ from premiere_deck.modules.quick_actions.results import count, number
 class RazorAll(Action):
     id = "razor_all"
     label = "Razor all tracks"
-    short = "Razor all"
+    short = "RZR"
     icon = "razor-all"
     hint = "Cuts every unlocked track at the playhead."
     group = "Timeline"

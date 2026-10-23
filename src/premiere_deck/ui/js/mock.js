@@ -3,7 +3,7 @@
 // for the compact screens and 720 x 560 for main (the mock sends the `window` events, it cannot resize a browser).
 //
 // URL flags: premiere=not_running|starting|waiting|connected (default connected), offer=1 (waiting with the
-// debug-mode offer), tab=files|actions, missing=1 (the Files module is not in this build), noexe=1 (Premiere Pro
+// debug-mode offer), tab=files|actions, activity=1 (the activity strip on), missing=1 (the Files module is not in this build), noexe=1 (Premiere Pro
 // not found), noproject=1, ffmpeg=missing, update=none (no update is announced), job=1 (a Sort job runs),
 // theme=black|sky. Settings changes live in memory; the theme is read from localStorage ('pd.theme') like the real
 // shell's cache. Alt+1 / Alt+2 / Alt+3 switch Premiere to not running / waiting / connected (`fake_premiere`).
@@ -84,6 +84,7 @@ export function createMock({ params, dispatch }) {
     keep_running_with_premiere: true,
     theme: THEMES.includes(params.get('theme')) ? params.get('theme') : THEMES.includes(cachedTheme) ? cachedTheme : 'black',
     auto_download_updates: true,
+    show_activity: params.get('activity') === '1',
     recent_projects: [],
     debug_mode_written: [],
   };
@@ -92,13 +93,14 @@ export function createMock({ params, dispatch }) {
   const missing = params.get('missing') === '1';
   const modules = [
     { id: 'files', package: 'files', title: 'Files', description: 'Keeps project media sorted on disk and in bins.', order: 10, state: missing ? 'missing' : 'running', enabled: !missing, error: null, status: null, requires: ['ffprobe'], has_page: !missing, has_settings: !missing },
-    { id: 'actions', package: 'quick_actions', title: 'Quick actions', description: 'Buttons for routine timeline and project operations.', order: 20, state: 'running', enabled: true, error: null, status: null, requires: [], has_page: true, has_settings: false },
+    { id: 'actions', package: 'quick_actions', title: 'Quick actions', description: 'Buttons for routine timeline and project operations.', order: 5, state: 'running', enabled: true, error: null, status: null, requires: [], has_page: true, has_settings: false },
   ];
   const byId = (id) => modules.find((m) => m.id === id);
 
   // Files state
   const F = {
     inside: 142, outside: 4, offline: 1, toFile: 18, inSequences: 2,
+    autoCopy: false, autoSort: false,
     running: null, // { id, kind, done, total, file }
     journalAll: false,
     last: { text: 'Synced 4 files to Media', detail: 'Copied into D:\\Footage\\spring-promo\\Media', outcome: 'ok', at: nowS() - 600 },
@@ -109,24 +111,36 @@ export function createMock({ params, dispatch }) {
       { id: 'j0', at: nowS() - 8000, op: 'Imported', name: 'logo_sting.mov', from: '', to: 'Motion', status: 'done', icon: 'folder' },
     ],
   };
+  // The Premiere Deck 2.1 action set in panel order (QUICK_ACTIONS.md 2): id, title, group, hint, icon.
   const ACTION_LIST = [
     ['adjustment_layer', 'Adjustment layer', 'Timeline', 'Adds an adjustment layer over the selected clips.', 'adjustment-layer'],
     ['razor_all', 'Razor all tracks', 'Timeline', 'Cuts every unlocked track at the playhead.', 'razor-all'],
     ['delete_empty_tracks', 'Delete empty tracks', 'Timeline', 'Removes tracks that hold no clips.', 'delete-empty-tracks'],
+    ['add_video_track', 'Add video track', 'Tracks', 'Adds one video track above the highest.', 'track-video-add'],
+    ['add_audio_track', 'Add audio track', 'Tracks', 'Adds one audio track below the lowest.', 'track-audio-add'],
+    ['remove_video_track', 'Remove video track', 'Tracks', 'Removes the highest video track when it is empty.', 'track-video-remove'],
+    ['remove_audio_track', 'Remove audio track', 'Tracks', 'Removes the lowest audio track when it is empty.', 'track-audio-remove'],
+    ['solo_track', 'Solo audio track', 'Tracks', 'Mutes every other audio track.', 'solo-track'],
+    ['lock_others', 'Lock other tracks', 'Tracks', 'Locks every track without a selected clip.', 'lock-others'],
     ['select_same_source', 'Select same source', 'Selection', 'Selects every clip of the same media.', 'select-same-source'],
     ['select_offline', 'Select offline clips', 'Selection', 'Selects clips whose media is offline.', 'select-offline'],
     ['scale_to_frame', 'Set to frame size', 'Clips', 'Turns on Set to Frame Size.', 'scale-to-frame'],
+    ['colour', 'Label colour', 'Clips', 'Colours the selected clips or project items.', 'colour'],
     ['label_by_bin', 'Colour labels by bin', 'Clips', 'Colours items by their top-level bin.', 'label-by-bin'],
-    ['solo_track', 'Solo audio track', 'Tracks', 'Mutes every other audio track.', 'solo-track'],
-    ['lock_others', 'Lock other tracks', 'Tracks', 'Locks every track without a selected clip.', 'lock-others'],
     ['save_version', 'Save version', 'Project', 'Saves the project as the next version.', 'save-version'],
     ['consolidate_duplicates', 'Consolidate duplicates', 'Project', 'Merges items of the same media.', 'consolidate'],
     ['open_project_folder', 'Open project folder', 'Project', 'Opens the project folder in Explorer.', 'open-folder'],
     ['reveal_clip', 'Reveal clip file', 'Project', 'Shows the selected clip in Explorer.', 'reveal-clip'],
     ['duplicate_sequence', 'Duplicate sequence', 'Sequence', 'Copies the active sequence as v2, v3, ...', 'duplicate-sequence'],
-    ['social_copy', 'Social copy', 'Sequence', 'A copy of the sequence in a social format.', 'social-copy'],
+    ['create_16_9', 'Copy at 16:9', 'Sequence', 'A reframed copy of the active sequence at 16:9.', 'ratio-16-9'],
+    ['create_9_16', 'Copy at 9:16', 'Sequence', 'A reframed copy of the active sequence at 9:16.', 'ratio-9-16'],
+    ['create_custom', 'Copy at a custom size', 'Sequence', 'A reframed copy at the width and height you enter.', 'ratio-custom'],
+    ['export_open', 'Export', 'Export', "Opens Premiere's export for the active sequence.", 'export'],
     ['export_frame', 'Export frame', 'Export', 'PNG of the frame at the playhead.', 'export-frame'],
-    ['export_sequence', 'Export sequence', 'Export', 'Queues the sequence with a preset.', 'export-sequence'],
+    ['ease_slow', 'Ease slow', 'Keys', 'A gentle ease on the keyframes around the playhead.', 'ease-slow'],
+    ['ease_med', 'Ease medium', 'Keys', 'A medium ease on the keyframes around the playhead.', 'ease-med'],
+    ['ease_fast', 'Ease fast', 'Keys', 'A strong ease on the keyframes around the playhead.', 'ease-fast'],
+    ['ease_linear', 'Linear', 'Keys', 'Sets the keyframes around the playhead back to linear.', 'ease-linear'],
   ];
   const hidden = new Set(['reveal_clip']);
 
@@ -255,6 +269,11 @@ export function createMock({ params, dispatch }) {
     }
     const busy = !!F.running;
     const blocks = [
+      { type: 'actions', id: 'setup_actions', items: [
+        btn('files.setup', 'Set up project', { icon: 'folder', hint: 'Creates the layout folders and the matching bins.' }),
+        { kind: 'switch', id: 'files.auto_copy', label: 'Auto copy', short: 'Auto copy', icon: 'sync-all', hint: 'Copies imported files into the project folder.', value: F.autoCopy, disabled: false, busy: false },
+        { kind: 'switch', id: 'files.auto_sort', label: 'Auto sort', short: 'Auto sort', icon: 'sort', hint: 'Files new items into the layout folders and bins.', value: F.autoSort, disabled: false, busy: false },
+      ] },
       { type: 'chips', id: 'status_chips', items: [
         { id: 'inside', text: `${F.inside} in the root`, tone: 'ok', icon: null },
         { id: 'outside', text: `${F.outside} outside`, tone: F.outside ? 'warn' : 'neutral', icon: null },
@@ -304,11 +323,6 @@ export function createMock({ params, dispatch }) {
         { type: 'list', id: 'visibility', title: 'Shown in the panel', hint: 'Hidden actions are not shown in the panel.', rows: ACTION_LIST.map(([id, title, group, hint, icon]) => ({
           id, title, subtitle: `${group} · ${hint}`, icon, toggle: { id: `actions.host:visible.${id}`, value: !hidden.has(id) },
         })) },
-        { type: 'list', id: 'presets', title: 'Export presets', hint: 'Add your own .epr files to D:\\Footage\\spring-promo\\.premiere-deck\\presets.', rows: [
-          { id: 'youtube_1080p', title: 'YouTube 1080p', subtitle: 'Adobe system preset' },
-          { id: 'instagram_9x16', title: 'Instagram 9:16', subtitle: 'Adobe system preset' },
-          { id: 'match_h264', title: 'Match source H.264', subtitle: 'Adobe system preset' },
-        ], empty: 'No export presets found.', actions: [btn('actions.host:open_presets', 'Open folder', { icon: 'open-folder' }), btn('actions.host:refresh_presets', 'Rescan', { icon: 'update' })] },
       ],
     };
   }
@@ -342,7 +356,7 @@ export function createMock({ params, dispatch }) {
     async get_settings() { return clone(settings); },
     async set_settings(patch) {
       await delay(60);
-      const allowed = ['premiere_exe', 'keep_running_with_premiere', 'theme', 'auto_download_updates'];
+      const allowed = ['premiere_exe', 'keep_running_with_premiere', 'theme', 'auto_download_updates', 'show_activity'];
       for (const k of Object.keys(patch || {})) if (!allowed.includes(k)) return fail(`The setting "${k}" cannot be changed here.`);
       if (patch.theme !== undefined && !THEMES.includes(patch.theme)) return fail('Unknown theme.');
       Object.assign(settings, patch);
@@ -415,10 +429,14 @@ export function createMock({ params, dispatch }) {
             result('files', action, 'ok', 'Synced 4 files to Media');
             break;
           case 'files.sync_used':
+            F.last = { text: 'Synced 2 used files to Media', detail: '', outcome: 'ok', at: nowS() };
             result('files', action, 'ok', 'Synced 2 used files to Media');
             break;
           case 'files.zip':
-            if (F.offline) result('files', action, 'warn', 'ZIP written · 1 offline item left out', 'spring-promo.zip beside the project folder');
+            F.last = F.offline
+              ? { text: 'ZIP written · 1 offline item left out', detail: 'spring-promo.zip beside the project folder', outcome: 'warn', at: nowS() }
+              : { text: 'ZIP written', detail: '', outcome: 'ok', at: nowS() };
+            if (F.offline) result('files', action, 'warn', F.last.text, F.last.detail);
             else result('files', action, 'ok', 'ZIP written');
             break;
           case 'files.undo_last':
@@ -429,6 +447,9 @@ export function createMock({ params, dispatch }) {
             break;
           }
           case 'files.open_folder': result('files', action, 'ok', 'Opened the project folder'); break;
+          case 'files.setup': result('files', action, 'ok', 'Project set up'); break;
+          case 'files.auto_copy': F.autoCopy = !!value; break;
+          case 'files.auto_sort': F.autoSort = !!value; break;
           case 'files.host:journal_all': F.journalAll = !F.journalAll; break;
           case 'files.host:layout_select':
             askHost('files', 'Switch this project to another layout? Files already sorted stay where they are.').then((yes) => {
@@ -442,8 +463,7 @@ export function createMock({ params, dispatch }) {
         if (m2) {
           if (value) hidden.delete(m2[1]);
           else hidden.add(m2[1]);
-        } else if (action === 'actions.host:open_presets') emit('toast', { kind: 'info', message: 'Opened the presets folder.' });
-        else if (action === 'actions.host:refresh_presets') emit('toast', { kind: 'info', message: 'Found 3 presets.' });
+        }
       }
       setTimeout(emitModules, 0);
       return { ok: true, toast: null };

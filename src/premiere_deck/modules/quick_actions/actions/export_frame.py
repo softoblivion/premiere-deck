@@ -13,7 +13,7 @@ FRAMES_DIR = ("Exports", "Frames")
 class ExportFrame(Action):
     id = "export_frame"
     label = "Export frame"
-    short = "Export frame"
+    short = "FRM"
     icon = "export-frame"
     hint = "Saves the frame at the playhead as a PNG in Exports\\Frames and shows it in Explorer."
     group = "Export"

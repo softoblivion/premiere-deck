@@ -70,7 +70,10 @@ this with a thread check).
 
 `render()` returns the nodes of the module's section, which the panel shows as the module's tab (`PROTOCOL.md`
 6.1). Helpers in `base.py` build nodes: `button(id, label, **kw)` (keywords include the 2.0 fields `icon`,
-`short`, `meta`, `variant` and `menu=menu(id, value, options, badge)`), `toggle(id, label, value, **kw)`,
+`short`, `meta`, `variant` and `menu=menu(id, value, options, badge)`), `switch(id, label, value, *, short=None,
+icon=None, hint=None, disabled=False, busy=False)` (2.1: a tile with a capsule switch; `on_action` receives the
+requested new state as `value`; the module answers by rendering the state it actually reached, and reports a
+refused change with `ctx.ui.result(id, "warn" | "error", ...)`), `toggle(id, label, value, **kw)`,
 `select(...)`, `input(...)`, `text(...)` (with `chip=True`), `progress(value, label, *, detail=None, cancel=None)`,
 `list_(...)`, `row(...)`, `group(title, items, *, id=None, columns=None, collapsible=False, tiles=False)`,
 `menu(id, value, options, badge)`, `divider()`. A module that sets `icon` (class attribute, a symbol name of the

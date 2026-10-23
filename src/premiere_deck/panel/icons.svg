@@ -166,4 +166,54 @@
   <path d="M9.6 8.6v6l5-3Z"/>
   <path d="m15.3 20.5 5.2-5.2"/><path d="M16.9 15.3h3.6v3.6"/>
 </symbol>
+<!-- 2.1: tracks, colour, sequence ratios, export, keyframe easing (docs/PANEL.md 1). -->
+<symbol id="i-track-video-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="4" width="17" height="8" rx="2"/><path d="M8 4v8M16 4v8"/>
+  <path d="M12 14.8v6M9 17.8h6"/>
+</symbol>
+<symbol id="i-track-video-remove" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="4" width="17" height="8" rx="2"/><path d="M8 4v8M16 4v8"/>
+  <path d="M9 17.8h6"/>
+</symbol>
+<symbol id="i-track-audio-add" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="4" width="17" height="8" rx="2"/><path d="M8 7.2v1.6M10.7 6.3v3.4M13.3 6.3v3.4M16 7.2v1.6"/>
+  <path d="M12 14.8v6M9 17.8h6"/>
+</symbol>
+<symbol id="i-track-audio-remove" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="4" width="17" height="8" rx="2"/><path d="M8 7.2v1.6M10.7 6.3v3.4M13.3 6.3v3.4M16 7.2v1.6"/>
+  <path d="M9 17.8h6"/>
+</symbol>
+<symbol id="i-colour" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.1 0 1.8-.8 1.8-1.8 0-.5-.2-.9-.5-1.2a1.8 1.8 0 0 1 1.3-3.1h2a3.9 3.9 0 0 0 3.9-3.9c0-3.9-3.8-7-8.5-7Z"/>
+  <circle cx="7.6" cy="11.2" r="1.1" fill="currentColor" stroke="none"/><circle cx="9.9" cy="7.4" r="1.1" fill="currentColor" stroke="none"/>
+  <circle cx="14.4" cy="7.4" r="1.1" fill="currentColor" stroke="none"/>
+</symbol>
+<symbol id="i-ratio-16-9" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="2.5" y="6.5" width="19" height="11" rx="2.2"/><path d="M6.5 10V9.8h2M17.5 14v.2h-2"/>
+</symbol>
+<symbol id="i-ratio-9-16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="6.5" y="2.5" width="11" height="19" rx="2.2"/><path d="M9.8 6.5H10v2M14.2 17.5H14v-2"/>
+</symbol>
+<symbol id="i-ratio-custom" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <rect x="3.5" y="3.5" width="12" height="10" rx="2"/><path d="M20.5 12.5v8h-8"/><path d="m20.5 20.5-5.6-5.6"/>
+</symbol>
+<symbol id="i-export" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M12 14V3.8"/><path d="m7.8 7.8 4.2-4.3 4.2 4.3"/><path d="M4.5 12.5v4.8a3.2 3.2 0 0 0 3.2 3.2h8.6a3.2 3.2 0 0 0 3.2-3.2v-4.8"/>
+</symbol>
+<symbol id="i-ease-slow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 19C9.2 19 14.8 5 19 5"/>
+  <path d="M5 17.2 6.8 19 5 20.8 3.2 19Z" fill="currentColor"/><path d="M19 3.2 20.8 5 19 6.8 17.2 5Z" fill="currentColor"/>
+</symbol>
+<symbol id="i-ease-med" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 19C12 19 12 5 19 5"/>
+  <path d="M5 17.2 6.8 19 5 20.8 3.2 19Z" fill="currentColor"/><path d="M19 3.2 20.8 5 19 6.8 17.2 5Z" fill="currentColor"/>
+</symbol>
+<symbol id="i-ease-fast" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M5 19C16.5 19 7.5 5 19 5"/>
+  <path d="M5 17.2 6.8 19 5 20.8 3.2 19Z" fill="currentColor"/><path d="M19 3.2 20.8 5 19 6.8 17.2 5Z" fill="currentColor"/>
+</symbol>
+<symbol id="i-ease-linear" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M6.3 17.7 17.7 6.3"/>
+  <path d="M5 17.2 6.8 19 5 20.8 3.2 19Z" fill="currentColor"/><path d="M19 3.2 20.8 5 19 6.8 17.2 5Z" fill="currentColor"/>
+</symbol>
 </svg>

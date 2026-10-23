@@ -39,7 +39,8 @@ def _top(item) -> str:
 class LabelByBin(Action):
     id = "label_by_bin"
     label = "Colour labels by bin"
-    short = "Label by bin"
+    title = "Label by bin"
+    short = "BIN"
     icon = "label-by-bin"
     hint = "Gives every project item the colour of its top-level bin."
     group = "Clips"

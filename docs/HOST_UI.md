@@ -74,24 +74,31 @@ ends. With reduced motion (Windows' animation effects off) the size and the layo
     project name and its root path in mono) and, at the bottom, the activity strip (state icon, text, time per
     line; newest at the bottom; it grows upwards into the free space and shows as many of the last 20 lines of
     `State.activity` as fit; the icon is a check, warning or cross for the line's tone, else the module's icon; the
-    time is `HH:MM`). Right pane: a glass panel with the tabs, one per module in `order` (`modules()`; the kit's
-    segmented control with the module icon and title, "Actions" for Quick actions: Files | Actions today; the
-    chosen tab is remembered in `localStorage` `pd.tab`); each tab is one screen, its remaining blocks below the
+    time is `HH:MM`). The strip exists only while the setting `show_activity` is on (default off, 6, row "Show
+    activity" in 3.4); with it off the left column holds the Premiere card only, and a change of the setting shows
+    or hides the strip at once (the activity events are still received and kept). Right pane: a glass panel with the tabs, one per module in `order` (`modules()`; the kit's
+    segmented control with the module icon and title, "Actions" for Quick actions; the order is the modules'
+    `order`, so with Quick actions at 5 and Files at 10 the tabs read Actions | Files and Actions is the tab shown
+    until another one is chosen; the chosen tab is remembered in `localStorage` `pd.tab`); each tab is one screen, its remaining blocks below the
     fold scroll inside the pane. The page draws a module page with the narrow-pane rules of `BRIDGE_API.md` 5.
-    - **Files**: `FILES.md` 7: the root path with the "Open project folder" icon button, the three status chips
+    - **Files**: `FILES.md` 7: the root path with the "Open project folder" icon button, the Set up project button with the two
+      `switch` nodes Auto copy and Auto sort beside it (drawn by `blocks.js` as a pill with the icon, the label and a
+      capsule; a change sends the node id with the new value), the three status chips
       (in the root, outside, offline), the four file actions as 2 x 2 tiles with a one-line live meta, the last
-      result with Undo, the last three journal entries with Undo and "Show all"; below the fold the layout editor
+      result line with Undo (7, shown for a few seconds after a result), the last three journal entries with Undo and "Show all"; below the fold the layout editor
       (folders list, rules table, overrides) and the module's Settings card. "No project open" shows the layout
       editor only.
     - **Actions**: the configuration of the set (`QUICK_ACTIONS.md` 3): one switch per action ("Shown in the
-      panel") in two columns grouped by the action's group, and the export presets folder as the last row. Actions
-      run from the panel only.
+      panel") in two columns grouped by the action's group (Timeline, Tracks, Selection, Clips, Project, Sequence, Export,
+      Keys). The rows come from the module's page model (`render_host`, one row per action with the action's
+      `icon` symbol, `title` and `subtitle` "<group> · <hint>"); the page has no presets block. Actions run from
+      the panel only.
     - A module that is not running or missing from the build shows its title, state and error in its tab ("Not
       installed in this build").
 3.4 **Settings** (a sheet, `ui/js/settings.js`, not a page): the kit's modal sheet (`Overlay`, preset `sheet`) that
     grows out of the title-bar gear, with kit rows and its own scroll. Groups in this order: Appearance (the theme
     as two large cards, Crystal Black and Crystal Sky, each with a mini preview of its scene, a glass card and an
-    accent pill; the selected card carries the accent rim), Behaviour ("Keep running with Premiere"), Updates (the
+    accent pill; the selected card carries the accent rim), Behaviour ("Keep running with Premiere"; "Show activity": the activity strip of the main screen, 3.3), Updates (the
     host version with the kit's update rows and "Check now"; the panel's installed and bundled versions with
     "Check now" (`panel_check_update()`) and "Reinstall"), Premiere (executable with Choose file / Use detected,
     version), then below the fold Panel (target folder, debug-mode fallback state, Remove the panel), Modules (one
@@ -117,12 +124,13 @@ models, module actions, launch Premiere, panel install and check, update methods
 ## 6. Settings file (`settings.json`)
 
 `premiere_exe` (auto / path), `keep_running_with_premiere` (true), `theme` (`black`), `auto_download_updates`
-(true), `debug_mode_written` (list of CSXS keys the host wrote), `recent_projects` (list), `recent_opened`
+(true), `show_activity` (false), `debug_mode_written` (list of CSXS keys the host wrote), `recent_projects` (list), `recent_opened`
 (`{path: ISO 8601 UTC}` of the last open through Deck, pruned with the list; the "time ago" of a Deck row), `modules.<id>.*`
 (module host settings), `modules_enabled.<id>` (bool).
 
 Stored values: `theme` is `black` or `sky` (default `black`; the 1.x kit names `dusk`, `nova`, `frost`, `bloom` and
-any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a path ending in `.exe`; a bad or
+any other value fall back to `black` on load); `premiere_exe` is `"auto"` or a path ending in `.exe`; `show_activity` is a bool (a patch with another type is
+refused with "The setting needs on or off."); a bad or
 hand-edited value falls back to its default on load (`core/settings.py`); keys of newer versions are kept.
 
 ## 7. Implementation notes (host worker)
@@ -169,6 +177,24 @@ hand-edited value falls back to its default on load (`core/settings.py`); keys o
 - Font: Sora (SIL OFL, latin subset, variable woff2 with its licence text in the kit copy's `fonts/`) for all text;
   Geist Mono for numbers, paths and times. The kit copy's `css/tokens.css` is the only place that names the text
   font. Unbounded is gone.
+- Notices (user's rule 2026-10-23, `_workspace\CONVENTIONS.md` "Notices"): every notice of the window closes on a
+  click anywhere on it, except on a control inside it (a button, link or field does its own thing and the notice
+  stays). Helpers: `ui/js/ui.js` `closeOnClick(el, close)` and `noticeMs(tone)`.
+  - Toasts (kit copy `ui/vendor/liquid_ui/js/toast.js`): a click on the toast closes it, sticky ones included; the
+    option `onClick` runs first when the toast also does something (the sticky "<product> <version> is ready" toast
+    of the update control opens the update sheet; its Restart / View button runs its own action and closes the
+    toast). Toasts sit above the modal sheets, so they can be clicked while a sheet is open.
+  - Result lines: the Files page's `last_result` list (the line with Undo) is shown only after a `result` event of
+    its module, for 3 s (outcome `ok`, `neutral`) or 10 s (`warn`, `error`; the panel's "error" timer also covers
+    warnings here because they carry text to read), and closes on a click outside its Undo button. A line that is
+    already in the page model when the tab opens is not shown, and a repeated result with the same text shows the
+    line again (the timer restarts with every `result` event). The same 3 s / 10 s rule and click apply to the
+    result line under the waiting tiles (3.2); it also clears on a screen change.
+  - Other inline notices close on a click and come back when their cause changes: the waiting hint card (menu path)
+    and the debug-mode offer inside it (the offer closes on its own, the card closes with everything in it; both
+    return when the screen changes), and the module notice of a tab ("Not installed in this build", "turned off",
+    "no page yet"; it stays closed until its text changes). Modal confirmations, the update popover and sheet,
+    empty-state lines and the page's own `text` blocks are not notices.
 - Icons: every function has its own inline SVG icon (24 px grid, 1.75 px stroke, round caps) plus a short label,
   from one sprite of symbols shared in names with the panel's `icons.svg` (`PANEL.md` 1): `ui/assets/icons.svg`,
   inlined into the page at start (`ui/js/icons.js`); `ui/assets/glyph.svg` is the glyph as the page icon.

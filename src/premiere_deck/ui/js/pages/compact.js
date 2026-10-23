@@ -10,7 +10,7 @@ import { call } from '../api.js';
 import { store, notify, watch } from '../store.js';
 import { ic, glyph } from '../icons.js';
 import { askConfirm } from '../confirm.js';
-import { h, failToast, isoToEpoch, ago, flash } from '../ui.js';
+import { h, failToast, isoToEpoch, ago, flash, noticeMs, closeOnClick } from '../ui.js';
 
 const COLLAPSED_KEY = 'pd.recent.collapsed';
 const RECENT_ROWS = 3;
@@ -65,6 +65,19 @@ export function mountCompact(host, { pill, update, openSettings, addActivity }) 
     h('span', 'key', { text: 'Premiere Deck' }));
   const fallback = h('div', 'help-fallback', { hidden: true });
   const help = h('div', 'help', null, h('p', '', { text: 'Open the panel once; Premiere keeps it in the workspace.' }), keys, fallback);
+  // The hint card and the debug-mode offer are notices: a click outside their buttons closes them until the screen
+  // changes (HOST_UI.md 7). The offer closes on its own; the rest of the card closes with the card.
+  let helpClosed = false;
+  let fallbackClosed = false;
+  closeOnClick(help, () => {
+    helpClosed = true;
+    help.hidden = true;
+  });
+  closeOnClick(fallback, (e) => {
+    e.stopPropagation();
+    fallbackClosed = true;
+    fallback.hidden = true;
+  });
 
   const tile = (icon, label) => {
     const b = h('button', 'wtile', { type: 'button' }, h('span', 'wt-ic', { 'data-ic': '', html: ic(icon) }), h('span', 'wt-label', { text: label }));
@@ -76,6 +89,14 @@ export function mountCompact(host, { pill, update, openSettings, addActivity }) 
   const tReinstall = tile('reinstall', 'Reinstall panel');
   const tiles = h('div', 'tiles3', null, tPanel, tUpdate, tReinstall);
   const tileResult = h('div', 'tile-result', { 'aria-live': 'polite' });
+  let resultTimer = 0;
+  const clearResult = () => {
+    clearTimeout(resultTimer);
+    resultTimer = 0;
+    tileResult.replaceChildren();
+  };
+  // A result line goes away after 3 s (10 s for warn and error) and on a click (HOST_UI.md 7).
+  closeOnClick(tileResult, clearResult);
 
   // ---- recent projects ------------------------------------------------------------------------
   let collapsedIdle = readCollapsed();
@@ -182,8 +203,10 @@ export function mountCompact(host, { pill, update, openSettings, addActivity }) 
 
   function outcome(btn, tone, text) {
     flash(btn, tone, ic);
-    tileResult.className = `tile-result t-${tone}`;
+    tileResult.className = `tile-result is-notice t-${tone}`;
     tileResult.replaceChildren(h('span', 'tr-ic', { html: ic(tone === 'ok' ? 'check' : tone === 'warn' ? 'warn' : 'cross') }), h('span', '', { text }));
+    clearTimeout(resultTimer);
+    resultTimer = setTimeout(clearResult, noticeMs(tone));
     addActivity({ text, tone, module: null });
   }
 
@@ -285,7 +308,7 @@ export function mountCompact(host, { pill, update, openSettings, addActivity }) 
   function paintFallback(p) {
     fallback.replaceChildren();
     const offer = p && p.state === 'waiting' && (p.fallback_offer || debugOn);
-    fallback.hidden = !offer;
+    fallback.hidden = !offer || fallbackClosed;
     if (!offer) return;
     if (debugOn) {
       fallback.append(h('p', 't-ok', { text: 'Debug mode is on. Restart Premiere Pro to load the panel.' }));
@@ -348,10 +371,13 @@ export function mountCompact(host, { pill, update, openSettings, addActivity }) 
       else statusText.textContent = st === 'starting' ? 'Premiere Pro is starting' : `Premiere Pro${ver ? ` ${ver}` : ''} is running`;
     }
     if (st !== 'waiting') debugOn = false;
+    help.hidden = helpClosed;
     paintFallback(p);
     if (scr !== lastScreen) {
+      helpClosed = false;
+      fallbackClosed = false;
       if (scr === 'waiting') collapsedWaiting = true;
-      if (lastScreen) tileResult.replaceChildren();
+      if (lastScreen) clearResult();
       lastScreen = scr;
     }
     paintRecent();

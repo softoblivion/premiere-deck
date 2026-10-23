@@ -32,8 +32,10 @@ The 1.x files `glyph.svg` and `fonts/Unbounded-latin.woff2` are gone (the glyph 
 sprite is a subset of `reports\mockups\icons.svg` plus `undo`; a test (`tests/panel/run.js`) checks that every
 `icon = "..."` of the modules exists in it. Icon names the host uses: `folder` and `actions` (the tabs), `open-folder`, `sort`, `sync-all`, `sync-used`, `zip`,
 `journal`, `undo`, `check`, `cross`, `info`, `warn`, `chevron`, `power` (start host), `open` (Open host) and one
-icon per quick action (`QUICK_ACTIONS.md` 1). A node naming a symbol the sprite lacks is drawn without an icon
-(logged once).
+icon per quick action (`QUICK_ACTIONS.md` 1). Symbols added in 2.1 for the new quick actions (the modules use
+exactly these names): `track-video-add`, `track-video-remove`, `track-audio-add`, `track-audio-remove`, `colour`,
+`ratio-16-9`, `ratio-9-16`, `ratio-custom`, `export`, `ease-slow`, `ease-med`, `ease-fast`, `ease-linear`. A node
+naming a symbol the sprite lacks is drawn without an icon (logged once).
 
 Two extensions in one bundle (as the Premiere MCP bridge does on this machine):
 
@@ -58,34 +60,48 @@ against the stray window at Premiere's start (5.1): the agent is never shown, so
   panel's own `VERSION`). A section `status` is drawn as a small dot-and-text line at the top of its tab.
 - Tabs: one per section of the tree, in the tree's order, drawn as one pill track with a sliding thumb (the
   section's `icon` and `title`). The selected tab is remembered in `localStorage` by section id; when it is not in
-  the tree the first section is selected. The body is that section only: its `status` line at the top, then its
+  the tree (or none is stored) the first section is selected. 2.1 order glyph · Actions · Files · dot with Actions as
+  the default: the panel knows no module, so this comes from the host's section order (module `order`, Quick
+  actions before Files). The body is that section only: its `status` line at the top, then its
   nodes; it fits one screen at the default size and scrolls only when the panel is shorter.
-- `group` (6.1): a caption and its items. With `columns` 2 or 3 every run of consecutive `button` nodes becomes a
-  grid of that many columns; any other node takes the full width and ends the run; a run of one plain button is
-  drawn full width; below 300 px panel width a grid of plain buttons is one column and a tile grid two columns.
-  With `tiles` the buttons are tiles (icon well, `short` under it, `meta` under that when given; `label` when
-  `short` is missing). With `collapsible` the caption is a button (chevron; the item count while collapsed;
+- `group` (6.1): a caption and its items. With `columns` 2 or 3 every run of consecutive `button` and `switch`
+  nodes becomes a grid of that many columns; any other node takes the full width and ends the run; a run of one
+  plain button is drawn full width; below 300 px panel width a grid of plain buttons is one column. With `tiles`
+  the buttons are compact tiles (2.1: the icon at the left, `short` in one line, `label` when `short` is missing)
+  in a grid of four columns whatever `columns` says, three below 360 px (section 3). With `collapsible` the caption is a button (chevron; the item count while collapsed;
   Enter / Space toggles it) and the state is remembered in `localStorage` per group `id`, expanded by default.
   Groups are keyed by `id` (a group without one by its title, a repeated title gets a counter), and items inside
   keep their id keys, so inserting or reordering groups never recreates a focused input.
+- `switch` (6.1, 2.1): a compact tile with a capsule switch in the icon slot (mint while on) and the code label;
+  `role="switch"`, `aria-checked`, `data-value`. A click (not while `busy`, `disabled` or offline) flips the capsule
+  at once (`local.pending[id]`) and sends `action` with `value` = the new state; the next `ui` message clears every
+  pending value, so the host's tree wins (a refused change comes back as the old value with an `action_result`,
+  whose glow the tile shows for 2 s). Outside a tile group a switch is drawn the same way, full width.
 - Tooltip: the display's own glass card above the element, shown after 400 ms of hover or on keyboard focus
   (`:focus-visible` only), hidden on leave, on press and on scroll: the full `label` in bold and the `hint` line
-  under it (`hint` alone for a node without a label). A node gets a tooltip when it has a `hint`, is an icon
-  button, or is a tile whose `short` differs from its `label`. The card is one element of the panel placed by
+  under it (`hint` alone for a node without a label); for a tile a third, dimmer line with its `meta` and its
+  menu's `badge` (2.1: the compact tile has no room for them). A node gets a tooltip when it has a `hint`, is an
+  icon button, or is a tile whose `short` differs from its `label` or that has a `meta` or a badge. The card is one element of the panel placed by
   `placeFloating`: centred on the element, kept inside the 12 px gutter (in the first and last grid column it lines
   up with the tile's outer edge), below the element when there is no room above. No element carries a `title`
-  attribute; the elements carry `data-tip`, `data-tip-label` and `data-tip-hint`.
+  attribute; the elements carry `data-tip`, `data-tip-label`, `data-tip-hint` and `data-tip-meta`.
 - Results (`action_result`, `PROTOCOL.md` 6.6): the tile with that id shows the outcome for 2 s (the icon rotates
   and scales out, a check with a mint glow for `ok`, a cross with a rose glow for `error`, the warn mark with an
   amber glow for `warn`, the check without glow for `neutral` spring in), then returns to its icon. The group
-  that holds the button keeps a result line under its items, "<text> · <HH:MM>" in the outcome's colour, until the
-  next result of that group (it survives re-renders; it goes when the group leaves the tree). A line with `detail`
-  has a chevron; a click opens the detail as one line under it, a second click closes it.
-- Menus (`button.menu`): the tile shows `badge` as a small mono badge in its corner; a click on the badge opens a
-  small glass menu anchored to the tile with the `options` (the current `value` marked with a check); a pick sends
+  that holds the button keeps a result line under its items, "<text> · <HH:MM>" in the outcome's colour (it
+  survives re-renders). 2.1 timers and click-dismiss (`_workspace\CONVENTIONS.md` "Notices"): the line hides itself
+  after 3 s (`ok`, `neutral`) or 10 s (`warn`, `error`; a warn carries a reason to read, so it gets the error
+  time), or with the next result of the group, or when the group leaves the tree. Every line is a button: a click
+  closes it; a line with `detail` has a chevron and the same click opens the detail as its own line under it,
+  which has no timer and closes on its own click, on Esc, with the next result of the group or when the group
+  leaves the tree.
+- Menus (`button.menu`): the compact tile shows a small chevron handle at its right edge (2.1; the `badge`, the
+  current choice, is its `aria-label` and the tooltip's third line, because a 78 px tile has no room for the text);
+  a click on the handle opens a small glass menu anchored to the tile (an option with a `swatch` shows a 10 px dot in
+  that colour before its label; the display draws only `#rgb` / `#rrggbb` values) with the `options` (the current `value` marked with a check); a pick sends
   `action` with the menu `id` and the option's `value` and closes the menu; Esc or a click outside closes it
-  without sending (the closing click does nothing else). A click on the tile outside the badge sends the button's
-  `id`; a right click on a tile with a menu opens the menu as well. While the host is away the badge opens nothing.
+  without sending (the closing click does nothing else). A click on the tile outside the handle sends the button's
+  `id`; a right click on a tile with a menu opens the menu as well. While the host is away the handle opens nothing.
 - A `button` with `confirm` opens an inline confirmation under the button (the question and two small pills,
   "Yes" and "No"), never a native dialog. In a grid the confirmation spans the full row under the asking button's
   row; in a list row the row wraps so the question gets the full width.
@@ -94,20 +110,23 @@ against the stray window at Premiere's start (5.1): the agent is never shown, so
 - `variant` `icon`: a 30 px round button with the icon only; its `label` is the tooltip. A `text` with `chip` is a
   small status chip (a dot in the tone's colour, the text). A `row` that holds a text and an icon button is a header
   row: the text is drawn as a 15 px title; a `text` that starts like a Windows path (`D:\`, `\\`) is drawn in mono; a
-  `row` of buttons that ends a tab is docked to the foot of the screen (the Files journal row).
+  `row` of buttons that ends a tab is docked to the foot of the screen (the Files undo row; 2.1 sends no Journal tile, and the renderer does not
+  depend on one).
 - `progress`: a card with `label`, the bar, `detail` as one mono line under it and, with `cancel`, a "Stop" pill at
   the right that sends `action` with that id.
-- Toasts (6.3): one line at the bottom, fades after `ms`.
+- Toasts (6.3): one line at the bottom, fades after `ms`; a click closes it (2.1).
 - Theme (`PROTOCOL.md` 6.5): the display sets `data-theme` on `<html>` to the name and remembers it in
   `localStorage`, so the next start draws the right theme before the host answers; before any theme is known it
   is `black`. A change runs the switch animation of section 3.
 - Connection states: without a host connection and no tree yet, the body is the "Connecting to Host" screen: the
   glyph with a pulsing dot and the title "Connecting to Host"; after 15 s a soft second line "Start Premiere Deck
-  on this computer"; when `deck.json` names a `host_exe` that exists, a secondary link "Start Premiere Deck" (icon
+  on this computer" (a notice: a click closes it until the next connection; the start link is a control and
+  stays); when `deck.json` names a `host_exe` that exists, a secondary link "Start Premiere Deck" (icon
   `power`) runs it (the link and the line appear together; in a development browser the exe cannot be checked, the
-  click then answers "not found"). When a tree was shown and the host goes away, the last tree stays, dimmed and disabled, and the
+  click then answers "not found"; that answer line closes on a click). When a tree was shown and the host goes away, the last tree stays, dimmed and disabled, and the
   connection dot turns amber. `welcome.update = restart_premiere` shows the one-line notice "Restart Premiere Pro
-  to finish the Premiere Deck update" above the tabs; `bye protocol` shows "Update Premiere Deck (host x)".
+  to finish the Premiere Deck update" above the tabs (a click closes it for the life of the page; the header dot's
+  tooltip still says it); `bye protocol` shows "Update Premiere Deck (host x)".
 - Keyboard: Enter submits an `input`; Esc closes a confirmation, a menu or an open result detail. No other
   shortcuts (Premiere owns the keyboard).
 - Outside Premiere (development): when the page is opened over `http(s)` and `window.__adobe_cep__` is missing
@@ -138,9 +157,15 @@ or copied as code; it shares the theme token VALUES only.
 - Fonts: Sora for all text (`fonts/Sora-latin.woff2`, the variable latin subset, the same file as the host's kit
   copy, with its OFL text); Geist Mono for the footer version, paths, timecodes, counts and badges. Sizes: body
   12.5 px, small text, tile labels and field labels 11.5 px.
-- Tiles: 66 px high, three per row in Actions, radius 16 px, icon 22 px over the short label (at most two lines;
-  measured with Sora at 360 px: only "Adjustment layer" takes two); a tile with a `meta` line is the wide Files tile
-  (two per row, 92 px high, radius 18 px, the icon in a 34 px well, label 13 px, the meta line under it). Plain buttons are pills (30 px high minimum, 12.5 px / 600, 12 px side padding; a label
+- Tiles (2.1): 32 px high, radius 11 px, the 16 px icon at the left and the code label (11.5 px / 600, letter
+  spacing 0.02 em) in one line, 6 px between tiles. The 2.0 wide Files tile with its meta line is gone: every tile
+  is compact. Four columns from 360 px panel width, three below (the manifest minimum 280 px still gives 78 px
+  tiles). Measured with Sora in a Chromium tab (2026-10-23): a tile needs about 78 px for the longest codes
+  (`SETUP` 39.3 px beside its icon, `COPY` / `SOLO` 35 px beside the 20 px capsule, `CLR` beside the 14 px menu
+  chevron); four columns give 77.5 px at 360 px with the 8 px scroll bar of the Actions tab (63 px at 300 px, where
+  `CONS`, `SLOW`, `SYNC`, `SOLO` and more were clipped), so the brief's "three below 300 px" became "three below
+  360 px". Every code of `reports\REDESIGN_2_1.md` 4 and `FILES.md` 6 fits from 280 to 420 px. The switch capsule
+  is 20 x 12 px with a 9 px knob, mint while on. Plain buttons are pills (30 px high minimum, 12.5 px / 600, 12 px side padding; a label
   too long for its cell wraps). Small pills (24 px high, 11.5 px) for the confirmation, the input's submit button,
   list row actions, Stop and the footer link.
 - Groups: a caption (10.5 px, uppercase, letter-spacing 0.06 em, `--ink-3`) over the items, 8 px between items,
@@ -204,7 +229,12 @@ or copied as code; it shares the theme token VALUES only.
   remembered tab, missing tab), `tiles` grids and their column rules, collapsible groups keyed by id, the tooltip
   model (label and hint, no `title` attribute anywhere in the output), `action_result` (morph timing, the result
   line per group, `detail` toggle), menus (badge, a pick sends the menu id and value), `progress.cancel`, chips,
-  `variant` `icon`, `theme` -> `data-theme`, the connecting screen and its 15 s second line.
+  `variant` `icon`, `theme` -> `data-theme`, the connecting screen and its 15 s second line. 2.1 adds: the tab
+  order from the tree with the first section as default, the compact tile markup (icon slot first, one label line,
+  four columns, `meta` and badge in the tooltip), the Files tab without the Journal tile, the `switch` node (markup,
+  busy / disabled / offline, optimistic flip, the host's tree winning, a refusal's glow and line), the result line
+  timers (3 s / 10 s with fake timers) and click-dismiss of lines, details, the toast, the restart notice and the
+  connecting hints.
 - Live verification (the panel worker, on this machine's Premiere): connect, handshake, `ui` render of a sample
   tree, every node kind, `script` round trip with an error, events of `PREMIERE_API.md` 6, reload on file update,
   the "Start Premiere Deck" button. The report lists what was verified with the Premiere version.
@@ -256,6 +286,14 @@ windows of `Adobe Premiere Pro.exe` listed every 250 ms with `EnumWindows`):
   the stale token before the file was rewritten; the display rejoined 0.5 s later through the `deck.json` poll
   (`PROTOCOL.md` 2).
 
+Idle load, 2026-10-23 (2.1 round, `reports\REDESIGN_2_1.md` 3): Premiere Pro 26.5.2 with the 2.1 panel docked,
+visible and connected (Actions tab, 28 tiles, no running animation), the agent polling every 2 s. CPU time of the
+process trees per 60 s (`Get-Process` `TotalProcessorTime`, the panel's CEPHtmlEngine with its renderer and GPU
+children, the agent's likewise): panel 0.62, 0.29, 1.61 and 0.47 % of one core in four runs (the 1.61 run and
+the last one saw host trees arrive, three in the last), agent 0.05 to 0.10 %. Below the 1 % mark, so the poll
+stays at 2 s (`PROTOCOL.md` 8 unchanged). The poll's ExtendScript runs in Premiere's own process and cannot be
+separated from Premiere's CPU there.
+
 ## 6. Implementation notes
 
 - `common.js`: `DeckClient` per role. Reads `deck.json` at every connection attempt (so a new port or token is
@@ -278,6 +316,7 @@ windows of `Adobe Premiere Pro.exe` listed every 250 ms with `EnumWindows`):
   (interactive nodes keyed by id, others by position and kind; properties applied after children so a select's
   value meets its options), `applyOps` patches the DOM; events are delegated through `data-*` attributes. While
   the host is away the last tree stays, dimmed and disabled. Local display state (selected tab, collapsed groups,
-  result lines, open tooltip or menu) lives outside the tree and is applied after the diff. The theme comes from
+  result lines and their timers, open details, pending switch values, closed notices, open tooltip or menu) lives
+  outside the tree and is applied after the diff. The theme comes from
   the host (section 3); the panel does not read `appSkinInfo` or follow `ThemeColorChanged` (dropped in v1.1.0
   with the host-window look).

@@ -201,6 +201,11 @@ class Module:
         """`button(..., menu=...)` value: the choice a tile carries (docs/PROTOCOL.md 6.1)."""
         return P.menu(self._pid(local_id), value, options, badge)
 
+    def switch(self, local_id: str, label: str, value: bool, **kw: Any) -> dict:
+        """2.1 switch tile (docs/PROTOCOL.md 6.1); keywords `short`, `icon`, `hint`, `disabled`, `busy`. `on_action`
+        gets the requested new state as `value`."""
+        return P.node_switch(self._pid(local_id), label, value, **kw)
+
     def toggle(self, local_id: str, label: str, value: bool, **kw: Any) -> dict:
         return P.node_toggle(self._pid(local_id), label, value, **kw)
 

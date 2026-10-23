@@ -101,6 +101,17 @@ class TileHelpers(unittest.TestCase):
     def test_a_long_short_label_is_a_programming_error(self):
         with self.assertRaises(P.ProtocolError):
             self.module.button("go", "Go", short="x" * 17)
+        with self.assertRaises(P.ProtocolError):
+            self.module.switch("solo", "Solo", True, short="x" * 17)
+
+    def test_switch_helper_adds_the_module_prefix(self):
+        node = self.module.switch("solo", "Solo track", True, short="SOLO", icon="solo", hint="Mutes others")
+        self.assertEqual((node["kind"], node["id"], node["value"], node["short"]), ("switch", "tiles.solo", True, "SOLO"))
+        self.assertEqual(self.module.switch("tiles.lock", "Lock", False)["id"], "tiles.lock", "prefixing is idempotent")
+        group = self.module.group("Tracks", [node], id="tracks", tiles=True)
+        P.validate_tree({"type": "ui", "revision": 0, "title": "", "status": None, "footer": None,
+                         "sections": [P.section("tiles", "Tiles", [group])]})
+        self.assertEqual(self.module.strip_prefix("tiles.solo"), "solo")
 
     def test_module_without_icon_has_no_icon_field(self):
         self.assertNotIn("icon", Demo(FakeHost().context()).section())

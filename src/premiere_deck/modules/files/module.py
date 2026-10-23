@@ -43,8 +43,11 @@ from .sync import (
 HOST_DEFAULTS = {"toast_filed": True, "copy_buffer_mb": 16, "stable_seconds": 2, "default_layout": DEFAULT_LAYOUT_ID}
 INT_RANGES = {"copy_buffer_mb": (1, 256), "stable_seconds": (1, 60)}
 PROJECT_DEFAULTS = {"enabled": False, "layout": DEFAULT_LAYOUT_ID, "overrides": [], "enforce_bins": True,
-                    "mirror_bins": True, "import_exports": False, "watch": True}
-PROJECT_BOOLS = ("enforce_bins", "mirror_bins", "import_exports", "watch")
+                    "mirror_bins": True, "import_exports": False, "watch": True, "auto_copy": False,
+                    "auto_sort": False}
+PROJECT_BOOLS = ("enforce_bins", "mirror_bins", "import_exports", "watch", "auto_copy", "auto_sort")
+AUTO_SWITCHES = ("auto_copy", "auto_sort")  # the two import switches (docs/FILES.md 3.1, 6)
+_ABSENT = object()
 
 LONG_KINDS = ("sort", "sync_all", "sync_used", "zip")  # at most one of these runs at a time (docs/FILES.md 3)
 STOPPED_WORD = {"sort": "Sort", "sync_all": "Sync", "sync_used": "Sync", "zip": "ZIP"}
@@ -61,8 +64,15 @@ HINTS = {
     "sort": "Moves the media inside the project folder into the layout folders and bins.",
     "sync_all": "Copies every file from outside the project folder into Media.",
     "sync_used": "Copies the files used in sequences from outside the project folder into Media.",
-    "zip": "Writes the project folder as a ZIP archive beside it.",
+    "zip": "Writes the project folder as a ZIP archive into its Exports folder.",
+    "setup": "Creates the layout folders and the matching bins.",
+    "auto_copy": "Copies files imported from outside the project folder into Media and relinks them.",
+    "auto_sort": "Files new media of the project folder into the layout folders and bins.",
 }
+SWITCH_LABELS = {"auto_copy": "Auto copy", "auto_sort": "Auto sort"}
+SWITCH_CODES = {"auto_copy": "AUTO COPY", "auto_sort": "AUTO SORT"}
+SWITCH_ICONS = {"auto_copy": "sync-all", "auto_sort": "sort"}
+TILE_CODES = {"setup": "SETUP", "sort": "SORT", "sync_all": "SYNC", "sync_used": "USED", "zip": "ZIP"}
 
 
 def ago(ts: Optional[float], now: Optional[float] = None) -> str:
@@ -125,6 +135,7 @@ class _Run:
     failures: list = field(default_factory=list)  # (name, reason)
     offline: list = field(default_factory=list)  # names
     nothing_text: str = ""
+    filed: list = field(default_factory=list)  # (name, folder) of the files an automatic sort filed
     error: Optional[tuple[str, Optional[str]]] = None  # (text, detail) of a refusal inside the job
 
 
@@ -215,6 +226,27 @@ class FilesModule(Module):
             return value if isinstance(value, list) else []
         return self._valid(key, value, default)
 
+    def _stored(self, key: str) -> Any:
+        """The raw project value of `key`, `_ABSENT` when the project never stored it (or the store raises)."""
+        try:
+            return self.ctx.settings.project.get(key, _ABSENT)
+        except Exception:  # noqa: BLE001
+            return _ABSENT
+
+    def _map_legacy_switches(self) -> None:
+        """2.0 filed every import of a set-up project (`enabled`) and had no switches: a set-up project that has
+        stored neither `auto_copy` nor `auto_sort` gets both on, once (docs/FILES.md 5.1). Setup stores both keys, so
+        a project set up in 2.1 is never mapped."""
+        if self._proj("enabled") is not True:
+            return
+        if any(self._stored(key) is not _ABSENT for key in AUTO_SWITCHES):
+            return
+        try:
+            for key in AUTO_SWITCHES:
+                self._set_proj(key, True)
+        except Exception:  # noqa: BLE001 - a store that cannot write keeps the defaults (both off)
+            self.log.exception("could not map the 2.0 intercept setting onto Auto copy and Auto sort")
+
     def _valid(self, key: str, value: Any, default: Any) -> Any:
         if isinstance(default, bool):
             return value if isinstance(value, bool) else default
@@ -286,6 +318,7 @@ class FilesModule(Module):
                            journal=J.Journal(os.path.join(root, DECK_DIR, "journal.jsonl")), masks=masks,
                            layout_error=error)
             self._state = state
+            self._map_legacy_switches()
             snap = self._take_snapshot(state)
             if self._enabled():
                 self._cleanup_journal(state)
@@ -556,20 +589,38 @@ class FilesModule(Module):
         self.ctx.ui.invalidate()
 
     def _intercept(self, state: _State, items: list[ProjectItem]) -> None:
-        """docs/FILES.md 3.1 for new project items."""
+        """docs/FILES.md 3.1 for new project items, split by the two switches: Auto copy copies external imports into
+        `media_dir`; Auto sort files what lies in the root (and, with Auto copy, what comes from outside) into the
+        layout. Both off: nothing happens."""
+        auto_copy, auto_sort = self._proj("auto_copy"), self._proj("auto_sort")
+        if not auto_copy and not auto_sort:
+            return
+        media_dir = state.layout.media_dir
         tasks: list[_Task] = []
+        sorts: list[ProjectItem] = []
         for item in items:
             path = item.media_path
             if not path or self._excluded(state, path):
                 continue
             if not os.path.isfile(path):
                 continue  # offline: listed, not fixed
-            if is_inside(path, state.root) and state.mapper.in_layout(path):
-                if self._proj("enforce_bins"):
+            task = _Task(node_id=item.node_id, name=item.name, source=path, bin_from=item.tree_path)
+            if not is_inside(path, state.root):
+                if auto_copy:
+                    if not auto_sort:
+                        task.folder = media_dir  # a flat copy, no classification
+                    tasks.append(task)
+            elif state.mapper.in_layout(path):
+                if not auto_sort:
+                    continue
+                deepest = state.mapper.deepest_layout_folder(path)
+                if deepest is not None and state.layout.in_media_dir(deepest):
+                    sorts.append(item)  # dropped into Media: classified and moved to its folder
+                elif self._proj("enforce_bins"):
                     self._enforce_bin(state, item)
-                continue
-            tasks.append(_Task(node_id=item.node_id, name=item.name, source=path, bin_from=item.tree_path))
-        if not tasks:
+            elif auto_sort:
+                tasks.append(task)  # loose in the root: a classified copy, the original stays
+        if not tasks and not sorts:
             return
         if state.write_ok is None:
             reason = write_check(state.root)
@@ -579,8 +630,41 @@ class FilesModule(Module):
                 self.ctx.ui.toast("error", NO_WRITE_ACCESS)
         if not state.write_ok:
             return
-        title = f"Filing {tasks[0].name}" if len(tasks) == 1 else f"Filing {len(tasks)} files"
-        self._submit_copies(state, tasks, J.OP_FILED, title, kind="filing")
+        if tasks:
+            copy_only = not auto_sort
+            title = f"{'Copying' if copy_only else 'Filing'} {tasks[0].name}" if len(tasks) == 1 else                 f"{'Copying' if copy_only else 'Filing'} {len(tasks)} files"
+            self._submit_copies(state, tasks, J.OP_SYNCED if copy_only else J.OP_FILED, title, kind="filing")
+        if sorts:
+            self._submit_sorts(state, sorts)
+
+    def _submit_sorts(self, state: _State, items: list[ProjectItem]) -> None:
+        """Auto sort for files dropped into `media_dir`: the Sort project step for a few files (docs/FILES.md 3.4),
+        not counted as one of the four long actions."""
+        refs = {path: len(nodes) for path, nodes in state.index.items()}
+        overrides = self._overrides(state)
+        run = _Run()
+
+        def work(job):
+            for item in items:
+                if getattr(job, "cancelled", False):
+                    break
+                path = item.media_path
+                folder = self._decide(state, path, overrides).folder
+                run.planned += 1
+                self._sort_one(state, job, PlanEntry(node_id=item.node_id, name=item.name, source=path, folder=folder,
+                                                     target="", size=file_size(path), reuse=False,
+                                                     bin_from=item.tree_path, copy=refs.get(norm(path), 0) > 1), run)
+            return run.planned
+
+        def finish(job, _value, error):
+            if error is not None:
+                return self.ctx.ui.toast("error", "Could not sort the new files")
+            self._toast_filed(run.filed)
+            if run.failures:
+                name, why = run.failures[0]
+                self.ctx.ui.toast("error", f"Could not sort {name} · {why}")
+
+        self._run_long(state, "filing", "Filing new files", work, finish)
 
     def _enforce_bin(self, state: _State, item: ProjectItem) -> None:
         folder = state.mapper.layout_folder_of(item.media_path)
@@ -717,8 +801,8 @@ class FilesModule(Module):
         if filed:
             self._emit(op, f"{OP_LABELS[op]} {filed[0][0]} into {filed[0][1]}" if len(filed) == 1
                        else f"{OP_LABELS[op]} {len(filed)} files", count=len(filed))
-        if op == J.OP_FILED:
-            self._toast_filed(filed)
+        if op in (J.OP_FILED, J.OP_SYNCED):
+            self._toast_filed(filed, "Filed" if op == J.OP_FILED else "Copied")
         if errors:
             name, reason = errors[0]
             text = f"Could not copy {name} · {reason}" if len(errors) == 1 else \
@@ -760,7 +844,7 @@ class FilesModule(Module):
         """`journal.appended` for the host window; `text` and `tone` feed its activity list (BRIDGE_API.md 3.5)."""
         self.ctx.events.emit("journal.appended", {"module": self.id, "op": op, "text": text, "tone": tone, **extra})
 
-    def _toast_filed(self, filed: list[tuple[str, str]]) -> None:
+    def _toast_filed(self, filed: list[tuple[str, str]], verb: str = "Filed") -> None:
         if not filed or not self._host("toast_filed"):
             return
         now = time.monotonic()
@@ -771,9 +855,9 @@ class FilesModule(Module):
         self._toast_at = now
         if self._toast_count == 1:
             name, folder = filed[0]
-            self.ctx.ui.toast("ok", f"Filed {name} into {folder}")
+            self.ctx.ui.toast("ok", f"{verb} {name} into {folder}")
         else:
-            self.ctx.ui.toast("ok", f"Filed {self._toast_count} files")
+            self.ctx.ui.toast("ok", f"{verb} {self._toast_count} files")
 
     def _delete_own_copy(self, state: _State, path: str, *, entry_hash: Optional[str] = None,
                          ignore_node: Optional[str] = None, check_journal: bool = True) -> bool:
@@ -1320,6 +1404,7 @@ class FilesModule(Module):
         state.journal.mark_done(record["id"], bin_to=bin_to)
         run.done += 1
         run.bytes += entry.size
+        run.filed.append((entry.name, entry.folder))
         self._refresh_derived(state)
 
     def _apply_bin_only(self, state: _State, entry: PlanEntry, run: _Run) -> None:
@@ -1455,18 +1540,20 @@ class FilesModule(Module):
             return self._result("zip", "error", NO_WRITE_ACCESS, reason)
         items = [item for item in state.items.values() if self._is_media(item)]
         project_name = os.path.basename(state.project.path)
+        stem = _file_stem(state.project.name or project_name) or "Project"
+        exports = state.mapper.abs_folder(state.layout.exports_dir)
         progress = {"k": 0, "n": 0}
         outcome: dict = {}
 
         def work(job):
             report = build_zip_report(project_name, state.root, items, lambda p: is_inside(p, state.root))
-            report_path = os.path.join(state.root, DECK_DIR, "pack-report.txt")
-            report.archive = free_zip_path(state.root)
+            os.makedirs(exports, exist_ok=True)
+            report.archive = free_zip_path(state.root, exports, stem)
+            report_path = os.path.splitext(report.archive)[0] + " report.txt"
             entry = state.journal.append(J.OP_ZIPPED, name=os.path.basename(report.archive), to=report.archive,
                                          offline=[o["name"] for o in report.offline], copied=False)
             outcome["entry"] = entry
-            _write_text(report_path, report.text())
-            files = pack_files(state.root)
+            files = pack_files(state.root, exclude_dir=exports)
 
             def on_file(k: int, n: int, name: str) -> None:
                 progress.update(k=k, n=n)
@@ -1478,13 +1565,13 @@ class FilesModule(Module):
                          cancelled=lambda: bool(getattr(job, "cancelled", False)))
             except (CopyCancelled, OSError) as exc:
                 archive, report.archive = report.archive, None
-                _write_text(report_path, report.text())
                 why = failure_reason(exc, target=archive)
                 state.journal.mark_failed(entry["id"], why)
                 outcome["error"] = why
                 return report
             report.files = len(files)
             report.archive_bytes = file_size(report.archive)
+            _write_text(report_path, report.text())
             state.journal.mark_done(entry["id"], size=report.archive_bytes)
             return report
 
@@ -1683,6 +1770,9 @@ class FilesModule(Module):
         if self._proj("layout") != "custom":
             self._set_proj("layout", state.layout.id)
         self._set_proj("enabled", True)
+        for key in AUTO_SWITCHES:  # stored explicitly, so the load-time mapping of 2.0 projects never sees this one
+            if self._stored(key) is _ABSENT:
+                self._set_proj(key, False)
         self._mark_root(state)
         bins = 0
         try:
@@ -1713,12 +1803,24 @@ class FilesModule(Module):
         marker = os.path.join(state.root, DECK_DIR, "project.json")
         if os.path.exists(marker):
             return
-        payload = {"modules": {self.id: {"enabled": True, "layout": self._proj("layout"), "watch": self._proj("watch")}}}
+        payload = {"modules": {self.id: {"enabled": True, "layout": self._proj("layout"), "watch": self._proj("watch"),
+                                         "auto_copy": self._proj("auto_copy"), "auto_sort": self._proj("auto_sort")}}}
         try:
             with open(marker, "x", encoding="utf-8") as handle:
                 json.dump(payload, handle, indent=2)
         except OSError as exc:
             self.log.warning("root marker not written: %s", exc)
+
+    def _act_auto_copy(self, state: _State, value, row) -> None:
+        self._flip(state, "auto_copy", value)
+
+    def _act_auto_sort(self, state: _State, value, row) -> None:
+        self._flip(state, "auto_sort", value)
+
+    def _flip(self, state: _State, key: str, value) -> None:
+        """A switch tile or host row sent the new state (docs/FILES.md 6); anything but a bool flips the stored one.
+        The refusal before Setup is made by `on_action` and leaves the old value."""
+        self._set_proj(key, value if isinstance(value, bool) else not self._proj(key))
 
     def _act_open_folder(self, state: _State, value, row) -> None:
         self.ctx.host.open_path(state.root)
@@ -1920,7 +2022,9 @@ class FilesModule(Module):
                 ("outside", f"{outside} outside", "warn" if outside else "neutral"),
                 ("offline", f"{offline} offline", "error" if offline else "neutral")]
 
-    def _tiles(self, state: _State) -> list:
+    def _tiles(self, state: _State, *, host: bool = False) -> list:
+        """The four action tiles with their codes (`host`: the host page, which has room for the full names) and, for
+        the panel, the two switch tiles."""
         running = self._long_running()
         estimate = state.sort_estimate
         outside = len(state.outside)
@@ -1935,16 +2039,34 @@ class FilesModule(Module):
             return self._node(self.button(local, label, busy=running == local,
                                           disabled=running is not None and running != local,
                                           confirm=confirm, hint=HINTS[local]),
-                              icon=icon, short=short, meta=meta)
+                              icon=icon, short=label if host else short, meta=meta)
 
         return [
-            tile("sort", "Sort project", "Sort project", "sort", sort_meta, sort_confirm),
-            tile("sync_all", "Sync all media", "Sync all media", "sync-all", f"{outside} outside the root",
+            tile("sort", "Sort project", TILE_CODES["sort"], "sort", sort_meta, sort_confirm),
+            tile("sync_all", "Sync all media", TILE_CODES["sync_all"], "sync-all", f"{outside} outside the root",
                  f"Copy {plural(outside, 'file')} from outside the project folder into Media?" if outside else None),
-            tile("sync_used", "Sync used media", "Sync used media", "sync-used", used_meta,
+            tile("sync_used", "Sync used media", TILE_CODES["sync_used"], "sync-used", used_meta,
                  "Copy the files used in sequences from outside the project folder into Media?"),
-            tile("zip", "Make ZIP", "Make ZIP", "zip", "Checks offline first", None),
+            tile("zip", "Make ZIP", TILE_CODES["zip"], "zip", "Checks offline first", None),
+            *([] if host else self._switch_tiles()),
         ]
+
+    def _switch_tiles(self) -> list:
+        """Auto copy and Auto sort as `switch` tiles (docs/PROTOCOL.md 6.1)."""
+        return [self.switch(key, SWITCH_LABELS[key], self._proj(key), short=SWITCH_CODES[key], icon=SWITCH_ICONS[key],
+                            hint=HINTS[key]) for key in AUTO_SWITCHES]
+
+    def _setup_tile(self) -> dict:
+        return self._node(self.button("setup", "Set up project", tone="accent", hint=HINTS["setup"]),
+                          icon="folder", short=TILE_CODES["setup"])
+
+    def _switch_rows(self) -> dict:
+        """The host page's two switches: a `list` block whose rows carry a `toggle` (docs/BRIDGE_API.md 5)."""
+        rows = [{"id": key, "title": SWITCH_LABELS[key], "subtitle": HINTS[key], "meta": "", "tone": "neutral",
+                 "thumb": None, "icon": SWITCH_ICONS[key], "actions": [],
+                 "toggle": {"id": self._id(key), "value": self._proj(key), "disabled": False}}
+                for key in AUTO_SWITCHES]
+        return {"type": "list", "id": "auto", "rows": rows, "empty": ""}
 
     def _open_folder_button(self) -> dict:
         return self._node(self.button("open_folder", "Open project folder", hint="Opens the project folder in Explorer."),
@@ -1979,8 +2101,8 @@ class FilesModule(Module):
             if not self._enabled():
                 nodes.append(self.text(f"Setup creates the {state.layout.name.lower()} folders and bins in "
                                        f"{os.path.basename(state.root)}. Nothing is moved.", small=True))
-                nodes.append(self.button("setup", "Set up project", tone="accent",
-                                         hint="Creates the layout folders and the matching bins."))
+                nodes.append(self._group("actions", None, [self._setup_tile(), *self._switch_tiles()], columns=2,
+                                         tiles=True))
                 if state.external:
                     nodes.append(self.text(f"{plural(len(state.external), 'item')} outside the project folder.",
                                            small=True))
@@ -1992,12 +2114,9 @@ class FilesModule(Module):
             nodes.append(self.row([self._chip(text, tone) for _, text, tone in self._chip_values(state)]))
             nodes.append(self._group("actions", None, self._tiles(state), columns=2, tiles=True))
             nodes.extend(self._job_nodes())
-            entries = state.journal.entries()
             undoable = state.journal.undoable(self.UNDO_LIMIT)
             last = undoable[0] if undoable else None
             nodes.append(self.row([
-                self._node(self.button("journal", f"Journal · {_entries(len(entries))}",
-                                       hint="Opens the journal in the host window."), icon="journal"),
                 self._node(self.button("undo_last", "Undo last", disabled=last is None,
                                        hint=self._describe(last) if last else "Nothing to undo."),
                            variant="icon", icon="undo"),
@@ -2047,8 +2166,8 @@ class FilesModule(Module):
             if not enabled:
                 blocks: list = [
                     {"type": "actions", "id": "setup_actions", "items": [
-                        self.button("setup", "Set up project", tone="accent",
-                                    hint="Creates the layout folders and the matching bins.")]},
+                        self.button("setup", "Set up project", tone="accent", hint=HINTS["setup"])]},
+                    self._switch_rows(),
                     chips,
                 ]
                 if state.layout_error:
@@ -2058,7 +2177,7 @@ class FilesModule(Module):
                 page["blocks"] = blocks
                 return page
             blocks = [chips, {"type": "actions", "id": "main", "tiles": True, "columns": 2,
-                              "items": self._tiles(state)}]
+                              "items": self._tiles(state, host=True)}, self._switch_rows()]
             blocks.extend(self._node({"type": "progress", "id": f"job_{t.job.id}", "value": t.value,
                                       "label": t.label}, detail=t.detail, cancel=self._id("stop"))
                           for t in list(self._jobs.values())[:3])
@@ -2182,6 +2301,12 @@ def _describe_match(match: dict) -> str:
         else:
             parts.append(str(value))
     return " · ".join(parts)
+
+
+def _file_stem(name: str) -> str:
+    """The project name without `.prproj` and without characters a file name cannot hold."""
+    stem = name[:-len(".prproj")] if name.lower().endswith(".prproj") else name
+    return "".join("_" if ch in '<>:"/\\|?*' else ch for ch in stem).strip(" .")
 
 
 def _entries(count: int) -> str:

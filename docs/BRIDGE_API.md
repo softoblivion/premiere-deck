@@ -89,7 +89,9 @@ connected agent without a display is `waiting`, never `connected`.
 ### 3.3 `Settings`
 
 `{"premiere_exe": "auto" or path, "keep_running_with_premiere": true, "theme": "black", "auto_download_updates": true,
-"recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable: the first four. Themes: `black`
+"show_activity": false, "recent_projects": [path], "debug_mode_written": ["CSXS.11"]}`. Patchable: the first five.
+`show_activity` (bool, default `false`, host scope) turns the activity strip of the main screen on (`HOST_UI.md` 3.3);
+a patch with a value that is not a bool is refused ("The setting needs on or off."). Themes: `black`
 (Crystal Black) and `sky` (Crystal Sky), default `black`; a stored value that is not one of them (including the
 1.x names `dusk`, `nova`, `frost`, `bloom`) falls back to `black` on load. A patch with another value is refused.
 
@@ -136,8 +138,8 @@ open (the page shows them disabled with "Open a project in Premiere Pro").
 | `modules` | `ModuleInfo[]` | after every module re-render (actions, events, jobs, `invalidate()`); the page also re-fetches the visible module page (`module_page`) on it, throttled to one call per 150 ms |
 | `job` | `Job` | every state and progress change |
 | `activity` | `Activity` | new line |
-| `toast` | `{"kind": "info|success|warning|error", "message"}` | module toasts, host notices |
-| `result` | `{"module", "id", "outcome": "ok|warn|error|neutral", "text", "detail", "at"}` | an action result (`ctx.ui.result`); the same fields as the panel's `action_result` (`PROTOCOL.md` 6.6) plus the module id. The page morphs the control with that `id` when it is visible (as the panel does) and adds the line to the activity strip |
+| `toast` | `{"kind": "info|success|warning|error", "message"}` | module toasts, host notices; every toast closes on a click (`HOST_UI.md` 7) |
+| `result` | `{"module", "id", "outcome": "ok|warn|error|neutral", "text", "detail", "at"}` | an action result (`ctx.ui.result`); the same fields as the panel's `action_result` (`PROTOCOL.md` 6.6) plus the module id. The page morphs the control with that `id` when it is visible (as the panel does), adds the line to the activity strip (kept even while the strip is off, 3.3) and shows the module's `last_result` line for 3 s (`ok`, `neutral`) or 10 s (`warn`, `error`) unless a click closes it first (`HOST_UI.md` 7) |
 | `confirm` | `{"id", "question", "module"}` | a module asks yes / no from a job thread; the page opens a modal sheet and answers with `answer_confirm(id, yes)` (no answer in 10 min = no) |
 | `settings` | `Settings` | confirmed host settings after a change |
 | `panel` | `PanelStatus` | after install / reinstall / remove |
@@ -169,8 +171,17 @@ sends the menu's `id` with the picked `value`, as in the panel.
 | `text` | `text`, `tone`, `small` | a line of text |
 | `progress` | `value` (0..1 or null), `label`, optional `detail` (one mono line: the current file), optional `cancel` (button node id) | a progress card: label with the count, bar, `detail`, and a Stop pill that sends `cancel` when given |
 
+A `switch` node (`PROTOCOL.md` 6.1: `id`, `label`, `short`, `icon`, `hint`, `value`, `disabled`, `busy`) is accepted wherever a
+`toggle` is: in an `actions` block (a pill with the icon, the label and a capsule; in a `tiles` grid it takes a tile's
+place) and in a `form`. A change calls `module_action(<module id>, <node id>, <bool>, null)`; a refused change puts the
+capsule back to its old value. The Files page's Auto copy and Auto sort are drawn this way.
+
+The list with the id `last_result` is a notice: the window shows it only after a `result` event of its module and
+hides it after 3 s or 10 s or on a click (section 4 `result`, `HOST_UI.md` 7); a page model that carries it with no
+recent result draws nothing.
+
 List rows may carry `icon` (a symbol of the window's sprite, `ui/assets/icons.svg`; rows with a `toggle` and no
-`icon` use the symbol named like the row id with `-` for `_` when the sprite has it) and `group`; a `list` block may
+`icon` use the symbol named like the row id with `-` for `_` when the sprite has it); the Quick actions page sets `icon` from the action's own symbol name, because the 2.1 ids and symbols differ (`add_video_track` / `track-video-add`), and a row whose symbol is missing from the sprite is drawn without an icon, never as an error and `group`; a `list` block may
 carry `actions` (buttons drawn at the right of its title) and `columns` (2: the rows are laid out in two columns
 grouped by `group`, or by the part of `subtitle` before " · "; the id `visibility` implies it). A `button` with
 `variant` `icon` is a round plate with its `icon` and the `label` as its accessible name; `ghost` is a borderless

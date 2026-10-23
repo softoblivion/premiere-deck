@@ -27,7 +27,7 @@ COMMON_JSX = "_common"
 # user, every other script error becomes a generic sentence (docs/PROTOCOL.md 9).
 USER_ERROR_PREFIX = "deck: "
 
-GROUPS = ("Timeline", "Selection", "Clips", "Tracks", "Project", "Sequence", "Export")
+GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Project", "Sequence", "Export", "Keys")
 
 DEFAULT_TIMEOUT_MS = 30000
 
@@ -56,13 +56,17 @@ class ActionAbort(Exception):
 @dataclass(frozen=True)
 class Menu:
     """The choice an action carries as the `menu` of its tile (docs/QUICK_ACTIONS.md 1). `options` are
-    (value, label); the badge of a value is its entry in `badges` or else its label."""
+    (value, label); the badge of a value is its entry in `badges` or else its label; `swatches` (value, CSS hex)
+    give an option its colour dot. With `runs` a pick also runs the action (the colour menu); otherwise a pick only
+    stores the choice."""
 
     name: str
     label: str
     default: str
     options: tuple[tuple[str, str], ...]
     badges: tuple[tuple[str, str], ...] = ()
+    runs: bool = False
+    swatches: tuple[tuple[str, str], ...] = ()
 
     def badge(self, value: str) -> str:
         badges = dict(self.badges)
@@ -70,11 +74,18 @@ class Menu:
             return badges[value]
         return dict(self.options).get(value, "")
 
+    def swatch(self, value: str) -> dict:
+        """`{"swatch": "#rrggbb"}` for an option with a colour, else `{}`."""
+        colour = dict(self.swatches).get(value)
+        return {"swatch": colour} if colour else {}
+
 
 class Action:
     id: str = ""
     label: str = ""
-    short: str = ""  # tile label, at most 16 characters (protocol.SHORT_MAX)
+    # Row title on the host window's Actions page when `label` is longer than its column (about 16 characters).
+    title: str = ""
+    short: str = ""  # tile code (docs/QUICK_ACTIONS.md 1), at most 16 characters (protocol.SHORT_MAX)
     icon: str = ""  # symbol name of the panel sprite
     hint: str = ""
     group: str = ""
@@ -82,10 +93,27 @@ class Action:
     feasibility: str = ""
     # Long actions run as a job with `busy` on their button.
     long: bool = False
+    # Switch actions render as a `switch` node whose value is `is_on(module)`; a click runs the action only when
+    # the requested state differs from it.
+    switch: bool = False
     timeout_ms: int = DEFAULT_TIMEOUT_MS
 
     def menu(self, module: "QuickActionsModule") -> Optional[Menu]:
         return None
+
+    def is_on(self, module: "QuickActionsModule") -> bool:
+        """The state of a switch action: True while its effect is applied (the module remembers what to restore)."""
+        return self.id in module.toggles
+
+    def field(self, module: "QuickActionsModule") -> Optional[dict]:
+        """An `input` node rendered after the tiles of the action's group: {name, label, value, placeholder,
+        submit_label}; a submit goes to `submit(module, name, value)`."""
+        return None
+
+    def submit(self, module: "QuickActionsModule", name: str, value: Any) -> Optional["Outcome"]:
+        """Stores an input value; returns None when stored (the module then runs the action) or the result to
+        show when the value is refused."""
+        return Outcome("warn", f"{self.label}: unknown field {name}")
 
     def button(self, module: "QuickActionsModule") -> dict:
         """Overrides of the button node (`label`, `short`, `tone`, `disabled`) for the action's current state."""

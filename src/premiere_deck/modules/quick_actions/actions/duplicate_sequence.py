@@ -25,7 +25,8 @@ def next_sequence_name(name: str, existing) -> str:
 class DuplicateSequence(Action):
     id = "duplicate_sequence"
     label = "Duplicate sequence"
-    short = "Duplicate"
+    title = "Duplicate"
+    short = "DUP"
     icon = "duplicate-sequence"
     hint = "Copies the active sequence as the next numbered version."
     group = "Sequence"

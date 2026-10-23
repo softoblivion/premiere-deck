@@ -9,7 +9,8 @@ from premiere_deck.modules.quick_actions.results import count, text
 class ScaleToFrame(Action):
     id = "scale_to_frame"
     label = "Set to frame size"
-    short = "Frame size"
+    title = "Frame size"
+    short = "FIT"
     icon = "scale-to-frame"
     hint = "Turns on Set to Frame Size for the selected video clips."
     group = "Clips"

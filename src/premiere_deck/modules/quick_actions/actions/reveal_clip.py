@@ -11,7 +11,7 @@ from premiere_deck.modules.quick_actions.action import (
 class RevealClip(Action):
     id = "reveal_clip"
     label = "Reveal clip file"
-    short = "Reveal clip"
+    short = "REV"
     icon = "reveal-clip"
     hint = "Shows the selected clip's media file in Explorer."
     group = "Project"
