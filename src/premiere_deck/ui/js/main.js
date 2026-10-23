@@ -8,10 +8,11 @@ import { connect, call, on, goLive, backendMode, reportError } from './api.js';
 import { store, notify, watch, moduleById, anyJobRunning } from './store.js';
 import { initBackground, setFocused } from '../vendor/liquid_ui/js/background.js';
 import { applyTheme } from '../vendor/liquid_ui/js/theme.js';
-import { initLight, gel, Lens } from '../vendor/liquid_ui/js/glass.js';
+import { initLight } from '../vendor/liquid_ui/js/glass.js';
 import { SPRINGS, springAnimate, reducedMotion } from '../vendor/liquid_ui/js/motion.js';
 import { initToasts, toast } from '../vendor/liquid_ui/js/toast.js';
 import { mountUpdateControl } from '../vendor/liquid_ui/js/update.js';
+import { mountTitlebar } from '../vendor/liquid_ui/js/titlebar.js';
 import { loadSprite, ic, glyph } from './icons.js';
 import { askConfirm } from './confirm.js';
 import { mountCompact } from './pages/compact.js';
@@ -36,24 +37,30 @@ function syncTheme(settings) {
 
 // ---- title bar --------------------------------------------------------------------------------
 
+/**
+ * The kit's title bar: glyph, name and the version pill at the left (shown in main only; the compact pages carry
+ * them in the hero block), the module tabs in the centre slot (main only, js/pages/wide.js), settings | minimize,
+ * close at the right. The cluster keeps the window sprite's icons; js/settings.js wires the gear (it toggles the
+ * sheet).
+ */
 function initTitlebar() {
-  document.getElementById('tb-glyph').innerHTML = glyph(22);
-  const cluster = document.getElementById('tb-cluster');
-  new Lens(cluster, 'capsule');
-  document.getElementById('btn-settings').innerHTML = ic('settings');
-  document.getElementById('win-min').innerHTML = ic('minimize');
-  document.getElementById('win-close').innerHTML = ic('close');
-  for (const b of cluster.querySelectorAll('button')) gel(b, { amount: 0.7 });
-  const win = { 'win-min': 'window_minimize', 'win-close': 'window_close' };
-  for (const [id, method] of Object.entries(win)) {
-    document.getElementById(id).addEventListener('click', () => call(method).catch((err) => toast('error', err.message)));
-  }
+  const tb = mountTitlebar(document.getElementById('titlebar'), {
+    name: 'Premiere Deck',
+    glyph: glyph(20),
+    onMinimize: () => call('window_minimize').catch((err) => toast('error', err.message)),
+    onClose: () => call('window_close').catch((err) => toast('error', err.message)),
+  });
+  tb.gear.id = 'btn-settings';
+  tb.gear.innerHTML = ic('settings');
+  tb.minimize.innerHTML = ic('minimize');
+  tb.close.innerHTML = ic('close');
+  return tb;
 }
 
 function entrance() {
   if (reducedMotion.matches) return;
   const parts = [
-    [document.getElementById('tb-cluster'), 60],
+    [ui.tb.cluster, 60],
     [document.querySelector('#compact .hero-block'), 0],
   ];
   for (const [el, delay] of parts) {
@@ -102,7 +109,7 @@ function initUpdate(state) {
 
 // ---- layout modes -------------------------------------------------------------------------------
 
-const ui = { compact: null, wide: null, pill: null };
+const ui = { tb: null, compact: null, wide: null, pill: null };
 let modeSeq = 0;
 
 function screenOf() {
@@ -117,7 +124,7 @@ function paintScreen() {
 
 function placePill(where) {
   const pill = ui.pill;
-  if (where === 'titlebar') document.getElementById('tb-pill-slot').append(pill);
+  if (where === 'titlebar') ui.tb.left.append(pill);
   else ui.compact.paint(); // the idle hero block takes it back
 }
 
@@ -150,8 +157,11 @@ function applyMode(mode, ms) {
     placePill('titlebar');
     paintScreen();
     ui.wide.enter(animate && was !== 'wide' ? ms : 0);
-    const brand = document.querySelector('.tb-brand');
-    if (animate && was !== 'wide') brand.animate([{ opacity: 0, transform: 'translateX(-8px)' }, { opacity: 1, transform: 'none' }], { duration: ms, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+    if (animate && was !== 'wide') {
+      const fade = (el, dx) => el.animate([{ opacity: 0, transform: `translateX(${dx}px)` }, { opacity: 1, transform: 'none' }], { duration: ms, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' });
+      fade(ui.tb.left, -8);
+      fade(ui.tb.centre, 0);
+    }
     return;
   }
   if (animate && was === 'wide') {
@@ -253,7 +263,7 @@ async function boot() {
   initBackground(document.getElementById('scene'));
   initLight();
   initToasts();
-  initTitlebar();
+  ui.tb = initTitlebar();
 
   let state;
   try {
@@ -286,7 +296,7 @@ async function boot() {
   initSettings({ update });
   ui.pill = document.getElementById('ver-pill');
   ui.compact = mountCompact(document.getElementById('compact'), { pill: ui.pill, update, openSettings, addActivity });
-  ui.wide = mountWide(document.getElementById('wide'));
+  ui.wide = mountWide(document.getElementById('wide'), { tabsHost: ui.tb.centre });
   wireEvents();
   wireFakeKeys();
 

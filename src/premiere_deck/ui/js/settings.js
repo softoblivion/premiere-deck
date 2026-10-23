@@ -1,5 +1,5 @@
 // Settings sheet (docs/HOST_UI.md 3.4): opened from the gear in the title bar, grows out of it (kit Overlay).
-// Groups in this order: Appearance (the two theme cards), Behaviour, Updates (the host version and the kit update rows, the
+// Groups in this order: Appearance (the two theme cards, the Scale row), Behaviour, Updates (the host version and the kit update rows, the
 // panel's installed and bundled versions with Check now and Reinstall), Premiere, then below the fold Panel,
 // Modules, Tools, Data, About. Every change is saved at once through set_settings (or the panel / module / ffmpeg
 // calls); a refusal restores the control and shows a toast. The values are refreshed each time the sheet opens.
@@ -8,6 +8,7 @@ import { Switch } from '../vendor/liquid_ui/js/controls.js';
 import { gel } from '../vendor/liquid_ui/js/glass.js';
 import { Overlay } from '../vendor/liquid_ui/js/overlay.js';
 import { applyTheme, mountThemeControl, DEFAULT_THEME } from '../vendor/liquid_ui/js/theme.js';
+import { mountScaleControl } from '../vendor/liquid_ui/js/scale.js';
 import { toast } from '../vendor/liquid_ui/js/toast.js';
 import { call } from './api.js';
 import { store, notify, watch, sortedModules } from './store.js';
@@ -115,6 +116,7 @@ function build(content, update) {
   const inflight = new Map();
 
   const cardTheme = h('div', 'set-card');
+  const cardScale = h('div', 'set-card set-card-follow');
   const cardBehaviour = h('div', 'set-card');
   const cardUpdates = h('div', 'set-card');
   const cardPanelVer = h('div', 'set-card set-card-follow');
@@ -130,7 +132,7 @@ function build(content, update) {
   closeBtn.addEventListener('click', () => overlay.close());
 
   scroller = h('div', 'sheet-scroll', null,
-    group('Appearance', cardTheme),
+    h('section', 'set-group', null, h('h3', '', { text: 'Appearance' }), cardTheme, cardScale),
     group('Behaviour', cardBehaviour),
     h('section', 'set-group', null, h('h3', '', { text: 'Updates' }), cardUpdates, cardPanelVer),
     group('Premiere', cardPremiere),
@@ -184,6 +186,29 @@ function build(content, update) {
     },
   });
   controls.push(theme);
+
+  // Scale: the shell applies the step to the window at once (set_scale) and saves it as ui_scale; a refusal
+  // restores the confirmed step.
+  const scale = mountScaleControl(cardScale, {
+    value: store.settings && store.settings.ui_scale,
+    onChange: async (v) => {
+      inflight.set('scale', (inflight.get('scale') || 0) + 1);
+      try {
+        const st = await call('set_scale', v);
+        if (st) {
+          store.settings = st;
+          notify('settings', st);
+        }
+      } catch (err) {
+        failToast(err);
+      } finally {
+        inflight.set('scale', inflight.get('scale') - 1);
+      }
+      scale.set(store.settings && store.settings.ui_scale);
+    },
+  });
+  scale.el.classList.add('set-row-col');
+  controls.push(scale);
 
   // ---- Behaviour ----------------------------------------------------------------------------------
 
@@ -466,6 +491,7 @@ function build(content, update) {
     if (!busy('keep')) keepSw.set(!!s.keep_running_with_premiere);
     if (!busy('activity')) activitySw.set(!!s.show_activity);
     if (!busy('theme')) theme.set(s.theme);
+    if (!busy('scale')) scale.set(s.ui_scale);
     paintPremiere();
   };
   watch('settings', syncSettings);

@@ -153,6 +153,24 @@ class BridgeTests(unittest.TestCase):
             self.bridge.set_settings({"show_activity": "on"})
         self.assertIs(self.bridge.get_settings()["show_activity"], True)
 
+    def test_set_scale_saves_applies_and_emits(self):
+        applied = []
+        self.bridge._attach_scale(applied.append)
+        self.assertEqual(self.bridge.get_settings()["ui_scale"], 100)
+        after = self.bridge.set_scale(150)
+        self.assertEqual(after["ui_scale"], 150)
+        self.assertEqual(applied, [150])
+        events = [payload for name, payload in self.pump.pending() if name == "settings"]
+        self.assertEqual(events[-1]["ui_scale"], 150)
+        self.bridge.set_scale(150)
+        self.assertEqual(applied, [150], "an unchanged step is not applied again")
+        self.bridge.set_settings({"ui_scale": 120})
+        self.assertEqual(applied, [150, 125])
+        with self.assertRaises(BridgeError):
+            self.bridge.set_scale("big")
+        self.assertEqual(self.bridge.get_settings()["ui_scale"], 125)
+        self.assertEqual(applied, [150, 125])
+
     def test_module_calls(self):
         self.assertEqual(self.bridge.modules()[0]["state"], "running")
         self.assertEqual(self.bridge.module_action("plain", "plain.go"), {"ok": True, "toast": None})

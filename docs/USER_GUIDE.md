@@ -30,6 +30,7 @@ In the **Settings** sheet (the gear in the title bar):
 | Setting | Meaning |
 |---|---|
 | **Theme** | Crystal Black (default) or Crystal Sky, for the window and the panel. |
+| **Scale** | Size of the window and its text: 100 % (default), 125 %, 150 %, 175 % or 200 %, on top of the Windows display scaling. The window changes at once and keeps the setting. |
 | **Keep running with Premiere** | Closing the window hides it to the tray while Premiere Pro is running (default on). |
 | **Show activity** | Shows a strip of recent results under the Premiere card of the main window (default off, Behaviour group). |
 | **Updates** | **Check for updates** and **Download updates automatically** (default on) for the app; the installed and bundled panel versions with **Check now** and **Reinstall**. |

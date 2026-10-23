@@ -24,6 +24,9 @@ log = logging.getLogger("premiere_deck.core.settings")
 THEMES = ("black", "sky")
 DEFAULT_THEME = "black"
 MAX_RECENT = 12
+# The Scale setting (docs/HOST_UI.md 3.4, docs/BRIDGE_API.md 3.3 `ui_scale`): percent on top of Windows' scaling.
+SCALE_STEPS = (100, 125, 150, 175, 200)
+DEFAULT_SCALE = 100
 PROJECT_FILE = "project.json"
 
 DEFAULTS: dict[str, Any] = {
@@ -32,6 +35,7 @@ DEFAULTS: dict[str, Any] = {
     "theme": DEFAULT_THEME,
     "auto_download_updates": True,
     "show_activity": False,  # the activity strip of the main screen (docs/HOST_UI.md 3.3)
+    "ui_scale": DEFAULT_SCALE,  # window and text size, one of SCALE_STEPS
     "debug_mode_written": [],
     "recent_projects": [],
     "recent_opened": {},  # {path: ISO 8601 UTC of the last open through Deck}
@@ -40,7 +44,22 @@ DEFAULTS: dict[str, Any] = {
 }
 
 # Keys the window may change through set_settings (the rest is written by the host itself).
-PATCHABLE = ("premiere_exe", "keep_running_with_premiere", "theme", "auto_download_updates", "show_activity")
+PATCHABLE = ("premiere_exe", "keep_running_with_premiere", "theme", "auto_download_updates", "show_activity",
+             "ui_scale")
+
+
+def normalize_scale(value: Any) -> int:
+    """The nearest step of SCALE_STEPS for a number or a numeric string (the larger step on a tie); ValueError
+    with a sentence for anything else."""
+    if isinstance(value, bool):
+        raise ValueError("The scale needs a percentage.")
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError("The scale needs a percentage.") from None
+    if number != number or number <= 0:
+        raise ValueError("The scale needs a percentage.")
+    return min(SCALE_STEPS, key=lambda step: (abs(step - number), -step))
 
 
 def _normalise(key: str, value: Any) -> Any:
@@ -51,6 +70,8 @@ def _normalise(key: str, value: Any) -> Any:
         if name not in THEMES:
             raise ValueError("Unknown theme.")
         return name
+    if key == "ui_scale":
+        return normalize_scale(value)
     if key == "premiere_exe":
         text = str(value or "").strip()
         if not text or text.lower() == "auto":

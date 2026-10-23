@@ -8,7 +8,8 @@ instance shows its window and, with `--project`, launches Premiere with that pro
 
 The window has two locked sizes, compact and wide (docs/HOST_UI.md 2): the bridge decides the mode from
 `PremiereState.state` and sends the `window` event; `_Shell` moves the native size (winutil.SizeAnimator) on the
-WinForms UI thread.
+WinForms UI thread. The Scale setting (`ui_scale`) multiplies both sizes and sets the WebView2 zoom factor, so the
+page keeps its logical layout; the saved value is applied with the size lock, before the page shows anything.
 """
 
 from __future__ import annotations
@@ -165,7 +166,9 @@ def main(argv: Optional[list[str]] = None) -> int:
     import webview  # late: pulls in pythonnet and WinForms
 
     background = theme_background(ui_dir, str(hub.settings.get("theme") or "black"))
-    size = winutil.WINDOW_SIZES[bridge._mode]
+    # The first size already carries the Scale setting, so the size lock does not jump at start.
+    shell_zoom = _Shell.scale_of(hub) / 100.0
+    size = winutil.physical_size(winutil.WINDOW_SIZES[bridge._mode], shell_zoom)
     window = webview.create_window(
         WINDOW_TITLE, url=str(index), js_api=bridge, width=size[0], height=size[1],
         frameless=True, easy_drag=False, resizable=False, shadow=True, text_select=True,
@@ -265,9 +268,12 @@ class _Shell:
                 self.hook = hook
                 mode = self.bridge._mode
                 size = winutil.WINDOW_SIZES[mode]
-                rect = hook.lock(*size, apply=native.SetBounds)
-                log.info("window %s %sx%s logical, %sx%s physical, scale %.2f, rect %s", mode, size[0], size[1],
-                         rect[2], rect[3], winutil.window_scale(hwnd), winutil.window_rect(hwnd))
+                percent = self._saved_scale()
+                zoom = percent / 100.0
+                winutil.set_zoom_factor(self.window, zoom)
+                rect = hook.lock(*size, apply=native.SetBounds, zoom=zoom)
+                log.info("window %s %sx%s logical at %s%%, %sx%s physical, dpi scale %.2f, rect %s", mode, size[0],
+                         size[1], percent, rect[2], rect[3], winutil.window_scale(hwnd), winutil.window_rect(hwnd))
                 self.sizer = winutil.SizeAnimator(
                     invoke=lambda fn: _on_ui_thread(self.window, fn),
                     apply=native.SetBounds,
@@ -277,7 +283,9 @@ class _Shell:
                     get_scale=lambda: winutil.window_scale(hwnd),
                     logger=log)
                 self.sizer.mode = mode
+                self.sizer.zoom = zoom
                 self.bridge._attach_resizer(self._resize, winutil.animations_enabled)
+                self.bridge._attach_scale(self._apply_scale)
                 if self.bridge._mode != mode:  # the state changed while the window was being set up
                     self.sizer.set_mode(self.bridge._mode, animate=False)
             else:
@@ -321,6 +329,37 @@ class _Shell:
         if winutil.is_iconic(self.hwnd) or not winutil.is_visible(self.hwnd):
             animate = False
         return sizer.set_mode(mode, animate=animate, ms=ms)
+
+    @staticmethod
+    def scale_of(hub: Any) -> int:
+        """The saved Scale setting in percent (100 when unreadable)."""
+        from premiere_deck.core.settings import DEFAULT_SCALE, normalize_scale
+
+        try:
+            return normalize_scale(hub.settings.get("ui_scale", DEFAULT_SCALE))
+        except (ValueError, AttributeError):
+            return DEFAULT_SCALE
+
+    def _saved_scale(self) -> int:
+        return self.scale_of(self.hub)
+
+    def _apply_scale(self, percent: int) -> None:
+        """Bridge -> native: the Scale setting at once. The zoom factor and the new size are set in one UI-thread
+        call, so the page lays out once at the new density."""
+        from . import winutil
+
+        sizer = self.sizer
+        if sizer is None:
+            return
+        zoom = max(1, int(percent)) / 100.0
+
+        def ui() -> None:
+            winutil.set_zoom_factor(self.window, zoom)
+            rect = sizer.rescale(zoom)
+            log.info("window %s at %s%%: %sx%s physical, dpi scale %.2f", sizer.mode, percent, rect[2], rect[3],
+                     winutil.window_scale(self.hwnd))
+
+        _on_ui_thread(self.window, ui)
 
     def _on_theme(self, theme: str) -> None:
         from . import winutil
