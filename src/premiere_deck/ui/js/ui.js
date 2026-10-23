@@ -56,7 +56,7 @@ export function failToast(err) {
   return null;
 }
 
-// ---- notices (docs/HOST_UI.md 7) ----------------------------
+// ---- notices (docs/HOST_UI.md 7) ---------------------------------------------------------------
 
 /** How long a result line stays: success and neutral 3 s, a result that needs attention (warn, error) 10 s. */
 export const noticeMs = (tone) => (tone === 'error' || tone === 'warn' ? 10000 : 3000);

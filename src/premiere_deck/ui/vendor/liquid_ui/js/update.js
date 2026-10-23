@@ -234,7 +234,7 @@ export function mountUpdateControl({ pill, popoverHost, sheetHost, call, on, opt
     // Install was clicked and the file is verified: restart now (the restart warning still applies).
     if (u.stage === 'ready' && u.latest && installArmed === u.latest) {
       installArmed = null;
-      readyToasted = u.latest; // no toast for a restart the user asked for
+      readyToasted = u.latest; // no toast for a restart that was requested
       restart();
     }
     // The sheet announces a newly reported version once per run; the sticky toast covers the case

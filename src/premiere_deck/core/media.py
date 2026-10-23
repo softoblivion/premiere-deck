@@ -1,6 +1,6 @@
 """Media description shared by the probe (core/probe.py) and the modules.
 
-The probe fills `MediaInfo`; the Files classifier
+Shared by the host and the Files module. The probe fills `MediaInfo`; the Files classifier
 (`modules/files/media_class.py`) adds `source` and `audio_class` with `dataclasses.replace`; other modules only read
 it. Extension tables decide the kind when a probe is not possible and which files the Files watcher imports
 (docs/FILES.md, sections 3.2 and 4).
