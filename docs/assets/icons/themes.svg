@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96" role="img" aria-label="themes">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#050607"/>
+      <stop offset="0.55" stop-color="#0d1014"/>
+      <stop offset="1" stop-color="#191d24"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.32"/>
+    </linearGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="15.4"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="0" stdDeviation="0.7" flood-color="#7563ff" flood-opacity="0.9"/>
+    </filter>
+    <clipPath id="frame"><rect width="96" height="96" rx="23"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="96" height="96" fill="url(#bg)"/>
+    <g filter="url(#blur)">
+      <circle cx="82.6" cy="7.7" r="40.3" fill="#5f6f8c" fill-opacity="0.85"/>
+      <circle cx="11.5" cy="94.1" r="42.2" fill="#7563ff" fill-opacity="0.8"/>
+    </g>
+    <rect width="96" height="96" fill="url(#glass)"/>
+  </g>
+  <rect x="0.75" y="0.75" width="94.5" height="94.5" rx="22.25" fill="none" stroke="url(#rim)" stroke-width="1.5"/>
+  <svg x="24.0" y="24.0" width="48.0" height="48.0" viewBox="0 0 24 24" overflow="visible">
+    <g fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"><path d="M12 3.5a8.5 8.5 0 1 0 0 17c1.3 0 1.9-.9 1.6-1.9l-.4-1.1a1.7 1.7 0 0 1 1.6-2.3h1.9a3.8 3.8 0 0 0 3.8-3.8c0-4.4-3.8-7.9-8.5-7.9Z"/> <path d="M8 11h.01M10.5 7.6h.01M15 7.8h.01"/></g>
+  </svg>
+</svg>

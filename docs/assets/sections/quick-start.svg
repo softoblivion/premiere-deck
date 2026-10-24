@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" role="img" aria-label="quick start">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#050607"/>
+      <stop offset="0.55" stop-color="#0d1014"/>
+      <stop offset="1" stop-color="#191d24"/>
+    </linearGradient>
+    <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.16"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.03"/>
+    </linearGradient>
+    <linearGradient id="rim" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.7"/>
+      <stop offset="0.45" stop-color="#ffffff" stop-opacity="0.1"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0.32"/>
+    </linearGradient>
+    <filter id="blur" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur stdDeviation="10.2"/>
+    </filter>
+    <filter id="glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feDropShadow dx="0" dy="0" stdDeviation="0.7" flood-color="#7563ff" flood-opacity="0.9"/>
+    </filter>
+    <clipPath id="frame"><rect width="64" height="64" rx="15"/></clipPath>
+  </defs>
+  <g clip-path="url(#frame)">
+    <rect width="64" height="64" fill="url(#bg)"/>
+    <g filter="url(#blur)">
+      <circle cx="55.0" cy="5.1" r="26.9" fill="#5f6f8c" fill-opacity="0.85"/>
+      <circle cx="7.7" cy="62.7" r="28.2" fill="#7563ff" fill-opacity="0.8"/>
+    </g>
+    <rect width="64" height="64" fill="url(#glass)"/>
+  </g>
+  <rect x="0.75" y="0.75" width="62.5" height="62.5" rx="14.25" fill="none" stroke="url(#rim)" stroke-width="1.5"/>
+  <svg x="16.0" y="16.0" width="32.0" height="32.0" viewBox="0 0 24 24" overflow="visible">
+    <g fill="none" stroke="#ffffff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" filter="url(#glow)"><path d="M12 3.5c2.8 1.8 4.3 4.9 4.3 8.6l-1.6 3.4H9.3l-1.6-3.4c0-3.7 1.5-6.8 4.3-8.6Z"/> <circle cx="12" cy="10" r="1.6"/> <path d="M7.7 12.6 5 15.3v2.4l4.3-2.1"/><path d="m16.3 12.6 2.7 2.7v2.4l-4.3-2.1"/> <path d="m10.6 18.4 1.4 2.1 1.4-2.1"/></g>
+  </svg>
+</svg>
