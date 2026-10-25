@@ -15,8 +15,7 @@ AD_HOC_FONT = re.compile(r"font\s*:\s*(?!var\(--t-)[^;]*\d+(\.\d+)?px", re.IGNOR
 AD_HOC_SIZE = re.compile(r"font-size\s*:\s*\d+(\.\d+)?px", re.IGNORECASE)
 ROLE_USE = re.compile(r"var\(--t-([a-z-]+)\)")
 ROLE_DEF = re.compile(r"--t-([a-z-]+)\s*:")
-# Motion tokens share the prefix (--t-fast, --t-med) and are not type roles.
-NOT_ROLES = {"fast", "med"}
+NOT_ROLES = set()
 
 
 def _sources():
