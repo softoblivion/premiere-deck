@@ -29,15 +29,15 @@
     --w-display: 650;
     --font-display: var(--font-text);
     --ff-mono: "liga" 0, "calt" 0;
-    --t-display: var(--w-display) 20px / 1.2 var(--font-display);
-    --t-title: var(--w-title) 16px / 1.25 var(--font-display);
-    --t-section: var(--w-strong) 11px / 1.3 var(--font-text);
-    --t-body: var(--w-body) 13px / 1.45 var(--font-text);
-    --t-label: var(--w-medium) 12.5px / 1.3 var(--font-text);
-    --t-label-s: var(--w-medium) 11.5px / 1.3 var(--font-text);
-    --t-caption: var(--w-body) 11.5px / 1.35 var(--font-text);
-    --t-mono: var(--w-body) 12px / 1.4 var(--font-mono);
-    --t-mono-s: var(--w-body) 11px / 1.3 var(--font-mono);
+    --t-display: var(--w-display) 22px / 1.2 var(--font-display);
+    --t-title: var(--w-title) 17px / 1.25 var(--font-display);
+    --t-section: var(--w-strong) 11.5px / 1.3 var(--font-text);
+    --t-body: var(--w-body) 14px / 1.45 var(--font-text);
+    --t-label: var(--w-medium) 13.5px / 1.3 var(--font-text);
+    --t-label-s: var(--w-medium) 12.5px / 1.3 var(--font-text);
+    --t-caption: var(--w-body) 12.5px / 1.35 var(--font-text);
+    --t-mono: var(--w-body) 13px / 1.4 var(--font-mono);
+    --t-mono-s: var(--w-body) 12px / 1.3 var(--font-mono);
     --tr-display: -0.02em;
     --tr-title: -0.015em;
     --tr-section: 0.06em;
@@ -445,7 +445,7 @@ button:disabled { cursor: default; }
     flex: 1 0 auto;
     display: flex;
     flex-direction: column;
-    padding: 4px 12px 10px;
+    padding: 4px 10px 10px;
     transition: opacity var(--d-2) ease;
 }
 .deck-body.is-screen { padding: 0; }
@@ -554,7 +554,7 @@ button:disabled { cursor: default; }
     box-shadow: inset 0 0 0 0.5px var(--stroke-1);
 }
 .deck-lane-code {
-    width: 34px;
+    width: 38px;   /* PROJ in the section role is 37 px wide */
     flex: none;
     align-self: stretch;
     display: grid;

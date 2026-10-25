@@ -122,8 +122,8 @@ class GeneratedFilesTests(unittest.TestCase):
             self.assertEqual(panel.group(1).strip(), kit.group(1).strip(), name)
         # The pixel sizes of the roles, as the kit documents them (LIQUID_UI.md, Typography).
         sizes = {role: re.search(r"(\d+(?:\.\d+)?)px", gen.type_tokens()[f"--t-{role}"]).group(1) for role in gen.TYPE_ROLES}
-        self.assertEqual(sizes, {"display": "20", "title": "16", "section": "11", "body": "13", "label": "12.5",
-                                 "label-s": "11.5", "caption": "11.5", "mono": "12", "mono-s": "11"})
+        self.assertEqual(sizes, {"display": "22", "title": "17", "section": "11.5", "body": "14", "label": "13.5",
+                                 "label-s": "12.5", "caption": "12.5", "mono": "13", "mono-s": "12"})
 
     def test_panel_css_has_no_ad_hoc_font_size(self):
         # Below the generated block every text names a role: no `font-size: <n>px`, no `font:` shorthand with a pixel

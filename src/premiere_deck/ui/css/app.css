@@ -60,7 +60,7 @@ body { background: var(--bg-mid); }
    the glyph, the name and the version pill. Main shows the left cluster and the module tabs in the centre slot.
    visibility (not display) keeps the three grid columns, so the centre stays centred on the window. */
 
-.tb-glyph .pr-glyph { width: 20px; height: 20px; }
+.tb-glyph .pr-glyph { width: 24px; height: 24px; }
 :root[data-mode="compact"] .tb-left,
 :root[data-mode="compact"] .tb-centre { visibility: hidden; }
 
@@ -444,10 +444,10 @@ body { background: var(--bg-mid); }
   grid-template-columns: 38px minmax(0, 1fr);
   grid-template-rows: auto auto;
   align-items: center;
-  column-gap: 11px;
+  column-gap: 9px;
   row-gap: 2px;
   height: 68px;
-  padding: 0 12px;
+  padding: 0 11px;
   text-align: left;
 }
 .ftile .well {
@@ -621,8 +621,9 @@ body { background: var(--bg-mid); }
 .lst-cols { column-count: 2; column-gap: 14px; }
 .lst-group { break-inside: avoid; margin-bottom: 8px; }
 .lst-group .caption { margin: 0 4px 2px; }
-.lst-row.is-compact { min-height: 28px; height: 28px; padding: 0 2px 0 4px; gap: 9px; background: transparent; box-shadow: none; }
-.lst-row.is-compact .lst-title { font: var(--t-label); font-weight: var(--w-body); }
+/* A long action name wraps to a second line instead of being cut (the pane is fixed at 430 px). */
+.lst-row.is-compact { min-height: 28px; padding: 3px 2px 3px 4px; gap: 9px; background: transparent; box-shadow: none; }
+.lst-row.is-compact .lst-title { font: var(--t-label); font-weight: var(--w-body); white-space: normal; text-overflow: clip; }
 .lst-row.is-compact.is-off { color: var(--ink-3); }
 .lst-row.is-compact.is-off .lst-ic { color: var(--ink-4); }
 

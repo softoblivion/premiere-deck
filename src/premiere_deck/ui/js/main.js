@@ -46,7 +46,7 @@ function syncTheme(settings) {
 function initTitlebar() {
   const tb = mountTitlebar(document.getElementById('titlebar'), {
     name: 'Premiere Deck',
-    glyph: glyph(20),
+    glyph: glyph(24),
     onMinimize: () => call('window_minimize').catch((err) => toast('error', err.message)),
     onClose: () => call('window_close').catch((err) => toast('error', err.message)),
   });

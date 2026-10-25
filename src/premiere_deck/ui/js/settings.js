@@ -469,7 +469,7 @@ function build(content, update) {
       }));
   }
 
-  const link = button('github.com/softoblivion/premiere-deck', {
+  const link = button('softoblivion/premiere-deck', {
     cls: 'btn-ghost',
     onClick: async () => {
       try {
