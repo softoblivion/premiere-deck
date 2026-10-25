@@ -1,7 +1,7 @@
 name: liquid_ui (Premiere Deck copy)
 forked_from: 3.1.0 (the shared Liquid UI kit)
 owned_by_project_since: 2026-10-22
-visual_spec: the shared kit 4.1.0 (type scale of named roles, density tokens, title bar, Scale control)
+visual_spec: the shared kit 5.0.0 (type scale of named roles, density tokens, title bar, Scale control)
 
 This copy of the Liquid UI kit belongs to Premiere Deck and is edited here. It is never synced from
 or back to the shared kit (the app's design diverges: two project themes, the Sora text face, crystal
