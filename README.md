@@ -78,7 +78,7 @@
 | **OUT**&nbsp;·&nbsp;Export | <kbd>EXP</kbd> Export · <kbd>FRM</kbd> Export frame |
 | **KEYS**&nbsp;·&nbsp;Keys | <kbd>SLOW</kbd> Ease slow · <kbd>MED</kbd> Ease medium · <kbd>FAST</kbd> Ease fast · <kbd>LIN</kbd> Linear keys |
 
-What each action does, its results and limits: [user guide](docs/USER_GUIDE.md#quick-actions) and [QUICK_ACTIONS](docs/QUICK_ACTIONS.md).
+What each action does, its results and limits: [user guide](docs/USER_GUIDE.md#quick-actions).
 
 </details>
 
@@ -97,14 +97,6 @@ The window has three states that follow Premiere: **idle** (Premiere is not runn
 | Document | What it covers |
 |---|---|
 | [User guide](docs/USER_GUIDE.md) | Usage, the panel (rows, pinned row, scale slider), the Files tab, quick action codes, tray, settings, data folder, network, updates |
-| [Architecture](docs/ARCHITECTURE.md) | Goal, stack, repository layout, module table, data flow, runtime data |
-| [Protocol](docs/PROTOCOL.md) | Host <-> panel messages: discovery, handshake, UI tree, scripts, events |
-| [Modules](docs/MODULES.md) | The module contract: manifest, lifecycle, host services, UI, actions, settings, tests |
-| [Premiere facade](docs/PREMIERE_API.md) | Typed Premiere operations, snapshot model, jsx conventions, known Premiere quirks |
-| [Panel](docs/PANEL.md) | The CEP panel: manifest, two extensions, install and update, renderer, live verification |
-| [Host window](docs/HOST_UI.md) · [bridge](docs/BRIDGE_API.md) | Screens, states and copy of the window; its JS <-> Python bridge |
-| [Files module](docs/FILES.md) | Layouts, classification, sorting, sync, ZIP, journal |
-| [Quick actions module](docs/QUICK_ACTIONS.md) | Every action with its Premiere calls, results and limits |
 | [Build](docs/BUILD.md) | Toolchain, running from source, tests, building and signing, releasing, troubleshooting |
 | [Release notes](docs/releases/) | What changed in every version |
 | [Third-party components](docs/THIRD_PARTY.md) | What is bundled or downloaded, with licences |

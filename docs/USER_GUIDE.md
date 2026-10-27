@@ -167,8 +167,6 @@ How a few of the actions work:
 
 </div>
 
-Every action with its Premiere calls and limits: [QUICK_ACTIONS](QUICK_ACTIONS.md).
-
 ## Data and privacy
 
 All runtime data lives in `premiere-deck_data\` next to `PremiereDeck.exe` (override with the
