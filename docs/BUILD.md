@@ -75,7 +75,7 @@ The live checks in Premiere Pro are manual.
    the zxp to `build\work\panel_bundle` so `META-INF\signatures.xml` is present. Certificate and password from
    `DECK_SIGN_P12` and `DECK_SIGN_PASSWORD` (create the self-signed certificate once, outside the repository:
    `ZXPSignCmd -selfSignedCert US CA softoblivion "Premiere Deck" <password> deck-cert.p12`); `ZXPSignCmd` from
-   `DECK_ZXPSIGNCMD` or `D:\Adobe\plugins\ZXP_Signer\ZXPSignCmd.exe`. Without the variables the build prints a
+   `DECK_ZXPSIGNCMD` or `PATH`. Without the variables the build prints a
    warning and bundles the unsigned panel (dev builds; the panel then loads only with `PlayerDebugMode`).
 5. PyInstaller one-file, windowed, `build\PremiereDeck.spec` (reads the prepared panel from `DECK_PANEL_BUNDLE`):
    bundles `premiere_deck/ui` (with the vendored kit), `premiere_deck/panel`, every non-Python file of the package

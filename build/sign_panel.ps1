@@ -4,7 +4,7 @@
 .DESCRIPTION
   Runs `ZXPSignCmd -sign <PanelDir> <zxp> <p12> <password>`, verifies the package and unpacks it into OutDir, so the
   folder the exe bundles carries META-INF/signatures.xml. The certificate path and password come from the
-  environment (DECK_SIGN_P12, DECK_SIGN_PASSWORD); ZXPSignCmd from DECK_ZXPSIGNCMD or D:\Adobe\plugins\ZXP_Signer.
+  environment (DECK_SIGN_P12, DECK_SIGN_PASSWORD); ZXPSignCmd from DECK_ZXPSIGNCMD or PATH.
   Create a self-signed certificate once, outside the repository:
     ZXPSignCmd -selfSignedCert US CA softoblivion "Premiere Deck" <password> <path>\deck-cert.p12
   Exit code 0 = signed, 2 = no certificate configured (nothing done), 1 = failure.
@@ -31,9 +31,10 @@ if (-not (Test-Path $P12)) { Write-Error "Certificate not found: $P12"; exit 1 }
 
 $Candidates = @()
 if ($env:DECK_ZXPSIGNCMD) { $Candidates += $env:DECK_ZXPSIGNCMD }
-$Candidates += "D:\Adobe\plugins\ZXP_Signer\ZXPSignCmd.exe"
+$OnPath = Get-Command ZXPSignCmd.exe -ErrorAction SilentlyContinue
+if ($OnPath) { $Candidates += $OnPath.Source }
 $Signer = $Candidates | Where-Object { $_ -and (Test-Path $_) } | Select-Object -First 1
-if (-not $Signer) { Write-Error "ZXPSignCmd.exe not found (set DECK_ZXPSIGNCMD)."; exit 1 }
+if (-not $Signer) { Write-Error "ZXPSignCmd.exe not found (set DECK_ZXPSIGNCMD or put it on PATH)."; exit 1 }
 
 $Work = Split-Path -Parent $OutDir
 New-Item -ItemType Directory -Force -Path $Work | Out-Null
