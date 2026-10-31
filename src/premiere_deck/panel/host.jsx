@@ -624,9 +624,24 @@ function __deckActiveSequenceData(withCount) {
     return data;
 }
 
+// The number of items selected in the Project panel (0 when the call is missing or fails).
+function __deckProjectSelectionData() {
+    var count = 0;
+    try {
+        var picked = app.getCurrentProjectViewSelection();
+        count = picked ? picked.length : 0;
+    } catch (e) {
+        count = 0;
+    }
+    return {count: count};
+}
+
 // Payload of one Premiere binding. Premiere 26.5 passes no arguments to any handler, so the payload is read from
 // the current state; added items carry no node ids (the host diffs snapshots, docs/PROTOCOL.md 8).
 function __deckBindingData(binding) {
+    if (binding === "onSourceClipSelectedInProjectPanel") {
+        return __deckProjectSelectionData();
+    }
     if (binding === "onActiveSequenceSelectionChanged") {
         return __deckActiveSequenceData(true);
     }

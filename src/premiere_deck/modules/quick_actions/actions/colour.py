@@ -3,28 +3,28 @@ from __future__ import annotations
 from premiere_deck.modules.quick_actions import premiere_window
 from premiere_deck.modules.quick_actions.action import Action, Menu, plural
 from premiere_deck.modules.quick_actions.results import count, text
-from premiere_deck.premiere.model import COLOR_LABELS
+from premiere_deck.premiere.model import COLOR_LABELS, DEFAULT_LABEL_RGB
 
 DEFAULT = "Cerulean"
-# Marker.setColorByIndex offers 8 colours (verified 26.5.2: indexes above 7 read back as 7; the Marker dialog shows
-# them in this order); each label colour maps to the nearest one.
-MARKER_COLOURS = ("Green", "Red", "Purple", "Orange", "Yellow", "White", "Blue", "Cyan")
-MARKER_FOR = {
-    "Violet": "Purple", "Iris": "Blue", "Caribbean": "Cyan", "Lavender": "Purple", "Cerulean": "Blue",
-    "Forest": "Green", "Rose": "Red", "Mango": "Orange", "Purple": "Purple", "Blue": "Blue", "Teal": "Cyan",
-    "Magenta": "Red", "Tan": "White", "Green": "Green", "Brown": "Orange", "Yellow": "Yellow",
-}
-# Swatch of each label colour for the menu: the hue of Premiere's default label colours (`BE.Prefs.LabelColors.<n>`
-# of the 26.0 prefs file, Windows COLORREF 0x00BBGGRR), lifted so the brightest channel is 224, as the timeline
-# draws them brighter than the stored values.
-SWATCHES = {
-    "Violet": "#500de0", "Iris": "#00a3e0", "Caribbean": "#6fe012", "Lavender": "#c21ce0", "Cerulean": "#0cd1e0",
-    "Forest": "#b9e000", "Rose": "#e00355", "Mango": "#e05f07", "Purple": "#7700e0", "Blue": "#1a41e0",
-    "Teal": "#03e0c6", "Magenta": "#e01695", "Tan": "#e0b68b", "Green": "#1fe05e", "Brown": "#e08e0e",
-    "Yellow": "#e0ce32",
-}
+# The timeline draws label colours brighter than Premiere stores them: a swatch is the stored colour lifted so its
+# brightest channel is 224.
+SWATCH_PEAK = 224
 VIA_ITEMS = ("Premiere's Label menu was not reachable, so the colour went on the clips' project items; clips "
              "already in a sequence may keep their own colour.")
+
+
+def lift(rgb: str) -> str:
+    """The swatch of a stored label colour ("#3e0aae" -> "#500de0")."""
+    red, green, blue = (int(rgb[i:i + 2], 16) for i in (1, 3, 5))
+    peak = max(red, green, blue)
+    if peak == 0:
+        return "#000000"
+    scale = SWATCH_PEAK / peak
+    return "#" + "".join(f"{min(255, round(channel * scale)):02x}" for channel in (red, green, blue))
+
+
+# The swatches of Premiere's default label colours (the fallback when the preferences cannot be read).
+SWATCHES = {name: lift(rgb) for name, rgb in zip(COLOR_LABELS, DEFAULT_LABEL_RGB)}
 
 
 class Colour(Action):
@@ -32,39 +32,42 @@ class Colour(Action):
     label = "Colour label"
     short = "CLR"
     icon = "colour"
-    hint = "Gives the selected clips or project items, and a marker at the playhead, the chosen label colour."
-    group = "Clips"
+    hint = "Gives the newest selection, timeline clips or Project panel items, the last label colour."
+    group = "Labels"
     feasibility = (
         "No colour setter on a DOM TrackItem or a QE track item in 26.5.2 (reflected live), and placed clips do not "
         "follow ProjectItem.setColorLabel; selected timeline clips are coloured by Premiere's Edit > Label > "
         "<colour> (menu commands 13124..13139), posted as WM_COMMAND after Window > Timelines > <sequence> focused "
-        "the Timeline (verified 26.5.2). Without a timeline selection: ProjectItem.setColorLabel (documented) on "
-        "app.getCurrentProjectViewSelection (documented), bins included. Markers at the playhead: "
-        "Marker.setColorByIndex(0..7) (documented) on the sequence markers and the selected clips' item markers."
+        "the Timeline (verified 26.5.2). Project panel items: ProjectItem.setColorLabel (documented) on "
+        "app.getCurrentProjectViewSelection (documented), bins included. Names and colours: app.properties "
+        "BE.Prefs.LabelNames / LabelColors (facade label_palette, unverified keys, defaults as fallback)."
     )
 
     def menu(self, module):
-        return Menu("label", "Colour", DEFAULT, tuple((name, name) for name in COLOR_LABELS), runs=True,
-                    swatches=tuple(SWATCHES.items()))
+        palette = module.palette
+        return Menu("label", "Label colour", DEFAULT, tuple((name, palette.name(i)) for i, name in enumerate(COLOR_LABELS)),
+                    runs=True, palette=True, columns=16, hint="Labels the newest selection with this colour.",
+                    swatches=tuple((name, lift(palette.labels[i].rgb)) for i, name in enumerate(COLOR_LABELS)))
+
+    def extras(self, module):
+        return [module.target_chip()]
 
     def run(self, ctx, module):
-        name = module.choice(self, "label")
-        args = {"label": COLOR_LABELS.index(name), "marker": MARKER_COLOURS.index(MARKER_FOR[name])}
+        module.refresh_palette(ctx.premiere)
+        value = module.choice(self, "label")
+        index = COLOR_LABELS.index(value)
+        name = module.palette.name(index)
+        args = {"label": index, "target": module.preferred_target()}
         result = self.eval(ctx, dict(args, mode="select"))
+        module.note_counts(result)
+        target = text(result, "target")
         clips, items, bins = count(result, "clips"), count(result, "items"), count(result, "bins")
-        markers = count(result, "markers")
-        via_items = False
-        if clips and not premiere_window.label_timeline_selection(text(result, "sequence"),
-                                                                  COLOR_LABELS.index(name), name):
+        if target == "clips" and clips:
+            if premiere_window.label_timeline_selection(text(result, "sequence"), index, name):
+                return self.done(f"Coloured {plural(clips, 'clip')} {name}")
             self.eval(ctx, dict(args, mode="clip_items"))
-            via_items = True
-        parts = [plural(n, word) for n, word in ((clips, "clip"), (items, "item"), (bins, "bin")) if n]
-        marked = f"{plural(markers, 'marker')} {MARKER_FOR[name]}"
-        if not parts and not markers:
-            return self.done("Nothing selected", "warn")
-        if not parts:
-            return self.done(f"Coloured {marked}")
-        line = f"Coloured {' and '.join(parts)} {name}" + (f" · {marked}" if markers else "")
-        if via_items:
-            return self.done(line, "warn", VIA_ITEMS)
-        return self.done(line)
+            return self.done(f"Coloured {plural(clips, 'clip')} {name}", "warn", VIA_ITEMS)
+        if target == "items" and (items or bins):
+            parts = [plural(n, word) for n, word in ((items, "item"), (bins, "bin")) if n]
+            return self.done(f"Coloured {' and '.join(parts)} {name}")
+        return self.done("Nothing selected", "warn")

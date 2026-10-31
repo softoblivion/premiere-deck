@@ -15,7 +15,8 @@ from premiere_deck.modules.quick_actions import easing, premiere_window
 from premiere_deck.modules.quick_actions.action import (
     GROUP_CODES, JSX_DIR, error_sentence, safe_file_stem, script_text, timecode,
 )
-from premiere_deck.modules.quick_actions.actions.colour import MARKER_COLOURS, MARKER_FOR, SWATCHES, VIA_ITEMS
+from premiere_deck.modules.quick_actions.actions.colour import SWATCHES, VIA_ITEMS, lift
+from premiere_deck.modules.quick_actions.actions.marker_colour import MARKER_COLOURS
 from premiere_deck.modules.quick_actions.actions.create_16_9 import free_name, target_size
 from premiere_deck.modules.quick_actions.actions.create_custom import parse_size, ratio
 from premiere_deck.modules.quick_actions.actions.duplicate_sequence import next_sequence_name
@@ -24,7 +25,8 @@ from premiere_deck.modules.quick_actions.actions.label_by_bin import plan_labels
 from premiere_deck.modules.quick_actions.actions.save_version import next_version_path, version_folder
 from premiere_deck.modules.quick_actions.module import QuickActionsModule, _ModuleThreadPremiere
 from premiere_deck.premiere.model import (
-    COLOR_LABELS, PremiereError, ProjectItem, Selection, SequenceInfo, TrackItem,
+    COLOR_LABELS, LabelColour, LabelPalette, PremiereError, ProjectItem, Selection,
+    SequenceInfo, TrackItem, default_label_palette,
 )
 
 SEQUENCE = SequenceInfo("seq1", "Spring", 1920, 1080, 25.0, 60.0)
@@ -47,7 +49,8 @@ SCRIPT_OF = {
     "add_video_track": "add_track", "add_audio_track": "add_track", "remove_video_track": "remove_track",
     "remove_audio_track": "remove_track", "solo_track": "solo_track", "lock_others": "lock_others",
     "select_same_source": "select_same_source", "select_offline": "select_offline",
-    "scale_to_frame": "scale_to_frame", "colour": "colour", "consolidate_duplicates": "consolidate_duplicates",
+    "scale_to_frame": "scale_to_frame", "colour": "colour", "marker_colour": "marker_colour",
+    "consolidate_duplicates": "consolidate_duplicates",
     "duplicate_sequence": "duplicate_sequence", "create_16_9": "reframe", "create_9_16": "reframe",
     "create_custom": "reframe", "export_open": "export_open", "export_frame": "export_frame",
     "ease_slow": "ease_read", "ease_med": "ease_read", "ease_fast": "ease_read", "ease_linear": "ease_read",
@@ -62,8 +65,8 @@ TILES = {
     "solo_track": ("Tracks", "solo-track", "SOLO"), "lock_others": ("Tracks", "lock-others", "LOCK"),
     "select_same_source": ("Selection", "select-same-source", "SRC"),
     "select_offline": ("Selection", "select-offline", "OFF"),
-    "scale_to_frame": ("Clips", "scale-to-frame", "FIT"), "colour": ("Clips", "colour", "CLR"),
-    "label_by_bin": ("Clips", "label-by-bin", "BIN"),
+    "scale_to_frame": ("Clips", "scale-to-frame", "FIT"), "colour": ("Labels", "colour", "CLR"),
+    "marker_colour": ("Labels", "marker-colour", "MRK"), "label_by_bin": ("Labels", "label-by-bin", "BIN"),
     "save_version": ("Project", "save-version", "SAVE"), "consolidate_duplicates": ("Project", "consolidate", "CONS"),
     "open_project_folder": ("Project", "open-folder", "DIR"), "reveal_clip": ("Project", "reveal-clip", "REV"),
     "duplicate_sequence": ("Sequence", "duplicate-sequence", "DUP"), "create_16_9": ("Sequence", "ratio-16-9", "16:9"),
@@ -73,9 +76,9 @@ TILES = {
     "ease_fast": ("Keys", "ease-fast", "FAST"), "ease_linear": ("Keys", "ease-linear", "LIN"),
 }
 ALL_IDS = tuple(TILES)
-GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Project", "Sequence", "Export", "Keys")
+GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Labels", "Project", "Sequence", "Export", "Keys")
 SCRIPTS = {"adjustment_layer", "razor_all", "delete_empty_tracks", "add_track", "remove_track", "solo_track",
-           "lock_others", "select_same_source", "select_offline", "scale_to_frame", "colour",
+           "lock_others", "select_same_source", "select_offline", "scale_to_frame", "colour", "marker_colour",
            "consolidate_duplicates", "duplicate_sequence", "reframe", "export_open", "export_frame", "ease_read",
            "ease_apply"}
 
@@ -174,7 +177,7 @@ class Preconditions(QuickActionsCase):
         self.assertEqual(self.click("open_project_folder", module, host)[0], "neutral")
         self.assertEqual(self.click("consolidate_duplicates", module, host), ("ok", "Duplicates consolidated"))
         self.assertEqual(self.click("save_version", module, host)[0], "ok")
-        host.premiere.eval_results["actions.colour"] = {"items": 1}
+        host.premiere.eval_results["actions.colour"] = {"target": "items", "items": 1}
         self.assertEqual(self.click("colour", module, host), ("ok", "Coloured 1 item Cerulean"))
 
     def test_not_connected(self):
@@ -429,49 +432,185 @@ class SelectionAndClipActions(QuickActionsCase):
 
 
 class ColourAction(QuickActionsCase):
-    def test_menu_of_the_sixteen_labels(self):
-        node = rendered(self.module, "actions.colour")
-        self.assertEqual(node["menu"]["id"], "actions.colour.label")
-        self.assertEqual([o["value"] for o in node["menu"]["options"]], list(COLOR_LABELS))
-        self.assertEqual([o["label"] for o in node["menu"]["options"]], list(COLOR_LABELS))
-        self.assertEqual((node["menu"]["value"], node["menu"]["badge"]), ("Cerulean", "Cerulean"))
-        self.assertEqual(len(COLOR_LABELS), 16)
-        self.assertEqual(set(MARKER_FOR), set(COLOR_LABELS))
-        self.assertTrue(set(MARKER_FOR.values()) <= set(MARKER_COLOURS))
-        self.assertEqual([o["swatch"] for o in node["menu"]["options"]], [SWATCHES[name] for name in COLOR_LABELS])
-        self.assertTrue(all(re.fullmatch(r"#[0-9a-f]{6}", colour) for colour in SWATCHES.values()))
+    """The Labels lane (docs/QUICK_ACTIONS.md 1.2): palettes, target rule, indicator, Edit > Label route."""
+
+    def labels_lane(self, module=None):
+        return next(n for n in (module or self.module).render() if n.get("id") == "actions.labels")
+
+    def test_palette_of_the_sixteen_labels(self):
+        node = rendered(self.module, "actions.colour.label")
+        self.assertEqual(node["kind"], "swatches")
+        self.assertEqual(node["columns"], 16)
+        self.assertEqual([o["value"] for o in node["options"]], list(COLOR_LABELS))
+        self.assertEqual([o["label"] for o in node["options"]], list(COLOR_LABELS))
+        self.assertEqual(node["value"], "Cerulean")
+        self.assertEqual([o["swatch"] for o in node["options"]], [SWATCHES[name] for name in COLOR_LABELS])
+        self.assertNotIn("menu", rendered(self.module, "actions.colour"), "the palette replaces the corner menu")
+
+    def test_default_swatches_are_the_hard_coded_ones(self):
+        # The 3.1 swatches: the fallback when Premiere's preferences cannot be read.
+        old = {"Violet": "#500de0", "Iris": "#00a3e0", "Caribbean": "#6fe012", "Lavender": "#c21ce0",
+               "Cerulean": "#0cd1e0", "Forest": "#b9e000", "Rose": "#e00355", "Mango": "#e05f07",
+               "Purple": "#7700e0", "Blue": "#1a41e0", "Teal": "#03e0c6", "Magenta": "#e01695", "Tan": "#e0b68b",
+               "Green": "#1fe05e", "Brown": "#e08e0e", "Yellow": "#e0ce32"}
+        self.assertEqual(SWATCHES, old)
+        self.assertEqual(lift("#000000"), "#000000")
+
+    def test_marker_palette(self):
+        node = rendered(self.module, "actions.marker_colour.colour")
+        self.assertEqual((node["kind"], node["columns"], node["value"]), ("swatches", 8, "Green"))
+        self.assertEqual([o["value"] for o in node["options"]], list(MARKER_COLOURS))
+        lane = self.labels_lane()
+        kinds = [n["kind"] for n in lane["items"]]
+        self.assertEqual(kinds, ["button", "button", "button", "swatches", "swatches", "text"])
+        self.assertEqual([n.get("id") for n in lane["items"][:5]],
+                         ["actions.colour", "actions.marker_colour", "actions.label_by_bin",
+                          "actions.colour.label", "actions.marker_colour.colour"])
+
+    def test_live_names_and_colours_from_premiere(self):
+        labels = list(default_label_palette().labels)
+        labels[6] = LabelColour(6, "Spring", "#102030", live=True)
+        self.host.premiere.label_palette_value = LabelPalette(tuple(labels), "partial")
+        with self.assertLogs("module.actions.test", level="INFO") as logs:
+            self.module.on_event("panel.opened", {})
+        self.assertIn("label palette source: partial (1 of 16", "\n".join(logs.output))
+        node = rendered(self.module, "actions.colour.label")
+        self.assertEqual(node["options"][6], {"value": "Rose", "label": "Spring", "swatch": lift("#102030")})
+        self.host.premiere.eval_results["actions.colour"] = {"target": "clips", "clips": 2, "sequence": "Spring"}
+        self.assertEqual(self.click("colour.label", value="Rose"), ("ok", "Coloured 2 clips Spring"))
+        self.assertEqual(self.menu_runs, [premiere_window.label_commands("Spring", 6, "Spring")],
+                         "the renamed label reaches the menu path fallback")
+
+    def test_palette_falls_back_when_premiere_cannot_answer(self):
+        with mock.patch.object(self.host.premiere, "label_palette", side_effect=PremiereError("Error: no")):
+            self.module.on_event("panel.opened", {})
+        self.assertEqual(self.module.palette, default_label_palette())
+        self.assertEqual(rendered(self.module, "actions.colour.label")["options"][4]["swatch"], SWATCHES["Cerulean"])
 
     def test_pick_colours_the_timeline_selection(self):
-        self.host.premiere.eval_results["actions.colour"] = {"clips": 2, "markers": 1, "sequence": "Spring"}
-        self.assertEqual(self.click("colour.label", value="Rose"), ("ok", "Coloured 2 clips Rose · 1 marker Red"))
+        self.host.premiere.eval_results["actions.colour"] = {"target": "clips", "clips": 2, "sequence": "Spring"}
+        self.assertEqual(self.click("colour.label", value="Rose"), ("ok", "Coloured 2 clips Rose"))
         self.assertIsNone(self.detail)
-        self.assertEqual(self.evals()[0][1], {"label": 6, "marker": 1, "mode": "select"})
+        self.assertEqual(self.evals()[0][1], {"label": 6, "target": "clips", "mode": "select"})
         self.assertEqual(self.menu_runs, [premiere_window.label_commands("Spring", 6, "Rose")])
         self.assertEqual(self.module.choice(self.module.actions["colour"], "label"), "Rose")
-        self.assertEqual(rendered(self.module, "actions.colour")["menu"]["badge"], "Rose")
-        self.assertEqual(self.click("colour")[1], "Coloured 2 clips Rose · 1 marker Red", "a press reuses the pick")
+        self.assertEqual(rendered(self.module, "actions.colour.label")["value"], "Rose")
+        self.assertEqual(self.click("colour")[1], "Coloured 2 clips Rose", "a press reuses the pick")
+        self.assertEqual(self.host.premiere.calls_named("label_palette")[-1], ((), {}), "every press reads the palette")
 
     def test_menu_unreachable_falls_back_to_project_items(self):
         self.menu_ok = False
-        self.host.premiere.eval_results["actions.colour"] = {"clips": 3, "sequence": "Spring"}
+        self.host.premiere.eval_results["actions.colour"] = {"target": "clips", "clips": 3, "sequence": "Spring"}
         self.assertEqual(self.click("colour"), ("warn", "Coloured 3 clips Cerulean"))
         self.assertEqual(self.detail, VIA_ITEMS)
         self.assertEqual([args["mode"] for _, args, _ in self.evals()], ["select", "clip_items"])
 
-    def test_project_items_markers_and_nothing(self):
+    def test_project_items_and_nothing(self):
         results = self.host.premiere.eval_results
-        results["actions.colour"] = {"items": 2, "bins": 1, "markers": 0}
+        results["actions.colour"] = {"target": "items", "items": 2, "bins": 1}
         self.assertEqual(self.click("colour"), ("ok", "Coloured 2 items and 1 bin Cerulean"))
-        results["actions.colour"] = {"markers": 1}
-        self.assertEqual(self.click("colour"), ("ok", "Coloured 1 marker Blue"))
+        results["actions.colour"] = {"target": "", "clips": 0, "items": 0}
+        self.assertEqual(self.click("colour"), ("warn", "Nothing selected"), "no fallback to the active sequence")
         results["actions.colour"] = {}
         self.assertEqual(self.click("colour"), ("warn", "Nothing selected"))
         self.assertEqual(self.menu_runs, [], "no timeline clips: Premiere's menu is not used")
+        self.assertEqual(self.host.premiere.calls_named("add_marker"), [])
+
+    def test_newest_selection_wins(self):
+        self.host.premiere.eval_results["actions.colour"] = {"target": "items", "items": 1}
+        self.click("colour")
+        self.assertEqual(self.evals()[-1][1]["target"], "clips", "before any event: timeline clips first")
+        self.module.on_event("sequence.selection_changed", {"sequence_id": "seq1", "count": 2})
+        self.module.on_event("project.selection_changed", {"count": 3})
+        self.click("colour")
+        self.assertEqual(self.evals()[-1][1]["target"], "items")
+        self.module.on_event("sequence.selection_changed", {"sequence_id": "seq1", "count": 1})
+        self.click("colour")
+        self.assertEqual(self.evals()[-1][1]["target"], "clips")
+        self.module.on_event("project.selection_changed", {"count": 0})
+        self.click("colour")
+        self.assertEqual(self.evals()[-1][1]["target"], "clips", "an emptied selection is not the newest")
+
+    def test_target_indicator(self):
+        def chip():
+            node = self.labels_lane()["items"][-1]
+            self.assertTrue(node["chip"])
+            self.assertTrue(node["hint"])
+            return node["text"], node["tone"]
+
+        host, module = self.make()
+        self.module = module
+        self.host = host
+        self.assertEqual(chip(), ("Newest selection", "neutral"), "nothing known yet")
+        module.on_event("sequence.selection_changed", {"sequence_id": "seq1", "count": 3})
+        self.assertEqual(chip(), ("Clips · 3", "accent"), "the items count is unknown, the clips win")
+        module.on_event("project.selection_changed", {"count": 2})
+        self.assertEqual(chip(), ("Items · 2", "accent"))
+        module.on_event("project.selection_changed", {"count": 0})
+        self.assertEqual(chip(), ("Clips · 3", "accent"))
+        module.on_event("sequence.selection_changed", {"sequence_id": "seq1", "count": 0})
+        self.assertEqual(chip(), ("No selection", "neutral"))
+        module.on_event("sequence.selection_changed", {"count": "x"})
+        self.assertEqual(chip(), ("Newest selection", "neutral"), "a bad count is unknown")
+        module.project_closed()
+        self.assertEqual((module.last_target, module.counts), (None, {"clips": None, "items": None}))
+
+    def test_indicator_is_read_when_the_panel_opens(self):
+        self.host.premiere.eval_results["actions.colour"] = {"target": "items", "clips": 0, "items": 4, "bins": 1}
+        self.module.on_event("panel.opened", {})
+        name, args, _ = self.evals()[-1]
+        self.assertEqual((name, args["mode"]), ("actions.colour", "count"))
+        self.assertEqual(self.labels_lane()["items"][-1]["text"], "Items · 5")
+        self.module.on_event("sequence.activated", {"sequence_id": "seq2"})
+        self.assertEqual(len(self.evals()), 2, "a new active sequence reads the target again")
+        host, module = self.make(settings={"hidden": ["colour"]})
+        module.on_event("panel.opened", {})
+        self.assertEqual(host.premiere.calls_named("eval"), [], "a hidden colour tile reads nothing")
+
+    def test_not_connected_keeps_the_palette(self):
+        self.host.premiere.connected = False
+        self.module.on_event("panel.opened", {})
+        self.assertEqual(self.module.palette, default_label_palette())
+        self.assertEqual(self.click("colour"), ("warn", "Premiere Pro is not connected"))
 
     def test_unknown_colour_is_ignored(self):
         self.assertIsNone(self.click("colour.label", value="Pink"))
         self.assertEqual(self.evals(), [])
         self.assertEqual(self.module.choice(self.module.actions["colour"], "label"), "Cerulean")
+
+    def test_hidden_action_hides_its_palette(self):
+        host, module = self.make(settings={"hidden": ["colour", "marker_colour"]})
+        ids = [n.get("id") for n in flat(module.render())]
+        self.assertNotIn("actions.colour.label", ids)
+        self.assertNotIn("actions.marker_colour.colour", ids)
+        lane = next(n for n in module.render() if n.get("id") == "actions.labels")
+        self.assertEqual([n["kind"] for n in lane["items"]], ["button"], "no chip without the colour tile")
+
+    def test_marker_colour(self):
+        results = self.host.premiere.eval_results
+        results["actions.marker_colour"] = {"markers": 2, "sequence": "Spring"}
+        self.assertEqual(self.click("marker_colour.colour", value="Cyan"), ("ok", "Coloured 2 markers Cyan"))
+        self.assertEqual(self.evals()[-1][1], {"colour": 7})
+        self.assertEqual(self.click("marker_colour"), ("ok", "Coloured 2 markers Cyan"), "a press reuses the pick")
+        results["actions.marker_colour"] = {"markers": 0, "sequence": "Spring"}
+        self.assertEqual(self.click("marker_colour"), ("warn", "No marker at the playhead"))
+        results["actions.marker_colour"] = {"markers": 0, "sequence": ""}
+        self.assertEqual(self.click("marker_colour"), ("warn", "No active sequence"))
+        self.assertIsNone(self.click("marker_colour.colour", value="Pink"))
+        self.assertEqual(self.module.choice(self.module.actions["marker_colour"], "colour"), "Cyan")
+        self.assertEqual(self.menu_runs, [], "markers never use Premiere's menu")
+
+    def test_marker_choice_falls_back_on_a_bad_setting(self):
+        host, module = self.make(settings={"choices": {"marker_colour.colour": "Pink"}})
+        self.assertEqual(module.choice(module.actions["marker_colour"], "colour"), "Green")
+
+    def test_scripts_of_the_lane(self):
+        colour = (JSX_DIR / "colour.jsx").read_text(encoding="utf-8")
+        self.assertNotIn("setColorByIndex", colour, "labels no longer colour markers")
+        self.assertIn('__args.mode === "count"', colour)
+        marker = (JSX_DIR / "marker_colour.jsx").read_text(encoding="utf-8")
+        self.assertIn("marker.setColorByIndex(__args.colour)", marker)
+        self.assertIn("end > start && ticks >= start && ticks < end", marker, "a range marker counts inside")
 
     def test_menu_commands(self):
         commands = premiere_window.label_commands("Spring", 6, "Rose")
@@ -905,10 +1044,11 @@ class JobsAndRendering(QuickActionsCase):
         self.assertEqual([n["title"] for n in items], list(GROUPS))
         self.assertEqual([n["id"] for n in items], [f"actions.{t.lower()}" for t in GROUPS])
         self.assertTrue(all(n["tiles"] and n["collapsible"] for n in items))
-        self.assertEqual([n["short"] for n in items], ["TIME", "TRKS", "SEL", "CLIP", "PROJ", "SEQ", "OUT", "KEYS"])
+        self.assertEqual([n["short"] for n in items],
+                         ["TIME", "TRKS", "SEL", "CLIP", "LBL", "PROJ", "SEQ", "OUT", "KEYS"])
         self.assertEqual(GROUP_CODES, dict(zip(GROUPS, (n["short"] for n in items))))
         for group in items:
-            tiles = group["items"]
+            tiles = [n for n in group["items"] if n["kind"] in ("button", "switch")]
             expected = [f"actions.{aid}" for aid in ALL_IDS if TILES[aid][0] == group["title"]]
             self.assertEqual([n["id"] for n in tiles], expected, group["title"])
             kinds = {n["id"]: n["kind"] for n in tiles}
@@ -933,7 +1073,9 @@ class JobsAndRendering(QuickActionsCase):
         self.assertEqual(list(self.module.actions), list(ALL_IDS), "panel order is the table order")
 
     def test_menus(self):
-        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("menu")], ["actions.colour"])
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("menu")], [])
+        self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("kind") == "swatches"],
+                         ["actions.colour.label", "actions.marker_colour.colour"])
         self.assertEqual([n["id"] for n in flat(self.module.render()) if n.get("kind") == "select"], [])
 
     def test_removed_actions_are_gone(self):
@@ -1066,7 +1208,6 @@ class Scripts(QuickActionsCase):
         apply = (JSX_DIR / "ease_apply.jsx").read_text(encoding="utf-8")
         self.assertIn("setInterpolationTypeAtKey(at(plan.linear[l]), 0,", apply)
         colour = (JSX_DIR / "colour.jsx").read_text(encoding="utf-8")
-        self.assertIn("marker.setColorByIndex(__args.marker)", colour)
         self.assertIn("app.getCurrentProjectViewSelection()", colour)
 
     @unittest.skipUnless(shutil.which("node"), "node is not installed")

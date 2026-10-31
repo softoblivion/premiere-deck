@@ -312,6 +312,7 @@
     --row-h: 46px;
     --row-r: 14px;
     --slot-h: 20px;
+    --swatch-h: 16px;
 }
 
 * { box-sizing: border-box; }
@@ -569,6 +570,32 @@ button:disabled { cursor: default; }
 .deck-lane-code .ic { width: 15px; height: 15px; color: var(--accent-ink); }
 .deck-lane.is-pinned { background: var(--fill-2); box-shadow: inset 0 0 0 1px var(--btn-glow), 0 6px 20px -12px var(--btn-glow); }
 .deck-lane-tiles { display: grid; grid-template-columns: repeat(var(--lane-cols), var(--tile-w)); grid-auto-rows: var(--tile-h); gap: var(--tile-gap); justify-content: start; }
+
+/* A lane with swatches (Labels): the tiles, then the swatch rows on the same plate; its chips share the tile row. */
+.deck-lane-body { display: flex; flex-direction: column; gap: var(--tile-gap); min-width: 0; }
+.deck-lane-aside { display: flex; align-items: center; justify-content: flex-end; min-width: 0; padding: 0 4px; overflow: hidden; }
+.deck-lane-aside .deck-chip { max-width: 100%; overflow: hidden; }
+.deck-lane-aside .deck-chip-text { overflow: hidden; text-overflow: ellipsis; }
+
+/* Swatches: colour cells in `columns` per row; the current one carries a ring; at lane width inside a lane. */
+.deck-swatches { display: grid; grid-template-columns: repeat(var(--sw-cols), minmax(0, 1fr)); grid-auto-rows: var(--swatch-h); gap: 3px; width: 100%; }
+.deck-lane-body > .deck-swatches { width: calc(var(--lane-cols) * var(--tile-w) + (var(--lane-cols) - 1) * var(--tile-gap)); }
+.deck-swatch {
+    position: relative;
+    min-width: 0;
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: var(--sw, var(--fill-2));
+    box-shadow: inset 0 0 0 0.5px var(--stroke-2);
+    cursor: pointer;
+    transition: transform var(--d-1) var(--ease-out), box-shadow var(--d-1) ease;
+}
+.deck-swatch:hover { transform: scale(1.08); }
+.deck-swatch:active { transform: scale(0.94); }
+.deck-swatch.is-on { box-shadow: inset 0 0 0 2px var(--bg-mid), 0 0 0 1.5px var(--ink-1); }
+.deck-swatch:disabled { cursor: default; opacity: 0.45; transform: none; }
 
 /* Empty places of the pinned row and its edit slot ("+" opens edit mode, the check ends it). */
 .deck-slot { display: grid; place-items: center; width: var(--tile-w); height: var(--tile-h); border-radius: var(--tile-r); border: 1px dashed var(--stroke-2); color: var(--ink-3); }

@@ -16,7 +16,10 @@ from unittest import mock
 from premiere_deck.host import protocol
 from premiere_deck.premiere import api as api_module
 from premiere_deck.premiere.api import PremiereApi, project_info_from_path, same_path
-from premiere_deck.premiere.model import PremiereError, PremiereUnavailable
+from premiere_deck.premiere.model import (
+    COLOR_LABELS, DEFAULT_LABEL_RGB, AudioTrack, LabelColour, PremiereError, PremiereUnavailable, colorref_to_rgb,
+    default_label_palette, label_palette_from_json,
+)
 
 JSX_DIR = Path(api_module.__file__).resolve().parent / "jsx"
 PANEL_DIR = JSX_DIR.parent.parent / "panel"
@@ -373,6 +376,47 @@ class OperationTests(Base):
         self.assertEqual(api.workspaces(), ["Editing", "Color"])
         self.assertEqual([i.node_id for i in api.import_files(["C:\\new.mp4"], "Audio")], ["n9"])
 
+    def test_label_palette(self) -> None:
+        labels = [{"index": i, "name": None, "colour": None} for i in range(16)]
+        labels[0] = {"index": 0, "name": "Spring", "colour": "11406910"}   # 0xAE0E3E -> #3e0eae
+        labels[1] = {"index": 1, "name": "  ", "colour": "0x00674B00"}      # blank name: default, hex colour
+        labels[2] = {"index": 2, "name": "Sea", "colour": "-5"}             # bad colour: default
+        labels[3] = {"index": 3, "name": "x" * 41, "colour": "abc"}         # too long, not numeric
+        api, transport = self.make(by_name({"label_palette": {"available": True, "labels": labels}}))
+        palette = api.label_palette()
+        self.assertEqual(transport.scripts()[0]["name"], "label_palette")
+        self.assertEqual(palette.labels[0], LabelColour(0, "Spring", "#3e0eae", live=True))
+        self.assertEqual(palette.labels[1], LabelColour(1, "Iris", "#004b67", live=False))
+        self.assertEqual(palette.labels[2], LabelColour(2, "Sea", DEFAULT_LABEL_RGB[2], live=False))
+        self.assertEqual(palette.labels[3], LabelColour(3, "Lavender", DEFAULT_LABEL_RGB[3], live=False))
+        self.assertEqual(palette.source, "partial")
+        self.assertEqual([label.name for label in palette.labels[4:]], list(COLOR_LABELS[4:]))
+
+    def test_label_palette_sources(self) -> None:
+        full = {"labels": [{"index": i, "name": f"L{i}", "colour": str(i * 4096)} for i in range(16)]}
+        self.assertEqual(label_palette_from_json(full).source, "premiere")
+        self.assertEqual(label_palette_from_json({"available": False, "labels": []}).source, "defaults")
+        for junk in (None, "x", [], {"labels": "x"}, {"labels": [None, 3, {"index": 99, "name": "Q"}]}):
+            with self.subTest(junk=junk):
+                self.assertEqual(label_palette_from_json(junk), default_label_palette())
+        self.assertEqual(colorref_to_rgb(0x0000FF), "#ff0000")
+        self.assertEqual(colorref_to_rgb(float(0xFF0000)), "#0000ff")
+        for bad in (True, 1.5, 0x1000000, -1, "", "0xZZ", None):
+            with self.subTest(bad=bad):
+                self.assertIsNone(colorref_to_rgb(bad))
+
+    def test_audio_tracks(self) -> None:
+        api, transport = self.make(by_name({"audio_tracks": lambda args: {
+            "found": args["sequence_id"] == "s1",
+            "tracks": [{"index": 0, "name": "Dialogue", "muted": False, "clip_count": 4},
+                       {"index": 1, "name": "", "muted": True, "clip_count": 0}, "junk"]}}))
+        tracks = api.audio_tracks("s1")
+        self.assertEqual(transport.scripts()[0]["args"], {"sequence_id": "s1"})
+        self.assertEqual(tracks, [AudioTrack(0, "Dialogue", False, 4), AudioTrack(1, "Audio 2", True, 0)])
+        self.assertEqual(tracks[1].code, "A2")
+        with self.assertRaises(PremiereError):
+            api.audio_tracks("gone")
+
     def test_empty_selection_without_sequence(self) -> None:
         api, _ = self.make(by_name({"selection": {"sequence_id": "", "items": []}, "active_sequence": None}))
         self.assertFalse(api.selection())
@@ -590,7 +634,7 @@ class JsxTests(unittest.TestCase):
     OPERATIONS = ("project_info", "snapshot", "item", "create_bin_path", "move_to_bin", "relink", "import_files",
                   "rename_item", "remove_items", "set_color_label", "active_sequence", "sequences", "selection", "track_items",
                   "playhead", "open_in_source", "insert_clip", "add_marker", "save", "open_project", "workspace",
-                  "version")
+                  "version", "label_palette", "audio_tracks")
     LIB_FUNCTIONS = ("walk", "findByNodeId", "binByPath", "itemInfo", "ticksToSeconds", "secondsToTicks", "pathOf",
                      "safeMediaPath", "requireItem", "requireSequence", "findSequence", "sequenceInfo",
                      "trackItemInfo", "eachTrackItem", "columnsOf", "splitTreePath", "timeFromSeconds")

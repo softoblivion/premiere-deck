@@ -43,7 +43,7 @@ class LabelByBin(Action):
     short = "BIN"
     icon = "label-by-bin"
     hint = "Gives every project item the colour of its top-level bin."
-    group = "Clips"
+    group = "Labels"
     long = True
     feasibility = (
         "Facade snapshot() and set_color_label() (ProjectItem.setColorLabel, documented, ppro-scripting, Premiere "

@@ -4,7 +4,7 @@ The version below is the only version in the project. The build writes it into t
 manifest; the host compares the installed panel against it (docs/ARCHITECTURE.md, section 7).
 """
 
-__version__ = "3.1.0"
+__version__ = "3.2.0"
 
 # Protocol version of the host <-> panel messages (docs/PROTOCOL.md, section 3). Changes only when a message shape
 # changes incompatibly.

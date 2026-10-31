@@ -319,6 +319,52 @@ class Lanes30(unittest.TestCase):
                          "sections": [sec]})
 
 
+class Swatches32(unittest.TestCase):
+    """3.2: the `swatches` node (docs/PROTOCOL.md 6.1) and the `project.selection_changed` event (8)."""
+
+    OPTIONS = [{"value": "Rose", "label": "Rose", "swatch": "#e00355"}, {"value": "Iris", "label": "Iris", "swatch": "#0ae"}]
+
+    def tree(self, items):
+        return {"type": P.T_UI, "revision": 1, "title": "Deck", "status": None, "footer": None,
+                "sections": [P.section("actions", "Actions", [P.node_group("Labels", items, id="a.labels", tiles=True)])]}
+
+    def test_builder_and_validation(self):
+        node = P.node_swatches("a.colour.label", "Label colour", "Rose", self.OPTIONS, hint="Labels it.", columns=16)
+        self.assertEqual(node, {"kind": "swatches", "id": "a.colour.label", "label": "Label colour", "hint": "Labels it.",
+                                "value": "Rose", "options": self.OPTIONS, "columns": 16, "disabled": False})
+        self.assertIsNone(P.node_swatches("a.m", "M", None, self.OPTIONS)["value"])
+        self.assertEqual(P.node_swatches("a.m", "M", None, self.OPTIONS)["columns"], 8)
+        P.validate_tree(self.tree([P.node_button("a.colour", "Colour"), node]))
+
+    def test_refused_values(self):
+        bad_options = ([], [{"value": "a", "label": "A"}], [{"value": "a", "label": "A", "swatch": "red"}],
+                       [{"value": "a", "label": "A", "swatch": "#abc"}, {"value": "a", "label": "B", "swatch": "#abd"}],
+                       [{"label": "A", "swatch": "#abc"}])
+        for options in bad_options:
+            with self.subTest(options=options), self.assertRaises(P.ProtocolError):
+                P.node_swatches("a.m", "M", None, options)
+        for columns in (0, 17, True, 2.5, "8"):
+            with self.subTest(columns=columns), self.assertRaises(P.ProtocolError):
+                P.node_swatches("a.m", "M", None, self.OPTIONS, columns=columns)
+        with self.assertRaises(P.ProtocolError):
+            P.node_swatches("a.m", "M", "Pink", self.OPTIONS)
+        node = P.node_swatches("a.m", "M", None, self.OPTIONS)
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([dict(node), dict(node)]))  # one id space
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([P.node_button("a.m", "M"), node]))
+        with self.assertRaises(P.ProtocolError):
+            P.validate_tree(self.tree([dict(node, options=[{"value": "a", "label": "A", "swatch": "url(x)"}])]))
+
+    def test_swatches_are_no_pin_targets(self):
+        node = P.node_swatches("a.m", "M", None, self.OPTIONS)
+        self.assertEqual(P.tile_ids(self.tree([P.node_button("a.colour", "Colour"), node])["sections"]), ["a.colour"])
+
+    def test_project_selection_event(self):
+        self.assertIn("project.selection_changed", P.EVENTS)
+        self.assertEqual(P.subscribe(["project.selection_changed"])["events"], ["project.selection_changed"])
+
+
 class Messages(unittest.TestCase):
     def test_theme_message(self):
         self.assertEqual(P.theme("sky"), {"type": "theme", "name": "sky"})

@@ -81,5 +81,38 @@ class NoticeWiringTests(unittest.TestCase):
         self.assertLess(orders["actions"], orders["files"])
 
 
+def css_rule(css: str, selector: str) -> str:
+    """The body of the first rule whose selector list is exactly `selector`."""
+    match = re.search(r"(?:^|\}|\*/)\s*" + re.escape(selector) + r"\s*\{([^}]*)\}", css)
+    return match.group(1) if match else ""
+
+
+class SheetBoundTests(unittest.TestCase):
+    """A fit-content sheet must bound its `.ov-content` itself, or long content clips the buttons (HOST_UI.md 7);
+    the layout cannot run here, so the rules that carry the bound are pinned."""
+
+    def test_update_sheet_keeps_its_buttons_with_long_notes(self):
+        css = (UI / "vendor" / "liquid_ui" / "css" / "components.css").read_text("utf-8")
+        self.assertIn("max-height: var(--sheet-max-h)", css_rule(css, ".upd-sheet .ov-content"))
+        self.assertIn("height: auto", css_rule(css, ".upd-sheet .ov-content"))
+        self.assertIn("flex: none", css_rule(css, ".upd-sheet-head,\n.upd-sheet-foot"))
+        self.assertIn("overflow-y: auto", css_rule(css, ".upd-sheet-foot .upd-msg"))
+        self.assertIn("min-height: 96px", css_rule(css, ".upd-sheet-scroll"))
+        self.assertIn("--sheet-max-h: calc(100vh - 2 * var(--titlebar-h))", css_rule(css, ".upd-sheet"))
+        self.assertNotIn(".confirm-sheet", css, "the app sheet is bounded in app.css, not in the kit copy")
+
+    def test_confirm_sheet_has_the_same_bound(self):
+        css = (UI / "css" / "app.css").read_text("utf-8")
+        self.assertIn("--sheet-max-h: calc(100vh - 2 * var(--titlebar-h))", css_rule(css, ".confirm-sheet"))
+        self.assertIn("max-height: var(--sheet-max-h)", css_rule(css, ".confirm-sheet"))
+        self.assertIn("max-height: var(--sheet-max-h)", css_rule(css, ".confirm-sheet .ov-content"))
+        self.assertIn("overflow-y: auto", css_rule(css, ".cf-question"))
+        self.assertIn("flex: none", css_rule(css, ".cf-btns"))
+
+    def test_mock_offers_long_release_notes(self):
+        mock = (UI / "js" / "mock.js").read_text("utf-8")
+        self.assertIn("params.get('notes') === 'long'", mock)
+
+
 if __name__ == "__main__":
     unittest.main()

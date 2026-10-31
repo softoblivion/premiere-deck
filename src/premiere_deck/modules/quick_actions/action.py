@@ -27,9 +27,10 @@ COMMON_JSX = "_common"
 # user, every other script error becomes a generic sentence (docs/PROTOCOL.md 9).
 USER_ERROR_PREFIX = "deck: "
 
-GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Project", "Sequence", "Export", "Keys")
+GROUPS = ("Timeline", "Tracks", "Selection", "Clips", "Labels", "Project", "Sequence", "Export", "Keys")
 # The group code drawn at the edge of the group's row in the panel (docs/QUICK_ACTIONS.md 1, group `short`).
-GROUP_CODES = {"Timeline": "TIME", "Tracks": "TRKS", "Selection": "SEL", "Clips": "CLIP", "Project": "PROJ",
+GROUP_CODES = {"Timeline": "TIME", "Tracks": "TRKS", "Selection": "SEL", "Clips": "CLIP", "Labels": "LBL",
+               "Project": "PROJ",
                "Sequence": "SEQ", "Export": "OUT", "Keys": "KEYS"}
 
 DEFAULT_TIMEOUT_MS = 30000
@@ -61,7 +62,8 @@ class Menu:
     """The choice an action carries as the `menu` of its tile (docs/QUICK_ACTIONS.md 1). `options` are
     (value, label); the badge of a value is its entry in `badges` or else its label; `swatches` (value, CSS hex)
     give an option its colour dot. With `runs` a pick also runs the action (the colour menu); otherwise a pick only
-    stores the choice."""
+    stores the choice. With `palette` (3.2) the choice is drawn as a `swatches` row of the action's lane in
+    `columns` cells per row instead of the tile's corner menu (every option then needs a swatch)."""
 
     name: str
     label: str
@@ -70,6 +72,9 @@ class Menu:
     badges: tuple[tuple[str, str], ...] = ()
     runs: bool = False
     swatches: tuple[tuple[str, str], ...] = ()
+    palette: bool = False
+    columns: int = 8
+    hint: str = ""
 
     def badge(self, value: str) -> str:
         badges = dict(self.badges)
@@ -117,6 +122,10 @@ class Action:
         """Stores a prompt value; returns None when stored (the module then runs the action) or the result to
         show when the value is refused."""
         return Outcome("warn", f"{self.label}: unknown field {name}")
+
+    def extras(self, module: "QuickActionsModule") -> list:
+        """Nodes the action adds to its lane after the tiles (3.2: the Labels target chip)."""
+        return []
 
     def button(self, module: "QuickActionsModule") -> dict:
         """Overrides of the button node (`label`, `short`, `tone`, `disabled`) for the action's current state."""

@@ -68,6 +68,15 @@ def canned_answers(project: dict) -> dict[str, Any]:
         "playhead": 12.5, "set_playhead": None,
         "workspaces": ["Editing", "Assembly", "Premiere Deck"],
         "version": PREMIERE_VERSION, "premiere_version": PREMIERE_VERSION,
+        # 3.2: the label palette (no live preferences: every value falls back to the defaults), the Labels target
+        # and the Audio tab's tracks.
+        "label_palette": {"available": False, "labels": []},
+        "actions.colour": {"target": "", "clips": 0, "items": 0, "bins": 0, "sequence": "Main edit"},
+        "audio_tracks": {"found": True, "tracks": [
+            {"index": 0, "name": "Audio 1", "muted": False, "clip_count": 6},
+            {"index": 1, "name": "Dialogue", "muted": False, "clip_count": 4},
+            {"index": 2, "name": "Music", "muted": True, "clip_count": 1},
+            {"index": 3, "name": "Audio 4", "muted": False, "clip_count": 0}]},
     }
 
 

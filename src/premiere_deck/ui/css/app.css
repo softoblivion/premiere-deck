@@ -725,10 +725,18 @@ input[type="number"].field::-webkit-inner-spin-button { appearance: none; margin
   margin: auto;
   width: min(400px, calc(100vw - 28px));
   height: fit-content;
+  --sheet-max-h: calc(100vh - 2 * var(--titlebar-h));
+  max-height: var(--sheet-max-h);
   border-radius: var(--r-28);
 }
 
-.cf-body { padding: 22px 24px 20px; }
-.cf-title { margin-bottom: 8px; font: var(--t-title); letter-spacing: var(--tr-title); }
-.cf-question { margin-bottom: 18px; font: var(--t-body); letter-spacing: var(--tr-body); line-height: 1.5; color: var(--ink-2); }
-.cf-btns { display: flex; justify-content: flex-end; gap: 10px; }
+/* The same bound as the update sheet (kit components.css): a long question scrolls, the buttons stay visible. */
+.confirm-sheet .ov-content {
+  height: auto;
+  max-height: var(--sheet-max-h);
+}
+
+.cf-body { display: flex; flex-direction: column; min-height: 0; padding: 22px 24px 20px; }
+.cf-title { flex: none; margin-bottom: 8px; font: var(--t-title); letter-spacing: var(--tr-title); }
+.cf-question { flex: 0 1 auto; min-height: 0; overflow-y: auto; margin-bottom: 18px; font: var(--t-body); letter-spacing: var(--tr-body); line-height: 1.5; color: var(--ink-2); }
+.cf-btns { flex: none; display: flex; justify-content: flex-end; gap: 10px; }

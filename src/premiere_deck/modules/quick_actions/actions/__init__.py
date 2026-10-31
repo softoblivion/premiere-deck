@@ -18,6 +18,7 @@ from premiere_deck.modules.quick_actions.actions.export_frame import ExportFrame
 from premiere_deck.modules.quick_actions.actions.export_open import ExportOpen
 from premiere_deck.modules.quick_actions.actions.label_by_bin import LabelByBin
 from premiere_deck.modules.quick_actions.actions.lock_others import LockOthers
+from premiere_deck.modules.quick_actions.actions.marker_colour import MarkerColour
 from premiere_deck.modules.quick_actions.actions.open_project_folder import OpenProjectFolder
 from premiere_deck.modules.quick_actions.actions.razor_all import RazorAll
 from premiere_deck.modules.quick_actions.actions.remove_audio_track import RemoveAudioTrack
@@ -33,7 +34,8 @@ ACTION_CLASSES = (
     AdjustmentLayer, RazorAll, DeleteEmptyTracks,
     AddVideoTrack, AddAudioTrack, RemoveVideoTrack, RemoveAudioTrack, SoloTrack, LockOthers,
     SelectSameSource, SelectOffline,
-    ScaleToFrame, Colour, LabelByBin,
+    ScaleToFrame,
+    Colour, MarkerColour, LabelByBin,
     SaveVersion, ConsolidateDuplicates, OpenProjectFolder, RevealClip,
     DuplicateSequence, Create169, Create916, CreateCustom,
     ExportOpen, ExportFrame,

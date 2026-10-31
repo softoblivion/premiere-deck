@@ -21,7 +21,8 @@ from typing import Any, Callable, Optional, Protocol, Sequence
 from premiere_deck.core.media import MediaInfo, kind_from_extension
 from premiere_deck.host import protocol as P
 from premiere_deck.premiere.model import (
-    PremiereLike, PremiereUnavailable, ProjectInfo, ProjectItem, Selection, SequenceInfo, Snapshot, TrackItem,
+    AudioTrack, LabelPalette, PremiereLike, PremiereUnavailable, ProjectInfo, ProjectItem, Selection, SequenceInfo,
+    Snapshot, TrackItem, default_label_palette,
 )
 
 Tone = str  # one of protocol.TONES
@@ -227,6 +228,11 @@ class Module:
     def input(self, local_id: str, label: str, value: str = "", **kw: Any) -> dict:
         return P.node_input(self._pid(local_id), label, value, **kw)
 
+    def swatches(self, local_id: str, label: str, value: Any, options: list, **kw: Any) -> dict:
+        """3.2 `swatches` (docs/PROTOCOL.md 6.1): one colour cell per option `{value, label, swatch}`; keywords
+        `hint`, `columns` (1 to 16), `disabled`. A click reaches `on_action(local_id, value)`."""
+        return P.node_swatches(self._pid(local_id), label, value, options, **kw)
+
     def list_(self, local_id: str, rows: list, **kw: Any) -> dict:
         return P.node_list(self._pid(local_id), rows, **kw)
 
@@ -254,6 +260,29 @@ class Module:
         sec = P.section(self.id, self.title, self.render(), status=self.section_status(), icon=self.icon)
         P.validate_tree({"type": P.T_UI, "revision": 0, "title": "", "status": None, "sections": [sec], "footer": None})
         return sec
+
+
+class ModuleThreadPremiere:
+    """The facade as seen from a job thread: every call goes through `run_on_module_thread(fn, *args, **kw)` when
+    the facade has it (docs/MODULES.md 2, threading) and waits for the Future it returns; the test double has none
+    and is called directly."""
+
+    def __init__(self, premiere: Any) -> None:
+        self._premiere = premiere
+        self._runner: Optional[Callable] = getattr(premiere, "run_on_module_thread", None)
+
+    def __getattr__(self, name: str) -> Any:
+        attr = getattr(self._premiere, name)
+        if self._runner is None or not callable(attr):
+            return attr
+        runner = self._runner
+
+        def call(*args: Any, **kw: Any) -> Any:
+            outcome = runner(attr, *args, **kw)
+            wait = getattr(outcome, "result", None)
+            return wait() if callable(wait) else outcome
+
+        return call
 
 
 # --- test doubles (docs/MODULES.md 7) ----------------------------------------------------------------------------
@@ -476,6 +505,8 @@ class FakePremiere:
         self.playhead_value = 0.0
         self.workspaces_value = ["Editing", "Premiere Deck"]
         self.version_value = "26.3.0"
+        self.label_palette_value: LabelPalette = default_label_palette()
+        self.audio_tracks_value: dict[str, list[AudioTrack]] = {}
         self.eval_results: dict[str, Any] = {}
         self.eval_errors: dict[str, BaseException] = {}
         self.relink_result = True
@@ -564,6 +595,14 @@ class FakePremiere:
         self._record("set_color_label", tuple(node_ids), label)
         for node_id in node_ids:
             self._replace(node_id, color_label=label)
+
+    def label_palette(self) -> LabelPalette:
+        self._record("label_palette")
+        return self.label_palette_value
+
+    def audio_tracks(self, sequence_id: str) -> list[AudioTrack]:
+        self._record("audio_tracks", sequence_id)
+        return list(self.audio_tracks_value.get(sequence_id, []))
 
     def active_sequence(self):
         self._record("active_sequence")

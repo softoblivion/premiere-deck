@@ -49,21 +49,24 @@ mirror bins, import exports); the Actions tab holds the visibility of each quick
 
 ## The panel
 
-The panel has two tabs, **Actions** and **Files**, a footer with the version, a scale slider and **Open host**, and
+The panel has three tabs, **Actions**, **Audio** and **Files**, a footer with the version, a scale slider and **Open host**, and
 one fixed layout: 360 x 640 px. When the panel is docked wider, the layout stays centred; when it is taller, the
 extra space goes to the bottom; when it is smaller, the panel scrolls. The layout does not reflow with the panel
 width. The dot at the top right is mint while the app is connected.
 
 **Actions tab**
 
-- Every group is one row with its code at the left edge: TIME, TRKS, SEL, CLIP, PROJ, SEQ, OUT and KEYS. Hover the
-  code for the group's name. Tiles have one size, the icon over a short code, and the last tile of a row keeps its
+- Every group is one row with its code at the left edge: TIME, TRKS, SEL, CLIP, LBL, PROJ, SEQ, OUT and KEYS. Hover
+  the code for the group's name. The tab with all nine rows is taller than 640 px: in a panel of the default size the
+  page scrolls, and a panel about 730 px high shows it whole. Tiles have one size, the icon over a short code, and the last tile of a row keeps its
   shape. Hover a tile for its full name and one line of what it does.
 - **SOLO** and **LOCK** are switches: the whole tile is the switch, and a lamp dot in its corner is lit while it is
   on.
-- A small triangle in the corner of a tile marks a choice. **CLR** shows the current label colour in its triangle;
-  the triangle (or a right click on the tile) opens the colour menu. **CUST** opens a field for the frame size with
-  **Apply** (Enter works too); the tile itself uses the stored size. Hover the triangle for the current value.
+- The **LBL** row holds the colour rows: Premiere's 16 label colours and, under them, the 8 marker colours. One click
+  on a colour applies it (see [Quick actions](#quick-actions)); a ring marks the colour the CLR and MRK tiles use.
+  The small chip beside the tiles says what a click colours now: **Clips · 3**, **Items · 2** or **No selection**.
+- A small triangle in the corner of a tile marks a choice. **CUST** opens a field for the frame size with **Apply**
+  (Enter works too); the tile itself uses the stored size. Hover the triangle for the current value.
 - **Pinned row** at the top: up to five actions of your choice, each running exactly like its tile below. An empty
   place is a dashed slot. To change the row, press the plus slot (**Edit pinned**):
   - a press on any tile below pins it, and a press on a pinned tile below unpins it;
@@ -72,6 +75,14 @@ width. The dot at the top right is mint while the app is connected.
   A sixth pin is refused with a notice. The row is kept by the app and survives a panel reinstall. A pinned action
   whose tile is not shown at the moment (its module is off, or the project is not set up) stays in the row's list
   and returns when the tile does.
+
+**Audio tab**
+
+- **TRKS** shows one switch per audio track of the active sequence (A1, A2, ...); a lit lamp means the track goes into
+  the export. Hover a track for its name and clip count; an empty track cannot be chosen.
+- **OUT** holds the export setup and the export: the mode (**SEP** separate files or **MIX** one file), the format
+  (**WAV**, **MP3** or **AIFF**), the range (**I/O** In to Out or **ALL** the entire sequence), **EXP** Export audio and
+  **DIR** Open audio folder. A press on a setup tile steps to the next option; the triangle opens the list.
 
 **Files tab**
 
@@ -130,10 +141,16 @@ SYNC = Auto copy.
 
 How a few of the actions work:
 
-- **CLR** (Colour label) has a menu of Premiere's 16 label colours, opened from the triangle in the tile's corner. A pick colours the selected timeline clips
-  through Premiere's own Edit > Label menu (the host posts the menu command; with nothing selected in the timeline
-  it colours the items selected in the Project panel, bins included) and the marker at the playhead, using the
-  nearest of Premiere's 8 marker colours. The result line says what was coloured.
+- **Label colours** (LBL row): a click on one of the 16 label colours colours the newest selection at once, and
+  **CLR** applies the last colour again. The newest selection wins: clips you selected on the timeline after your
+  last Project panel selection are coloured through Premiere's own Edit > Label menu (the app posts the menu
+  command), items selected in the Project panel after that are coloured directly, bins included. When the newest
+  selection is empty, the other one is used; with nothing selected nothing is coloured. The names and colours
+  follow Premiere's Preferences > Labels; when Premiere does not give them, Premiere's default names and colours
+  are shown.
+- **Marker colours** (LBL row): a click on one of the 8 marker colours colours the markers at the playhead: the
+  sequence markers and the markers of the selected clips; a range marker counts while the playhead is inside it.
+  **MRK** applies the last marker colour again.
 - **16:9**, **9:16** and **CUST** make a reframed copy of the active sequence (Auto Reframe) named `<name> 16x9`,
   `<name> 9x16` or `<name> <W>x<H>`; the frame size follows the ratio (a 1080x1920 sequence becomes 1920x1080 at
   16:9). **CUST** uses the stored size; the triangle in its corner opens a field for another one, such as
@@ -145,6 +162,15 @@ How a few of the actions work:
   scripting has no bezier handles), so a long pair adds many keyframes.
 - **SOLO** and **LOCK** are switches (the whole tile, with a lamp dot): on mutes every other audio track (or locks every track without a selected
   clip); off restores the earlier states.
+- **Audio export** (Audio tab): choose the tracks and press **EXP**. The files are rendered by Premiere into
+  `Exports\Audio` in the project folder (the exports folder of the layout when the project is set up), named
+  `<sequence> - A2 Dialogue.wav` for separate files or `<sequence> - Mix A1-A3.wav` for one file; an existing file is
+  never overwritten, a new one gets ` (2)`. For each file the app mutes the other tracks, exports, and restores
+  every track's mute state, also when the export fails; when Premiere does not confirm the restored states, the
+  result is a warning that asks to check the track mutes. In to Out uses the sequence's In and Out marks when both
+  are set, otherwise the whole sequence. Premiere is busy while a file renders; **Stop** ends the export after the
+  current file. A track soloed in Premiere silences the others in an export; the result warns when a file came
+  out silent.
 - The **Actions** tab of the window holds one switch per action for what the panel shows. Any shown tile can be
   pinned to the panel's top row ([The panel](#the-panel)).
 
@@ -153,7 +179,8 @@ How a few of the actions work:
 | Timeline (TIME) | ADJ = Adjustment layer · RZR = Razor all tracks · EMPT = Delete empty tracks |
 | Tracks (TRKS) | +V = Add video track · +A = Add audio track · −V = Remove video track · −A = Remove audio track · SOLO = Solo audio track · LOCK = Lock other tracks |
 | Selection (SEL) | SRC = Select same source · OFF = Select offline clips |
-| Clips (CLIP) | FIT = Set to frame size · CLR = Colour label · BIN = Colour labels by bin |
+| Clips (CLIP) | FIT = Set to frame size |
+| Labels (LBL) | CLR = Colour label · MRK = Marker colour · BIN = Colour labels by bin |
 | Project (PROJ) | SAVE = Save version · CONS = Consolidate duplicates · DIR = Open project folder · REV = Reveal clip file |
 | Sequence (SEQ) | DUP = Duplicate sequence · 16:9 = Reframe 16:9 · 9:16 = Reframe 9:16 · CUST = Reframe custom size |
 | Export (OUT) | EXP = Export · FRM = Export frame |

@@ -25,6 +25,7 @@
     var EVENT_BINDINGS = {
         "project.items_added": ["onItemsAddedToProjectSuccess", "onItemAddedToProjectSuccess"],
         "project.changed": ["onProjectChanged"],
+        "project.selection_changed": ["onSourceClipSelectedInProjectPanel"],
         "sequence.activated": ["onSequenceActivated"],
         "sequence.structure_changed": ["onActiveSequenceChanged", "onActiveSequenceTrackItemAdded",
             "onActiveSequenceTrackItemRemoved", "onActiveSequenceStructureChanged"],

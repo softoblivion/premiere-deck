@@ -64,6 +64,7 @@ EVENTS = (
     "project.closed",
     "project.items_added",
     "project.changed",
+    "project.selection_changed",
     "sequence.activated",
     "sequence.structure_changed",
     "sequence.selection_changed",
@@ -352,6 +353,28 @@ def node_progress(value: Optional[float], label: str = "", *, detail: Optional[s
     return node
 
 
+SWATCH_COLUMNS_MAX = 16  # most cells of one `swatches` row (docs/PROTOCOL.md 6.1)
+
+
+def node_swatches(id: str, label: str, value: Any, options: list, *, hint: Optional[str] = None, columns: int = 8,
+                  disabled: bool = False) -> dict:
+    """3.2 `swatches` (docs/PROTOCOL.md 6.1): a row of colour cells, one per option `{value, label, swatch}` (swatch
+    required, a CSS hex colour); a click sends `action` with this `id` and the option's `value`, like a `select`.
+    `value` is the current option (drawn with a ring) or None; `columns` 1 to 16 cells per row."""
+    node = _strip({"kind": "swatches", "id": id, "label": label, "hint": hint, "value": value,
+                   "options": [_swatch_option(o) for o in options], "columns": columns, "disabled": disabled})
+    if value is None:
+        node["value"] = None
+    _validate_swatches(node)
+    return node
+
+
+def _swatch_option(o: dict) -> dict:
+    if not isinstance(o, dict) or "value" not in o:
+        raise ProtocolError("a swatches option is {value, label, swatch}")
+    return {"value": o["value"], "label": str(o.get("label", "")), "swatch": o.get("swatch")}
+
+
 def node_list(id: str, rows: list, *, empty: str = "") -> dict:
     return {"kind": "list", "id": id, "rows": rows, "empty": empty}
 
@@ -410,8 +433,9 @@ def status(text: str, tone: str = "neutral") -> dict:
 
 # --- validation ------------------------------------------------------------------------------------------------
 
-_NODE_KINDS = {"button", "switch", "toggle", "select", "input", "text", "progress", "list", "row", "group", "divider"}
-_INTERACTIVE = {"button", "switch", "toggle", "select", "input", "list"}
+_NODE_KINDS = {"button", "switch", "toggle", "select", "input", "text", "progress", "list", "row", "group", "divider",
+               "swatches"}
+_INTERACTIVE = {"button", "switch", "toggle", "select", "input", "list", "swatches"}
 
 
 def validate_tree(message: dict) -> None:
@@ -480,6 +504,8 @@ def _validate_nodes(nodes: Any, seen: set) -> None:
             _validate_button(node, seen)
         if kind == "switch":
             _validate_switch(node)
+        if kind == "swatches":
+            _validate_swatches(node)
         if kind == "text" and not isinstance(node.get("chip", False), bool):
             raise ProtocolError("text chip is a bool")
         if kind == "progress":
@@ -585,6 +611,35 @@ def _validate_switch(node: dict) -> None:
     for flag in ("disabled", "busy"):
         if not isinstance(node.get(flag, False), bool):
             raise ProtocolError(f"switch {flag} is a bool")
+
+
+def _validate_swatches(node: dict) -> None:
+    """3.2 `swatches` (docs/PROTOCOL.md 6.1): options of `{value, label, swatch}` with unique values and a #rgb or
+    #rrggbb swatch each, `columns` a whole number from 1 to 16, `value` null or one of the option values."""
+    options = node.get("options")
+    if not isinstance(options, list) or not options:
+        raise ProtocolError("swatches need options")
+    values = []
+    for o in options:
+        if not isinstance(o, dict) or "value" not in o or not isinstance(o.get("label"), str):
+            raise ProtocolError("a swatches option is {value, label, swatch}")
+        swatch = o.get("swatch")
+        if not isinstance(swatch, str) or not SWATCH.match(swatch):
+            raise ProtocolError(f"swatches option swatch {swatch!r} is not a #rgb or #rrggbb colour")
+        values.append(o["value"])
+    if len(set(map(str, values))) != len(values):
+        raise ProtocolError("swatches option values repeat")
+    columns = node.get("columns", 8)
+    if isinstance(columns, bool) or not isinstance(columns, int) or not 1 <= columns <= SWATCH_COLUMNS_MAX:
+        raise ProtocolError(f"swatches columns is a whole number from 1 to {SWATCH_COLUMNS_MAX}")
+    value = node.get("value")
+    if value is not None and value not in values:
+        raise ProtocolError(f"swatches value {value!r} is not an option")
+    for field_name in ("label", "hint"):
+        if node.get(field_name) is not None and not isinstance(node[field_name], str):
+            raise ProtocolError(f"swatches {field_name} is a string or null")
+    if not isinstance(node.get("disabled", False), bool):
+        raise ProtocolError("swatches disabled is a bool")
 
 
 def _check_auto(value: Any) -> None:

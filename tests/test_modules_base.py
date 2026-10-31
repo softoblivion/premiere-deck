@@ -136,6 +136,21 @@ class TileHelpers(unittest.TestCase):
         with self.assertRaises(P.ProtocolError):
             self.module.auto("a", "A", "on")
 
+    def test_3_2_swatches_helper_adds_the_module_prefix(self):
+        options = [{"value": "Rose", "label": "Rose", "swatch": "#e00355"}]
+        node = self.module.swatches("colour.label", "Label colour", "Rose", options, hint="Labels it.", columns=16)
+        self.assertEqual((node["kind"], node["id"], node["columns"], node["hint"]),
+                         ("swatches", "tiles.colour.label", 16, "Labels it."))
+        self.assertEqual(self.module.swatches("tiles.m", "M", None, options)["id"], "tiles.m", "prefixing is idempotent")
+        with self.assertRaises(P.ProtocolError):
+            self.module.swatches("m", "M", None, [{"value": "a", "label": "A"}])
+
+    def test_fake_premiere_label_palette_and_audio_tracks(self):
+        premiere = FakeHost().premiere
+        self.assertEqual(premiere.label_palette().source, "defaults")
+        self.assertEqual(premiere.audio_tracks("s1"), [])
+        self.assertEqual([name for name, _, _ in premiere.calls], ["label_palette", "audio_tracks"])
+
     def test_module_without_icon_has_no_icon_field(self):
         self.assertNotIn("icon", Demo(FakeHost().context()).section())
 

@@ -25,8 +25,8 @@ from typing import Any, Callable, Optional, Sequence
 
 from premiere_deck.host import protocol
 from premiere_deck.premiere.model import (
-    PremiereError, PremiereUnavailable, ProjectInfo, ProjectItem, Selection, SequenceInfo, Snapshot,
-    TrackItem, item_from_json,
+    AudioTrack, LabelPalette, PremiereError, PremiereUnavailable, ProjectInfo, ProjectItem, Selection, SequenceInfo,
+    Snapshot, TrackItem, audio_track_from_json, item_from_json, label_palette_from_json,
 )
 
 log = logging.getLogger("premiere.api")
@@ -596,6 +596,18 @@ class PremiereApi:
 
     def premiere_version(self) -> str:
         return str(self._run("version"))
+
+    def label_palette(self) -> LabelPalette:
+        """Premiere's 16 label names and colours from its preferences (`app.properties`), each missing or bad value
+        replaced by the default (docs/PREMIERE_API.md 7.19)."""
+        return label_palette_from_json(self._run("label_palette"))
+
+    def audio_tracks(self, sequence_id: str) -> list[AudioTrack]:
+        """The audio tracks of a sequence in track order; a sequence that is gone raises PremiereError."""
+        data = self._run("audio_tracks", {"sequence_id": sequence_id}) or {}
+        if not data.get("found"):
+            raise PremiereError("deck: The sequence is no longer in the project.")
+        return [audio_track_from_json(track) for track in data.get("tracks", []) if isinstance(track, dict)]
 
 
 __all__ = ["PremiereApi", "PremiereError", "PremiereUnavailable", "project_info_from_path", "same_path",

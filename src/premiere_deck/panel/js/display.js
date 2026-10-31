@@ -34,6 +34,7 @@
     var SCALE_DEFAULT = 100;
     var SCALE_HIDPI = 125;        // the first start on a screen scaled 125 % or more
     var PINS_MAX = 5;             // the pinned row when the tree names no `pins.max`
+    var LANE_COLS = 6;            // tiles per lane row (the stage is fixed, PANEL.md 3)
     var PINS_LINE = "~pins";      // the result line of the pinned row
     var KEY_GROUP = "deck.group.";
     var KEY_TAB = "deck.tab";
@@ -404,6 +405,36 @@
         ]);
     }
 
+    /*
+     * A `swatches` node (PROTOCOL 6.1, 3.2): one colour cell per option, `columns` cells per row; the current value
+     * carries a ring (a pressed cell shows it at once from `local.pending`). A click sends `action {id, value}` like a
+     * `select`. Each cell's tooltip is the option's label over the node's hint. Inside a lane the cells sit on the
+     * lane's plate under its tiles; elsewhere they take the full width.
+     */
+    function swatchesNode(node, ctx, key) {
+        var disabled = !!node.disabled || ctx.offline;
+        var pending = ctx.local.pending || {};
+        var current = pending.hasOwnProperty(node.id) ? pending[node.id] : node.value;
+        var columns = Math.max(1, Math.min(16, Math.floor(Number(node.columns) || 8)));
+        var cells = [];
+        var options = node.options || [];
+        for (var i = 0; i < options.length; i++) {
+            var option = options[i] || {};
+            var colour = text(option.swatch);
+            if (!SWATCH.test(colour)) {
+                continue;   // the display draws only #rgb / #rrggbb values
+            }
+            var value = text(option.value);
+            var on = current !== null && current !== undefined && String(current) === value;
+            var attrs = {"class": cls("deck-swatch", on && "is-on"), "data-swatch": node.id, "data-value": value,
+                "aria-label": text(option.label), "aria-pressed": on ? "true" : "false", style: "--sw: " + colour};
+            tip(attrs, key + "|" + value, option.label, node.hint);
+            cells.push(h("button", "s:" + value, attrs, {disabled: disabled}, ""));
+        }
+        return h("div", key, {"class": cls("deck-node deck-swatches", disabled && "is-disabled"), role: "group",
+            "aria-label": text(node.label), style: "--sw-cols: " + columns}, null, cells);
+    }
+
     // The thin strength bar under a list row's subtitle (PROTOCOL 6.1 `list` row `bar`, 0..1).
     function barNode(value) {
         var pct = Math.max(0, Math.min(1, value)) * 100;
@@ -492,18 +523,25 @@
     }
 
     // Tiles and the other nodes: a lane or a block of row tiles holds its tiles in one fixed grid, any other node of
-    // the group follows at full width.
-    function splitTiles(items) {
+    // the group follows at full width. Only a lane (`inLane`) takes swatches onto its plate and chips into its tile
+    // row; elsewhere they follow in order like any other node.
+    function splitTiles(items, inLane) {
         var tiles = [];
         var rest = [];
+        var plate = [];
+        var aside = [];
         for (var i = 0; i < items.length; i++) {
             if (items[i].btn) {
                 tiles.push(items[i]);
+            } else if (inLane && items[i].plate) {
+                plate.push(items[i]);
+            } else if (inLane && items[i].aside) {
+                aside.push(items[i]);
             } else {
                 rest.push(items[i]);
             }
         }
-        return {tiles: tiles, rest: rest};
+        return {tiles: tiles, rest: rest, plate: plate, aside: aside};
     }
 
     // The tile groups of a section (lanes and blocks of row tiles, also inside a row): their result lines go to the tab's notice slot. A lane's prefix is its code; a block without a title has none.
@@ -581,13 +619,21 @@
         var title = text(node.title);
         if (node.tiles) {
             var zone = title ? "lane" : "row";
-            var parts = splitTiles(renderNodes(node.items, ctx, zone));
-            var grid = h("div", "tiles", {"class": zone === "lane" ? "deck-lane-tiles" : "deck-rowtiles"}, null, parts.tiles);
+            var parts = splitTiles(renderNodes(node.items, ctx, zone), zone === "lane");
+            var cells = parts.tiles.slice();
+            if (parts.aside.length) {
+                // The chips of a lane (the Labels target) share its last tile row: they take the cells the tiles leave.
+                var free = LANE_COLS - (parts.tiles.length % LANE_COLS);
+                cells.push(h("div", "aside", {"class": "deck-lane-aside", style: "grid-column: span " + free}, null, parts.aside));
+            }
+            var grid = h("div", "tiles", {"class": zone === "lane" ? "deck-lane-tiles" : "deck-rowtiles"}, null, cells);
             if (zone === "lane") {
+                // Swatches sit on the plate of the lane under its tiles (PANEL.md 2); a lane without them keeps one row.
+                var lane = parts.plate.length ? h("div", "body", {"class": "deck-lane-body"}, null, [grid].concat(parts.plate)) : grid;
                 return h("section", key, {"class": "deck-node deck-group deck-lane-wrap", "data-lane": gid}, null, [
                     h("div", "lane", {"class": "deck-lane"}, null, [
                         h("span", "code", tip({"class": "deck-lane-code"}, "lane:" + gid, title, ""), null, laneCode(node)),
-                        grid
+                        lane
                     ])
                 ].concat(parts.rest));
             }
@@ -686,6 +732,11 @@
                 break;
             case "text":
                 vnode = textNode(node, key);
+                vnode.aside = !!node.chip;
+                break;
+            case "swatches":
+                vnode = swatchesNode(node, ctx, key);
+                vnode.plate = true;
                 break;
             case "progress":
                 vnode = progressNode(node, ctx, key);
@@ -2158,6 +2209,17 @@
             }
             if ((el = closest(target, "data-unpin", box))) {
                 self.unpin(el.getAttribute("data-unpin"));
+                return;
+            }
+            if ((el = closest(target, "data-swatch", box))) {
+                // A colour cell: no pin target in edit mode; the ring moves at once, the host's next tree is the truth.
+                if (!self.local.editing && !el.disabled && !self.isOffline()) {
+                    var swatchId = el.getAttribute("data-swatch");
+                    var picked = el.getAttribute("data-value");
+                    self.local.pending[swatchId] = picked;
+                    self.render();
+                    self.sendAction(swatchId, picked);
+                }
                 return;
             }
             // Edit mode: a press on a tile below pins or unpins it; the pinned tiles only answer their cross.

@@ -1,48 +1,31 @@
 """Quick actions module (docs/QUICK_ACTIONS.md): renders the actions as collapsible tile groups, routes clicks, runs
 long actions as jobs with a busy tile, reports every press through `ctx.ui.result`, and keeps only the choices of
-the tile menus and prompts, the visibility setting and the state of the two switch actions (solo, lock)."""
+the tile menus, palettes and prompts, the visibility setting, the state of the two switch actions (solo, lock), and
+for the Labels lane the label palette and which selection came last (section 1.2)."""
 
 from __future__ import annotations
 
 import dataclasses
 import threading
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from premiere_deck.modules.base import ActionResult, Module, ModuleContext
+from premiere_deck.modules.base import ModuleThreadPremiere as _ModuleThreadPremiere
 from premiere_deck.modules.quick_actions.action import (
     GROUP_CODES, GROUPS, Action, ActionAbort, Menu, Outcome, error_sentence,
 )
 from premiere_deck.modules.quick_actions.actions import ACTION_CLASSES
-from premiere_deck.premiere.model import PremiereError, PremiereUnavailable
+from premiere_deck.modules.quick_actions.results import count
+from premiere_deck.premiere.model import LabelPalette, PremiereError, PremiereUnavailable, default_label_palette
 
 HIDDEN_KEY = "hidden"
 CHOICES_KEY = "choices"
 HOST_PREFIX = "host:"
 NOT_CONNECTED = "Premiere Pro is not connected"
 INTERNAL_ERROR = "An internal error occurred. Details are in the log."
-
-
-class _ModuleThreadPremiere:
-    """The facade as seen from a job thread: every call goes through `run_on_module_thread(fn, *args, **kw)` when
-    the facade has it (docs/MODULES.md 2, threading) and waits for the Future it returns; the test double has none
-    and is called directly."""
-
-    def __init__(self, premiere: Any) -> None:
-        self._premiere = premiere
-        self._runner: Optional[Callable] = getattr(premiere, "run_on_module_thread", None)
-
-    def __getattr__(self, name: str) -> Any:
-        attr = getattr(self._premiere, name)
-        if self._runner is None or not callable(attr):
-            return attr
-        runner = self._runner
-
-        def call(*args: Any, **kw: Any) -> Any:
-            outcome = runner(attr, *args, **kw)
-            wait = getattr(outcome, "result", None)
-            return wait() if callable(wait) else outcome
-
-        return call
+CLIPS = "clips"
+ITEMS = "items"
+TARGET_HINT = "A colour press labels the newest selection: timeline clips or Project panel items."
 
 
 class QuickActionsModule(Module):
@@ -51,7 +34,9 @@ class QuickActionsModule(Module):
     icon = "actions"
     description = "Buttons for routine timeline and project operations."
     order = 5
-    events = ()
+    # Labels (section 1.2): the selection events name the newest selection; the others refresh the palette and the
+    # target counts.
+    events = ("project.selection_changed", "sequence.selection_changed", "sequence.activated", "panel.opened")
     requires = ()
 
     def __init__(self, ctx: ModuleContext) -> None:
@@ -64,6 +49,12 @@ class QuickActionsModule(Module):
         self.toggles: dict[str, dict] = {}
         self._running: dict[str, Any] = {}
         self._local = threading.local()
+        # Labels lane (section 1.2): the palette shown and used, which selection came last, and the selection sizes
+        # the latest events or scripts reported (None while unknown).
+        self.palette: LabelPalette = default_label_palette()
+        self._palette_source: Optional[str] = None
+        self.last_target: Optional[str] = None
+        self.counts: dict[str, Optional[int]] = {CLIPS: None, ITEMS: None}
 
     # --- lifecycle -------------------------------------------------------------------------------------------
 
@@ -71,9 +62,103 @@ class QuickActionsModule(Module):
         self._cancel_jobs()
         self.toggles.clear()
 
+    def project_opened(self, project) -> None:
+        self._forget_selection()
+        self.ctx.post(self._refresh_labels)
+
     def project_closed(self) -> None:
         self._cancel_jobs()
         self.toggles.clear()
+        self._forget_selection()
+
+    def on_event(self, name: str, data: Any) -> None:
+        size = data.get("count") if isinstance(data, dict) else None
+        size = size if isinstance(size, int) and not isinstance(size, bool) and size >= 0 else None
+        if name == "sequence.selection_changed":
+            self._note(CLIPS, size)
+        elif name == "project.selection_changed":
+            self._note(ITEMS, size)
+        elif name == "sequence.activated":
+            self.counts[CLIPS] = None
+            self.ctx.post(self._refresh_labels)
+        elif name == "panel.opened":
+            self.ctx.post(self._refresh_labels)
+        self.ctx.ui.invalidate()
+
+    # --- labels (section 1.2) --------------------------------------------------------------------------------
+
+    def _forget_selection(self) -> None:
+        self.last_target = None
+        self.counts = {CLIPS: None, ITEMS: None}
+
+    def _note(self, target: str, size: Optional[int]) -> None:
+        """A selection event: its size, and when something is selected, this selection is the newest."""
+        self.counts[target] = size
+        if size:
+            self.last_target = target
+
+    def preferred_target(self) -> str:
+        """The selection a colour press labels first: the newest one, timeline clips before any event came."""
+        return self.last_target or CLIPS
+
+    def predicted_target(self) -> Optional[str]:
+        """What a colour press would label now: "clips", "items", "" (nothing selected) or None (not known yet)."""
+        first = self.preferred_target()
+        other = ITEMS if first == CLIPS else CLIPS
+        for target in (first, other):
+            if self.counts[target]:
+                return target
+        if self.counts[first] is None or self.counts[other] is None:
+            return None
+        return ""
+
+    def note_counts(self, result: Any) -> None:
+        """The selection sizes a colour script reported (`clips`, `items` + `bins`)."""
+        if isinstance(result, dict):
+            self.counts[CLIPS] = count(result, "clips")
+            self.counts[ITEMS] = count(result, "items") + count(result, "bins")
+
+    def target_chip(self) -> dict:
+        """The small target indicator of the Labels lane: what a colour press labels now."""
+        target = self.predicted_target()
+        if target == CLIPS:
+            chip = self.text(f"Clips · {self.counts[CLIPS]}", tone="accent", chip=True)
+        elif target == ITEMS:
+            chip = self.text(f"Items · {self.counts[ITEMS]}", tone="accent", chip=True)
+        elif target == "":
+            chip = self.text("No selection", chip=True)
+        else:
+            chip = self.text("Newest selection", chip=True)
+        chip["hint"] = TARGET_HINT
+        return chip
+
+    def refresh_palette(self, premiere: Any) -> None:
+        """Reads Premiere's label names and colours; keeps the current palette when Premiere cannot answer. The
+        source ("premiere", "partial", "defaults") is logged when it changes."""
+        try:
+            palette = premiere.label_palette()
+        except PremiereError as exc:
+            self.log.debug("label palette not read: %s", exc.message)
+            return
+        if not isinstance(palette, LabelPalette):
+            return
+        self.palette = palette
+        if palette.source != self._palette_source:
+            self._palette_source = palette.source
+            live = sum(1 for label in palette.labels if label.live)
+            self.log.info("label palette source: %s (%d of 16 labels read from Premiere)", palette.source, live)
+
+    def _refresh_labels(self) -> None:
+        """On the module thread: the palette and the current selection sizes (the target indicator)."""
+        if "colour" in self.hidden_ids():
+            return
+        self.refresh_palette(self.ctx.premiere)
+        try:
+            action = self.actions["colour"]
+            self.note_counts(action.eval(self.ctx, {"label": 0, "target": self.preferred_target(), "mode": "count"}))
+        except PremiereError as exc:
+            self.log.debug("label target not read: %s", exc.message)
+        self.ctx.ui.invalidate()
 
     def _cancel_jobs(self) -> None:
         for job in list(self._running.values()):
@@ -240,6 +325,10 @@ class QuickActionsModule(Module):
             members = [action for action in visible if action.group == group]
             if members:
                 items = [self._tile(action) for action in members]
+                for action in members:
+                    items.extend(self._palette(action))
+                for action in members:
+                    items.extend(action.extras(self))
                 nodes.append(self.group(group, items, id=group.lower(), tiles=True, collapsible=True,
                                         short=GROUP_CODES[group]))
         return nodes
@@ -250,9 +339,20 @@ class QuickActionsModule(Module):
                                hint=action.hint, busy=action.id in self._running)
         return self._button(action)
 
+    def _palette(self, action: Action) -> list:
+        """The `swatches` row of an action whose menu is a palette (3.2), after the tiles of its lane."""
+        menu = action.menu(self)
+        if menu is None or not menu.palette:
+            return []
+        options = [dict({"value": value, "label": label}, **menu.swatch(value)) for value, label in menu.options]
+        return [self.swatches(f"{action.id}.{menu.name}", menu.label, self.choice(action, menu.name), options,
+                              hint=menu.hint or None, columns=menu.columns)]
+
     def _button(self, action: Action) -> dict:
         state = action.button(self)
         menu = action.menu(self)
+        if menu is not None and menu.palette:
+            menu = None  # drawn as the lane's swatches row, not as a corner menu
         kw: dict = {}
         spec = action.field(self)
         if spec is not None:

@@ -1670,7 +1670,8 @@ test("icons: every symbol the host names exists in the sprite", function () {
     });
     // The icons the modules name: icon= / icon = in their sources, plus the section icons.
     var src = path.join(ROOT, "src", "premiere_deck", "modules");
-    var files = [path.join(src, "files", "module.py"), path.join(src, "quick_actions", "module.py")];
+    var files = [path.join(src, "files", "module.py"), path.join(src, "quick_actions", "module.py"),
+        path.join(src, "audio_export", "module.py")];
     fs.readdirSync(path.join(src, "quick_actions", "actions")).forEach(function (name) {
         if (/\.py$/.test(name)) {
             files.push(path.join(src, "quick_actions", "actions", name));
@@ -2641,6 +2642,115 @@ test("host.jsx compiles and defines the helpers", function () {
         assert.ok(host.indexOf("function " + name + "(") >= 0, name);
     });
     assert.ok(!/\b(alert|confirm|prompt)\(|\$\.writeln/.test(host.replace(/^\/\/.*$/gm, "")));
+});
+
+// --- 3.2: swatches, the Labels lane, the Project panel selection event -------------------------------------------
+
+function tree32() {
+    var tree = tree30();
+    tree.sections[0].items.splice(3, 0, {kind: "group", id: "actions.labels", title: "Labels", short: "LBL", tiles: true, items: [
+        {kind: "button", id: "actions.label", label: "Colour label", short: "CLR", icon: "colour", hint: "Labels the target."},
+        {kind: "button", id: "actions.marker_colour", label: "Marker colour", short: "MRK", icon: "marker-colour"},
+        {kind: "swatches", id: "actions.label.choice", label: "Label colour", hint: "Labels it with this colour.", value: "rose", columns: 16,
+            options: [{value: "violet", label: "Violet", swatch: "#500de0"}, {value: "rose", label: "Rose", swatch: "#e00355"},
+                {value: "bad", label: "Bad", swatch: "url(x)"}]},
+        {kind: "swatches", id: "actions.marker_colour.colour", label: "Marker colour", value: null, columns: 8,
+            options: [{value: "Green", label: "Green", swatch: "#4fc35a"}, {value: "Cyan", label: "Cyan", swatch: "#38c9e0"}]},
+        {kind: "text", text: "Clips · 3", tone: "accent", chip: true, hint: "A colour press labels the newest selection."}
+    ]});
+    return tree;
+}
+
+test("3.2 swatches: cells on the lane plate under the tiles, the chip in the free cells of the tile row", function () {
+    var v = display.renderTree(tree32(), local({tab: "actions"}));
+    var wrap = findV(v, function (n) { return n.a["data-lane"] === "actions.labels"; })[0];
+    var lane = byClass(wrap, "deck-lane")[0];
+    var body = byClass(lane, "deck-lane-body")[0];
+    assert.deepStrictEqual(body.c.map(function (c) { return c.a["class"].split(" ")[0]; }), ["deck-lane-tiles", "deck-node", "deck-node"]);
+    assert.strictEqual(wrap.c.length, 1, "nothing follows the plate");
+    var grid = byClass(body, "deck-lane-tiles")[0];
+    var aside = byClass(grid, "deck-lane-aside")[0];
+    assert.strictEqual(aside.a.style, "grid-column: span 4", "two tiles leave four cells");
+    assert.strictEqual(textOf(byClass(aside, "deck-chip")[0]), "Clips · 3");
+    var rows = byClass(body, "deck-swatches");
+    assert.deepStrictEqual(rows.map(function (r) { return r.a.style; }), ["--sw-cols: 16", "--sw-cols: 8"]);
+    var cells = byClass(rows[0], "deck-swatch");
+    assert.deepStrictEqual(cells.map(function (c) { return c.a["data-value"]; }), ["violet", "rose"], "an unsafe swatch is dropped");
+    assert.strictEqual(cells[1].a.style, "--sw: #e00355");
+    assert.ok(hasClass(cells[1], "is-on") && !hasClass(cells[0], "is-on"), "the current value has the ring");
+    assert.strictEqual(cells[1].a["aria-pressed"], "true");
+    assert.deepStrictEqual([cells[0].a["data-tip-label"], cells[0].a["data-tip-hint"]], ["Violet", "Labels it with this colour."]);
+    assert.strictEqual(cells[0].a["data-swatch"], "actions.label.choice");
+    assert.ok(!cells[0].a.title, "no title attribute");
+    assert.strictEqual(byClass(rows[1], "is-on").length, 0, "no value, no ring");
+    // A lane without swatches keeps its one-row shape.
+    var plain = findV(v, function (n) { return n.a["data-lane"] === "actions.timeline"; })[0];
+    assert.deepStrictEqual(laneShape(plain).children, ["deck-lane"]);
+    assert.strictEqual(byClass(plain, "deck-lane-body").length, 0);
+});
+
+test("3.2 swatches outside a lane take the full width in order; chips outside a lane stay where they are", function () {
+    var tree = tree32();
+    tree.sections.push({id: "misc", title: "Misc", status: null, items: [
+        {kind: "group", id: "misc.g", title: "Colours", items: [
+            {kind: "text", text: "Before"},
+            {kind: "swatches", id: "misc.sw", label: "C", value: "a", options: [{value: "a", label: "A", swatch: "#abc"}]},
+            {kind: "text", text: "After", chip: true}
+        ]}
+    ]});
+    var v = display.renderTree(tree, local({tab: "misc"}));
+    var groupBody = byClass(v, "deck-g-body")[0];
+    assert.deepStrictEqual(groupBody.c.map(function (c) { return c.a["class"].split(" ")[1]; }), ["deck-text", "deck-swatches", "deck-chip"]);
+    // A block of row tiles (Files) keeps its chips and other nodes in order after the tiles.
+    var files = display.renderTree(tree, local({tab: "files"}));
+    assert.strictEqual(byClass(files, "deck-lane-aside").length, 0);
+});
+
+test("3.2 swatches: a click sends {id, value} and moves the ring at once; edit mode, offline and disabled send nothing", function () {
+    var ctx = makeDisplay({storage: {"deck.tab": "actions"}});
+    ctx.d.onState("connected", {});
+    ctx.d.onMessage(tree32());
+    clickOn(ctx, function (n) { return n.attributes["data-swatch"] === "actions.label.choice" && n.attributes["data-value"] === "violet"; });
+    assert.deepStrictEqual(ctx.sent, [{type: "action", id: "actions.label.choice", revision: 7, value: "violet"}]);
+    var violet = find(ctx.container, function (n) { return n.attributes["data-swatch"] && n.attributes["data-value"] === "violet"; });
+    assert.ok(/is-on/.test(violet.className), "the ring moved before the host answered");
+    ctx.d.onMessage(tree32());
+    violet = find(ctx.container, function (n) { return n.attributes["data-swatch"] && n.attributes["data-value"] === "violet"; });
+    assert.ok(!/is-on/.test(violet.className), "the host's tree is the truth");
+    ctx.d.setEditing(true);
+    clickOn(ctx, function (n) { return n.attributes["data-swatch"] && n.attributes["data-value"] === "Cyan"; });
+    assert.strictEqual(ctx.sent.length, 1, "no pin target, no action in edit mode");
+    ctx.d.setEditing(false);
+    var tree = tree32();
+    tree.sections[0].items[3].items[3].disabled = true;
+    ctx.d.onMessage(tree);
+    clickOn(ctx, function (n) { return n.attributes["data-swatch"] && n.attributes["data-value"] === "Cyan"; });
+    assert.strictEqual(ctx.sent.length, 1, "a disabled row sends nothing");
+    ctx.d.onState("connecting", {});
+    var cell = find(ctx.container, function (n) { return n.attributes["data-swatch"] && n.attributes["data-value"] === "rose"; });
+    assert.ok(cell.disabled || /is-disabled/.test(cell.parentNode.className), "offline cells are disabled");
+    fire(ctx.container, "click", {target: cell});
+    assert.strictEqual(ctx.sent.length, 1);
+});
+
+test("3.2 the Project panel selection maps to project.selection_changed with the selection size", function () {
+    assert.strictEqual(agent.eventForBinding("onSourceClipSelectedInProjectPanel"), "project.selection_changed");
+    assert.deepStrictEqual(agent.bindingsFor(["project.selection_changed"]), ["onSourceClipSelectedInProjectPanel"]);
+    var host = fs.readFileSync(path.join(PANEL, "host.jsx"), "utf8");
+    // eslint-disable-next-line no-new-func
+    var data = new Function("app", host + "\nreturn __deckBindingData;");
+    var picked = [{}, {}, {}];
+    assert.deepStrictEqual(data({getCurrentProjectViewSelection: function () { return picked; }})("onSourceClipSelectedInProjectPanel"), {count: 3});
+    assert.deepStrictEqual(data({getCurrentProjectViewSelection: function () { throw new Error("x"); }})("onSourceClipSelectedInProjectPanel"), {count: 0});
+    assert.deepStrictEqual(data({})("onSourceClipSelectedInProjectPanel"), {count: 0});
+});
+
+test("3.2 swatch styles: tokens only, a ring for the current cell, the lane plate", function () {
+    var css = panelCss();
+    assert.ok(/background: var\(--sw, var\(--fill-2\)\)/.test(cssRule(css, ".deck-swatch")));
+    assert.ok(/var\(--ink-1\)/.test(cssRule(css, ".deck-swatch.is-on")));
+    assert.ok(/repeat\(var\(--sw-cols\)/.test(cssRule(css, ".deck-swatches")));
+    assert.ok(/flex-direction: column/.test(cssRule(css, ".deck-lane-body")));
 });
 
 // --- runner ---------------------------------------------------------------------------------------------------

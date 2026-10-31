@@ -17,6 +17,14 @@ COLOR_LABELS = (
     "Purple", "Blue", "Teal", "Magenta", "Tan", "Green", "Brown", "Yellow",
 )
 
+# Premiere's default label colours (`BE.Prefs.LabelColors.<n>` of the 26.0 prefs file, decoded from the Windows
+# COLORREF 0x00BBGGRR), in label order; the fallback of `label_palette()` (docs/PREMIERE_API.md 7.19).
+DEFAULT_LABEL_RGB = (
+    "#3e0aae", "#004b67", "#2a5507", "#751187", "#05555b", "#3d4a00", "#8c0235", "#893a04",
+    "#6100b7", "#122d9a", "#014e45", "#840d58", "#6f5a45", "#0d5d27", "#5d3b06", "#6f6619",
+)
+LABEL_NAME_MAX = 40
+
 KIND_BIN = "bin"
 KIND_CLIP = "clip"
 KIND_SEQUENCE = "sequence"
@@ -99,6 +107,42 @@ class TrackItem:
 
 
 @dataclass(frozen=True)
+class LabelColour:
+    """One of Premiere's 16 label colours: `name` and `rgb` ("#rrggbb", the stored colour) as Premiere's preferences
+    hold them, or the defaults; `live` is True when both came from Premiere."""
+
+    index: int
+    name: str
+    rgb: str
+    live: bool = False
+
+
+@dataclass(frozen=True)
+class LabelPalette:
+    """The 16 label colours in label order; `source` is "premiere" (all read live), "partial" or "defaults"."""
+
+    labels: tuple[LabelColour, ...]
+    source: str
+
+    def name(self, index: int) -> str:
+        return self.labels[index].name
+
+
+@dataclass(frozen=True)
+class AudioTrack:
+    """An audio track of a sequence (docs/PREMIERE_API.md 2 `audio_tracks`): `index` 0-based (A1 = 0)."""
+
+    index: int
+    name: str
+    muted: bool
+    clip_count: int
+
+    @property
+    def code(self) -> str:
+        return f"A{self.index + 1}"
+
+
+@dataclass(frozen=True)
 class Selection:
     sequence_id: str
     items: tuple[TrackItem, ...] = ()
@@ -138,6 +182,8 @@ class PremiereLike(Protocol):
     def rename_item(self, node_id: str, name: str) -> None: ...
     def remove_items(self, node_ids: Sequence[str]) -> int: ...
     def set_color_label(self, node_ids: Sequence[str], label: int) -> None: ...
+    def label_palette(self) -> LabelPalette: ...
+    def audio_tracks(self, sequence_id: str) -> list[AudioTrack]: ...
     def active_sequence(self) -> Optional[SequenceInfo]: ...
     def sequences(self) -> list[SequenceInfo]: ...
     def selection(self) -> Selection: ...
@@ -172,6 +218,62 @@ def item_from_json(data: dict) -> ProjectItem:
         has_audio=_opt_bool(data.get("has_audio")),
         color_label=_opt_int(data.get("color_label")),
     )
+
+
+def default_label_palette() -> LabelPalette:
+    return LabelPalette(tuple(LabelColour(i, COLOR_LABELS[i], DEFAULT_LABEL_RGB[i]) for i in range(16)), "defaults")
+
+
+def colorref_to_rgb(value: Any) -> Optional[str]:
+    """"#rrggbb" of a Windows COLORREF (0x00BBGGRR) given as a number or as decimal or 0x-hex text; None for
+    anything else (a negative or larger value, a fraction, a bool, an empty or non-numeric text)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, float):
+        if not value.is_integer():
+            return None
+        value = int(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        try:
+            value = int(text, 16) if text.startswith("0x") else int(text, 10)
+        except ValueError:
+            return None
+    if not isinstance(value, int) or not 0 <= value <= 0xFFFFFF:
+        return None
+    red, green, blue = value & 0xFF, (value >> 8) & 0xFF, (value >> 16) & 0xFF
+    return f"#{red:02x}{green:02x}{blue:02x}"
+
+
+def label_palette_from_json(data: Any) -> LabelPalette:
+    """Decodes `label_palette.jsx` (`{labels: [{index, name, colour}]}`): a missing, empty or bad name or colour of a
+    label takes the default (docs/PREMIERE_API.md 7.19). Anything that is not such an object gives the defaults."""
+    raw = {}
+    if isinstance(data, dict) and isinstance(data.get("labels"), list):
+        for entry in data["labels"]:
+            if isinstance(entry, dict) and isinstance(entry.get("index"), int) and 0 <= entry["index"] < 16:
+                raw[entry["index"]] = entry
+    labels = []
+    for index in range(16):
+        entry = raw.get(index, {})
+        name = entry.get("name")
+        name = name.strip() if isinstance(name, str) else ""
+        if not name or len(name) > LABEL_NAME_MAX:
+            name = ""
+        rgb = colorref_to_rgb(entry.get("colour")) if entry.get("colour") not in (None, "") else None
+        labels.append(LabelColour(index, name or COLOR_LABELS[index], rgb or DEFAULT_LABEL_RGB[index],
+                                  live=bool(name) and rgb is not None))
+    live = sum(1 for label in labels if label.live)
+    partial = any(entry.get("name") or entry.get("colour") not in (None, "") for entry in raw.values())
+    source = "premiere" if live == 16 else ("partial" if live or partial else "defaults")
+    return LabelPalette(tuple(labels), source)
+
+
+def audio_track_from_json(data: dict) -> AudioTrack:
+    index = int(data.get("index", 0))
+    name = str(data.get("name") or "").strip()
+    return AudioTrack(index=index, name=name or f"Audio {index + 1}", muted=bool(data.get("muted", False)),
+                      clip_count=max(0, int(data.get("clip_count", 0) or 0)))
 
 
 def snapshot_from_json(data: dict, taken_at: float) -> Snapshot:

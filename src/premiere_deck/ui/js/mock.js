@@ -4,7 +4,8 @@
 //
 // URL flags: premiere=not_running|starting|waiting|connected (default connected), offer=1 (waiting with the
 // debug-mode offer), tab=files|actions, activity=1 (the activity strip on), missing=1 (the Files module is not in this build), noexe=1 (Premiere Pro
-// not found), noproject=1, ffmpeg=missing, update=none (no update is announced), job=1 (a Sort job runs),
+// not found), noproject=1, ffmpeg=missing, update=none (no update is announced), notes=long (40 lines of release
+// notes in the announced update), job=1 (a Sort job runs),
 // theme=black|sky. Settings changes live in memory; the theme is read from localStorage ('pd.theme') like the real
 // shell's cache. Alt+1 / Alt+2 / Alt+3 switch Premiere to not running / waiting / connected (`fake_premiere`).
 //
@@ -228,9 +229,13 @@ export function createMock({ params, dispatch }) {
     : { state: 'ready', source: 'path', path: 'C:\\Tools\\ffmpeg\\bin\\ffmpeg.exe', version: '9.0' };
 
   let update = { stage: 'up_to_date', current: VERSION, latest: VERSION, notes: null, size: null, published_at: null, progress: null, message: '', checked_at: nowS() - 720, can_apply: true };
+  // notes=long: release notes far taller than the update sheet (the notes scroll, Later and Install stay visible).
+  const LONG_NOTES = Array.from({ length: 40 }, (_, i) => `- Change ${i + 1}: a line of the release notes that wraps once in the narrow sheet`).join('\n');
   const NEW_UPDATE = {
     stage: 'available', current: VERSION, latest: '2.1.0', size: 48234496, published_at: nowS() - 86400, checked_at: nowS(), progress: null, message: '', can_apply: true,
-    notes: '## Premiere Deck 2.1.0\n\n- Sort project shows the files it will move first\n- Faster Sync used media on long sequences\n\n---\n\nSee [the releases page](https://github.com/softoblivion/premiere-deck/releases) for details.',
+    notes: params.get('notes') === 'long'
+      ? `## Premiere Deck 2.1.0\n\n${LONG_NOTES}\n\n---\n\nSee [the releases page](https://github.com/softoblivion/premiere-deck/releases) for details.`
+      : '## Premiere Deck 2.1.0\n\n- Sort project shows the files it will move first\n- Faster Sync used media on long sequences\n\n---\n\nSee [the releases page](https://github.com/softoblivion/premiere-deck/releases) for details.',
   };
   const setUpdate = (patch) => {
     update = { ...update, ...patch };
